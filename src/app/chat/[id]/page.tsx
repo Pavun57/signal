@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
@@ -8,13 +8,16 @@ import { SquarePen } from "lucide-react";
 
 import { useAuth } from "@clerk/nextjs";
 
+import { ChatErrorBanner } from "@/components/chat/chat-error-banner";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import { createChatTransport } from "@/lib/chat-transport";
 import { Button } from "@/components/ui/button";
 import { useCampaign } from "@/lib/campaign-context";
 import { useStreaming } from "@/lib/streaming-context";
 import { loadChat, saveChat } from "@/lib/services/chat-history";
 import { createClient } from "@/lib/supabase/client";
+import { apiFetch } from "@/lib/api-fetch";
 
 // ---------------------------------------------------------------------------
 // Inner component -- only rendered after initial messages are loaded so that
@@ -30,7 +33,7 @@ function summarizeChat(chatId: string) {
       new Blob([body], { type: "application/json" }),
     );
   } else {
-    fetch("/api/chat/summarize", { method: "POST", body, keepalive: true });
+    apiFetch("/api/chat/summarize", { method: "POST", body, keepalive: true });
   }
 }
 
@@ -54,9 +57,12 @@ function ChatView({
 
   const turnCount = useRef(0);
 
-  const { messages, sendMessage, status, stop } = useChat({
+  const transport = useMemo(() => createChatTransport(), []);
+
+  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     id: chatId,
     messages: initialMessages,
+    transport,
     onFinish({ messages: allMessages }) {
       if (userId) {
         saveChat(
@@ -153,6 +159,7 @@ function ChatView({
         isLoading={isLoading}
         onSuggestionClick={handleSuggestionClick}
       />
+      {error && <ChatErrorBanner error={error} onRetry={() => regenerate()} />}
       <ChatInput
         input={input}
         isLoading={isLoading}

@@ -9,6 +9,7 @@ import { AddPersonDialog } from "./add-person-dialog";
 import { OrgChart, type OrgChartPerson } from "./org-chart";
 import { PersonDrawer } from "./person-drawer";
 import type { CampaignContact, Seniority } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface EmbeddedOrgChartProps {
   organizationId: string;
@@ -121,7 +122,7 @@ export function EmbeddedOrgChart({
           onPersonClick={(id) => setSelectedPersonId(id)}
           onPersonReclassify={async (personId, next) => {
             try {
-              const res = await fetch(`/api/people/${personId}`, {
+              const res = await apiFetch(`/api/people/${personId}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

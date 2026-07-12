@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { EditableEmail } from "@/components/ui/editable-email";
 import { createClient } from "@/lib/supabase/client";
 import type { CampaignContact, EnrichmentData } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 function htmlToPlain(html: string): string {
   if (!html) return "";
@@ -430,7 +431,7 @@ function ReviewPageInner() {
       );
 
       try {
-        const res = await fetch("/api/enrich", {
+        const res = await apiFetch("/api/enrich", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contactId: personId }),
@@ -531,7 +532,7 @@ function ReviewPageInner() {
           return;
         }
 
-        const res = await fetch("/api/outreach/send-now", {
+        const res = await apiFetch("/api/outreach/send-now", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ draftId }),
@@ -596,7 +597,7 @@ function ReviewPageInner() {
       setRegeneratingDraftIds((prev) => new Set(prev).add(draftId));
 
       try {
-        const res = await fetch("/api/outreach/regenerate", {
+        const res = await apiFetch("/api/outreach/regenerate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ draftId }),
@@ -682,7 +683,7 @@ function ReviewPageInner() {
       // Promote to user_entered source + recompute the org pattern. Fire-and-
       // forget so a slow recompute doesn't block the UI; the prior person
       // update already persisted the email.
-      void fetch("/api/email/record-verified", {
+      void apiFetch("/api/email/record-verified", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personId, email: next }),

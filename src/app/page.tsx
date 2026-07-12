@@ -10,6 +10,7 @@ import {
   PageHeaderSkeleton,
   StatsRowSkeleton,
 } from "@/components/ui/skeleton-presets";
+import { apiFetch } from "@/lib/api-fetch";
 
 const OutreachChart = dynamic(
   () =>
@@ -62,7 +63,7 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/dashboard?range=${r}`);
+      const res = await apiFetch(`/api/dashboard?range=${r}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);

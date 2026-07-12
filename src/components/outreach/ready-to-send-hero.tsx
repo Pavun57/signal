@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import type { DraftRow } from "@/components/outreach/outreach-drafts-panel";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface ReadyToSendHeroProps {
   drafts: DraftRow[];
@@ -31,7 +32,7 @@ export function ReadyToSendHero({ drafts, onRefresh }: ReadyToSendHeroProps) {
     try {
       const results = await Promise.allSettled(
         drafts.map((d) =>
-          fetch("/api/outreach/send-now", {
+          apiFetch("/api/outreach/send-now", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ draftId: d.id }),

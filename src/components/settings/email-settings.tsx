@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { SettingsSection } from "@/components/settings/settings-section";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface Inbox {
   inbox_id: string;
@@ -33,7 +34,7 @@ export function EmailSettings() {
 
     const load = async () => {
       try {
-        const res = await fetch("/api/settings/email");
+        const res = await apiFetch("/api/settings/email");
         if (!res.ok) return;
         const data = await res.json();
         if (!mountedRef.current) return;
@@ -59,7 +60,7 @@ export function EmailSettings() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/settings/email", {
+      const res = await apiFetch("/api/settings/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -86,7 +87,7 @@ export function EmailSettings() {
     if (!newInboxName.trim()) return;
     setCreating(true);
     try {
-      const res = await fetch("/api/settings/email", {
+      const res = await apiFetch("/api/settings/email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

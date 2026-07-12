@@ -5,6 +5,7 @@ import { Loader2, Search } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface FindMoreButtonProps {
   companyId: string;
@@ -17,9 +18,12 @@ export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
   async function run() {
     setBusy(true);
     try {
-      const res = await fetch(`/api/companies/${companyId}/find-more-people`, {
-        method: "POST",
-      });
+      const res = await apiFetch(
+        `/api/companies/${companyId}/find-more-people`,
+        {
+          method: "POST",
+        },
+      );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);

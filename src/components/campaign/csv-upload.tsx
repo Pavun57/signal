@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface ParsedCompany {
   name: string;
@@ -226,7 +227,7 @@ export function CsvUpload({ campaignId, onImported }: CsvUploadProps) {
     setImporting(true);
     setError(null);
     try {
-      const res = await fetch("/api/import-csv", {
+      const res = await apiFetch("/api/import-csv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId, companies }),

@@ -15,6 +15,7 @@ import {
   type EnrichmentStatus,
 } from "@/lib/status-styles";
 import type { CampaignContact } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface ContactsTableProps {
   contacts: CampaignContact[];
@@ -34,7 +35,7 @@ export function ContactsTable({
   const findEmail = async (contact: CampaignContact) => {
     setFindingEmailIds((prev) => new Set(prev).add(contact.id));
     try {
-      const res = await fetch("/api/find-email", {
+      const res = await apiFetch("/api/find-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personId: contact.person_id }),
@@ -67,7 +68,7 @@ export function ContactsTable({
   const enrichContact = async (contactId: string) => {
     setEnrichingIds((prev) => new Set(prev).add(contactId));
     try {
-      const res = await fetch("/api/enrich", {
+      const res = await apiFetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId }),

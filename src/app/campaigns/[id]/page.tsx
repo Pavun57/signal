@@ -20,6 +20,7 @@ import type {
   CampaignCompany,
   CampaignContact,
 } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface ActivityCounts {
   added: number;
@@ -329,7 +330,7 @@ export default function CampaignDetailPage() {
       contact_count: contacts.length,
     });
     try {
-      await fetch("/api/refresh-scores", {
+      await apiFetch("/api/refresh-scores", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId }),
