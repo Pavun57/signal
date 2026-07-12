@@ -31,7 +31,7 @@ export function CampaignStats({ companies, contacts }: CampaignStatsProps) {
 
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
-      <div className="border-border col-span-2 rounded-lg border bg-gradient-to-br from-emerald-500/5 to-transparent px-4 py-3 md:col-span-2">
+      <div className="border-border col-span-2 rounded-lg border bg-gradient-to-br from-success/5 to-transparent px-4 py-3 md:col-span-2">
         <div className="flex items-baseline gap-2">
           <span className="text-4xl font-semibold tabular-nums">
             {replyRate}

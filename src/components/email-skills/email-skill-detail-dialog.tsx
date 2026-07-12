@@ -50,8 +50,8 @@ export function EmailSkillDetailDialog({
 
   const canEdit = !skill.is_builtin;
   const badgeClass = skill.is_builtin
-    ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
-    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+    ? "bg-info/10 text-info"
+    : "bg-success/10 text-success";
   const badgeLabel = skill.is_builtin ? "Built-in" : "Custom";
 
   const handleSave = async () => {

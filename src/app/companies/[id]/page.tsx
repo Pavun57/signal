@@ -17,6 +17,7 @@ import type {
   EnrichmentData,
   Seniority,
 } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface OrgRow {
   id: string;
@@ -174,7 +175,7 @@ export default function CompanyPage() {
   const enrichContact = useCallback(
     async (personId: string) => {
       try {
-        await fetch("/api/enrich", {
+        await apiFetch("/api/enrich", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contactId: personId }),
@@ -249,7 +250,7 @@ export default function CompanyPage() {
     <div className="mx-auto max-w-7xl space-y-4 p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{org.name}</h1>
+          <h1 className="type-title">{org.name}</h1>
           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-sm">
             {org.domain && (
               <a
@@ -294,7 +295,7 @@ export default function CompanyPage() {
         onPersonClick={(id) => setSelectedPersonId(id)}
         onPersonReclassify={async (personId, next) => {
           try {
-            const res = await fetch(`/api/people/${personId}`, {
+            const res = await apiFetch(`/api/people/${personId}`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -314,7 +315,7 @@ export default function CompanyPage() {
         }}
         onPersonRemove={async (personId) => {
           try {
-            const res = await fetch(`/api/people/${personId}/from-company`, {
+            const res = await apiFetch(`/api/people/${personId}/from-company`, {
               method: "DELETE",
             });
             if (!res.ok) {
@@ -335,7 +336,7 @@ export default function CompanyPage() {
         onEnrich={enrichContact}
         onRemove={async (personId) => {
           try {
-            const res = await fetch(`/api/people/${personId}/from-company`, {
+            const res = await apiFetch(`/api/people/${personId}/from-company`, {
               method: "DELETE",
             });
             if (!res.ok) {

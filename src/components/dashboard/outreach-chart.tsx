@@ -1,5 +1,6 @@
 "use client";
 
+import { Activity } from "lucide-react";
 import {
   AreaChart,
   Area,
@@ -9,6 +10,16 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+
+import { EmptyState } from "@/components/ui/empty-state";
+
+// Colors come from the theme tokens so the chart tracks light/dark, and match
+// the accent on the matching stat card above it.
+const series = [
+  { key: "sent", name: "Sent", color: "var(--color-info)" },
+  { key: "opened", name: "Opened", color: "var(--color-warn)" },
+  { key: "replied", name: "Replied", color: "var(--color-success)" },
+] as const;
 
 interface TimeSeriesPoint {
   date: string;
@@ -32,7 +43,7 @@ export function OutreachChart({
   onRangeChange,
 }: OutreachChartProps) {
   return (
-    <div className="border-border rounded-lg border p-4">
+    <div className="border-border animate-rise rounded-lg border p-4 [--rise-delay:240ms]">
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-sm font-semibold">Outreach Activity</h2>
         <div className="flex gap-1">
@@ -53,14 +64,31 @@ export function OutreachChart({
       </div>
 
       {timeSeries.length === 0 ? (
-        <div className="flex h-[200px] items-center justify-center">
-          <p className="text-muted-foreground text-sm">
-            No outreach activity yet
-          </p>
-        </div>
+        <EmptyState
+          icon={Activity}
+          accent="info"
+          title="No outreach activity yet"
+          description="Sends, opens, and replies will chart here once your first sequence goes out."
+          className="h-[200px] py-0"
+        />
       ) : (
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={timeSeries}>
+            <defs>
+              {series.map(({ key, color }) => (
+                <linearGradient
+                  key={key}
+                  id={`fill-${key}`}
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
+                >
+                  <stop offset="0%" stopColor={color} stopOpacity={0.28} />
+                  <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+                </linearGradient>
+              ))}
+            </defs>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis
               dataKey="date"
@@ -87,33 +115,18 @@ export function OutreachChart({
                 backgroundColor: "var(--color-background)",
               }}
             />
-            <Area
-              type="monotone"
-              dataKey="sent"
-              name="Sent"
-              stroke="oklch(0.623 0.214 259.815)"
-              fill="oklch(0.623 0.214 259.815)"
-              fillOpacity={0.1}
-              strokeWidth={2}
-            />
-            <Area
-              type="monotone"
-              dataKey="opened"
-              name="Opened"
-              stroke="oklch(0.769 0.188 70.08)"
-              fill="oklch(0.769 0.188 70.08)"
-              fillOpacity={0.1}
-              strokeWidth={2}
-            />
-            <Area
-              type="monotone"
-              dataKey="replied"
-              name="Replied"
-              stroke="oklch(0.723 0.219 149.579)"
-              fill="oklch(0.723 0.219 149.579)"
-              fillOpacity={0.1}
-              strokeWidth={2}
-            />
+            {series.map(({ key, name, color }) => (
+              <Area
+                key={key}
+                type="monotone"
+                dataKey={key}
+                name={name}
+                stroke={color}
+                fill={`url(#fill-${key})`}
+                strokeWidth={2}
+                activeDot={{ r: 4, strokeWidth: 2 }}
+              />
+            ))}
           </AreaChart>
         </ResponsiveContainer>
       )}

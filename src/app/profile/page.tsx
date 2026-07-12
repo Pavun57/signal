@@ -187,7 +187,7 @@ export default function ProfilePage() {
     <div className="flex-1 overflow-y-auto">
       <div className="space-y-8 p-4 md:p-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Profiles</h1>
+          <h1 className="type-title">Profiles</h1>
           <p className="text-muted-foreground text-sm">
             Create different profiles for different campaigns. Each profile is a
             seller identity with its own company, offering, and links.
@@ -247,7 +247,7 @@ export default function ProfilePage() {
 
         {/* Personal Info */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">Personal Info</h2>
+          <h2 className="type-header">Personal Info</h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label
@@ -303,7 +303,7 @@ export default function ProfilePage() {
 
         {/* Company & Links */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">Company & Links</h2>
+          <h2 className="type-header">Company & Links</h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label
@@ -388,7 +388,7 @@ export default function ProfilePage() {
 
         {/* About Your Offering */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">About Your Offering</h2>
+          <h2 className="type-header">About Your Offering</h2>
           <div className="space-y-2">
             <label
               htmlFor="offering_summary"

@@ -64,7 +64,7 @@ export default function ChatPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-2xl px-4 py-12">
           <div className="mb-8 text-center">
-            <h2 className="text-lg font-semibold">How can I help?</h2>
+            <h2 className="type-header">How can I help?</h2>
             <p className="text-muted-foreground mt-1 text-sm">
               Start typing to begin a new conversation, or pick up where you
               left off.

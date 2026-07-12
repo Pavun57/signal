@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { apiFetch } from "@/lib/api-fetch";
 
 interface OrphanRow {
   id: string;
@@ -76,7 +77,7 @@ export function AddPersonDialog({
   async function add(personId: string) {
     setAddingId(personId);
     try {
-      const res = await fetch(`/api/people/${personId}/to-company`, {
+      const res = await apiFetch(`/api/people/${personId}/to-company`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

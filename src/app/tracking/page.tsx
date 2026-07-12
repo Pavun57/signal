@@ -199,7 +199,7 @@ function TrackingPageContent() {
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-6 p-4 md:p-6">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Tracking</h1>
+            <h1 className="type-title">Tracking</h1>
             <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Loading...
@@ -215,7 +215,7 @@ function TrackingPageContent() {
       <div className="space-y-6 p-4 md:p-6">
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Tracking</h1>
+          <h1 className="type-title">Tracking</h1>
           <p className="text-muted-foreground text-sm">
             Monitor companies over time. Signals run on schedule and flag
             entities when thresholds are met.

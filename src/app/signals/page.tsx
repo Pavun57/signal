@@ -182,7 +182,7 @@ function SignalsPageContent() {
       <div className="flex-1 overflow-y-auto">
         <div className="space-y-6 p-4 md:p-6">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Signals</h1>
+            <h1 className="type-title">Signals</h1>
             <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Loading...
@@ -199,7 +199,7 @@ function SignalsPageContent() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Signals</h1>
+            <h1 className="type-title">Signals</h1>
             <p className="text-muted-foreground text-sm">
               Browse and manage buying signals. Signals guide the agent on what
               to research for each prospect.

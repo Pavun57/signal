@@ -13,6 +13,7 @@ import { ReviewButton } from "@/components/outreach/review-button";
 import { OUTREACH_STATUS, type OutreachStatus } from "@/lib/outreach/status";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/api-fetch";
 
 export interface DraftRow {
   id: string;
@@ -126,7 +127,7 @@ export function OutreachDraftsPanel({
   const handleSendNow = async (draftId: string) => {
     setSendingIds((prev) => new Set(prev).add(draftId));
     try {
-      const res = await fetch("/api/outreach/send-now", {
+      const res = await apiFetch("/api/outreach/send-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ draftId }),
@@ -161,7 +162,7 @@ export function OutreachDraftsPanel({
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Needs attention</h2>
+        <h2 className="type-header">Needs attention</h2>
         <span className="text-muted-foreground text-xs tabular-nums">
           {drafts.length} draft{drafts.length === 1 ? "" : "s"} in flight
         </span>

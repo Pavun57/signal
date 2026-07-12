@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Sparkles, Target } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { campaignStatusStyles, type CampaignStatus } from "@/lib/status-styles";
 
 interface CampaignRow {
@@ -30,8 +31,18 @@ export function CampaignTable({ campaigns }: CampaignTableProps) {
 
   if (campaigns.length === 0) {
     return (
-      <div className="border-border rounded-lg border p-6 text-center">
-        <p className="text-muted-foreground text-sm">No campaigns yet</p>
+      <div className="border-border rounded-lg border">
+        <EmptyState
+          icon={Target}
+          title="No campaigns yet"
+          description="Start a campaign and Signal will find companies, enrich contacts, and draft outreach for you."
+          action={
+            <Button size="sm" render={<Link href="/chat" />}>
+              <Sparkles />
+              Start a campaign
+            </Button>
+          }
+        />
       </div>
     );
   }

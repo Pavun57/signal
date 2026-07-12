@@ -36,12 +36,7 @@ export function SettingsSection({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h2
-            className={cn(
-              "text-lg font-semibold",
-              isDanger && "text-destructive",
-            )}
-          >
+          <h2 className={cn("type-header", isDanger && "text-destructive")}>
             {title}
           </h2>
           {description && (

@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 
 import { useAuth } from "@clerk/nextjs";
 
+import { ChatErrorBanner } from "@/components/chat/chat-error-banner";
 import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessages } from "@/components/chat/chat-messages";
+import { createChatTransport } from "@/lib/chat-transport";
 import { useCampaign } from "@/lib/campaign-context";
 import { useStreaming } from "@/lib/streaming-context";
 import { saveChat } from "@/lib/services/chat-history";
@@ -147,9 +149,12 @@ function AgentPanelInner({
   const { userId } = useAuth();
   const didAutoSend = useRef(false);
 
-  const { messages, sendMessage, status, stop } = useChat({
+  const transport = useMemo(() => createChatTransport(), []);
+
+  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     id: campaignId ? `campaign-${campaignId}` : `global-${chatId}`,
     messages: initialMessages,
+    transport,
     onFinish({ messages: allMessages }) {
       if (userId) {
         saveChat(
@@ -254,6 +259,8 @@ function AgentPanelInner({
         onSuggestionClick={handleSuggestionClick}
         suggestions={getSuggestions(pathname ?? "", campaignId)}
       />
+
+      {error && <ChatErrorBanner error={error} onRetry={() => regenerate()} />}
 
       <ChatInput
         input={input}

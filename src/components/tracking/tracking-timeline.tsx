@@ -27,11 +27,11 @@ export function TrackingTimeline({ changes }: { changes: TrackingChange[] }) {
             <span
               className={
                 change.change_type === "threshold_crossed"
-                  ? "font-medium text-emerald-600 dark:text-emerald-400"
+                  ? "font-medium text-success"
                   : change.change_type === "added"
-                    ? "text-emerald-600 dark:text-emerald-400"
+                    ? "text-success"
                     : change.change_type === "removed"
-                      ? "text-red-500 dark:text-red-400"
+                      ? "text-destructive"
                       : "text-foreground"
               }
             >

@@ -21,8 +21,8 @@ export function EmailSkillCard({
 }: EmailSkillCardProps) {
   const badgeLabel = skill.is_builtin ? "Built-in" : "Custom";
   const badgeClass = skill.is_builtin
-    ? "bg-blue-500/10 text-blue-500"
-    : "bg-emerald-500/10 text-emerald-500";
+    ? "bg-info/10 text-info"
+    : "bg-success/10 text-success";
 
   return (
     <button

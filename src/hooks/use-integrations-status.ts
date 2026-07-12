@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 
 export interface IntegrationStatus {
   id: string;
@@ -29,7 +30,7 @@ export function useIntegrationsStatus(): State {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/integrations/status")
+    apiFetch("/api/integrations/status")
       .then((res) => {
         if (!res.ok) throw new Error(`status ${res.status}`);
         return res.json();

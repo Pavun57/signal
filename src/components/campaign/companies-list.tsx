@@ -30,6 +30,7 @@ import {
 } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import type { CampaignCompany, CampaignContact } from "@/lib/types/campaign";
+import { apiFetch } from "@/lib/api-fetch";
 
 const ROW_FOCUS =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -143,7 +144,7 @@ export function CompaniesList({
   const enrichContact = async (contactId: string) => {
     setEnrichingIds((prev) => new Set(prev).add(contactId));
     try {
-      await fetch("/api/enrich", {
+      await apiFetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId }),
@@ -164,7 +165,7 @@ export function CompaniesList({
   const enrichCompanyHandler = async (companyId: string) => {
     setEnrichingCompanyIds((prev) => new Set(prev).add(companyId));
     try {
-      const res = await fetch("/api/enrich-company", {
+      const res = await apiFetch("/api/enrich-company", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId, campaignId }),
@@ -189,7 +190,7 @@ export function CompaniesList({
   const findContactsHandler = async (companyId: string) => {
     setFindingContactsIds((prev) => new Set(prev).add(companyId));
     try {
-      await fetch("/api/find-contacts", {
+      await apiFetch("/api/find-contacts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId, campaignId }),
@@ -209,7 +210,7 @@ export function CompaniesList({
   const findEmailForContact = async (contact: CampaignContact) => {
     setFindingEmailIds((prev) => new Set(prev).add(contact.id));
     try {
-      await fetch("/api/find-email", {
+      await apiFetch("/api/find-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personId: contact.person_id }),
@@ -230,7 +231,7 @@ export function CompaniesList({
     if (!organizationId) return;
     setFindingEmailsCompanyIds((prev) => new Set(prev).add(organizationId));
     try {
-      await fetch("/api/find-email/bulk", {
+      await apiFetch("/api/find-email/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId, organizationId }),

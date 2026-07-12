@@ -56,7 +56,7 @@ export function SignalKanban({ enrollments }: SignalKanbanProps) {
   if (enrollments.length === 0) {
     return (
       <section className="space-y-4">
-        <h2 className="text-lg font-semibold">Pipeline</h2>
+        <h2 className="type-header">Pipeline</h2>
         <p className="text-muted-foreground text-sm">
           No active enrollments. Create a sequence and approve emails to get
           started.
@@ -67,7 +67,7 @@ export function SignalKanban({ enrollments }: SignalKanbanProps) {
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Pipeline</h2>
+      <h2 className="type-header">Pipeline</h2>
       <div className="grid grid-cols-4 gap-4">
         {COLUMNS.map((col) => {
           const cards = enrollments.filter(

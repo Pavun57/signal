@@ -80,7 +80,7 @@ export default function CampaignsIndexPage() {
     <div className="flex-1 overflow-y-auto">
       <div className="space-y-6 p-4 md:p-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Campaigns</h1>
+          <h1 className="type-title">Campaigns</h1>
           <p className="text-muted-foreground text-sm">
             All campaigns in your workspace. Click a name to open it; delete
             ones you no longer need.
