@@ -136,7 +136,7 @@ export default function DashboardPage() {
           onRangeChange={handleRangeChange}
         />
 
-        <div>
+        <div className="animate-rise [--rise-delay:300ms]">
           <h2 className="mb-3 type-header">Campaigns</h2>
           <CampaignTable campaigns={data.campaigns} />
         </div>
