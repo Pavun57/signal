@@ -104,7 +104,7 @@ export function SidebarCampaigns({
                 <div className="relative">
                   <Target className="h-4 w-4" />
                   <span
-                    className={`absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${campaignStatusDotStyles[campaign.status as CampaignStatus] || "bg-gray-400"}`}
+                    className={`absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${campaignStatusDotStyles[campaign.status as CampaignStatus] || "bg-muted-foreground/40"}`}
                   />
                 </div>
                 <span className="truncate">{campaign.name}</span>

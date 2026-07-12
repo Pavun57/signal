@@ -38,10 +38,10 @@ export function SignalCard({
       : "Custom";
 
   const badgeClass = signal.is_builtin
-    ? "bg-blue-500/10 text-blue-500"
+    ? "bg-info/10 text-info"
     : signal.is_public
-      ? "bg-purple-500/10 text-purple-500"
-      : "bg-emerald-500/10 text-emerald-500";
+      ? "bg-category/10 text-category"
+      : "bg-success/10 text-success";
 
   const serviceLabel =
     signal.execution_type === "tool_call" && signal.tool_key

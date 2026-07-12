@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ClerkProvider } from "@clerk/nextjs";
 import { shadcn } from "@clerk/ui/themes";
@@ -11,11 +11,6 @@ import { MissingKeyBannerStack } from "@/components/missing-key-banner-stack";
 import { PostHogIdentify } from "@/components/posthog-identify";
 import { StreamingProvider } from "@/lib/streaming-context";
 import "./globals.css";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-});
 
 export const metadata: Metadata = {
   title: "Signal",
@@ -30,14 +25,14 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${inter.variable} ${GeistMono.variable} font-sans antialiased`}
+        className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased`}
       >
         <ClerkProvider appearance={{ theme: shadcn }}>
           <PostHogIdentify />
           <ThemeProvider
             attribute="class"
-            defaultTheme="system"
-            enableSystem
+            defaultTheme="light"
+            storageKey="signal-theme"
             disableTransitionOnChange
           >
             <StreamingProvider>

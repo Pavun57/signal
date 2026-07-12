@@ -110,7 +110,7 @@ function IntegrationRow({
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">{integration.name}</span>
             {isRequired && (
-              <span className="text-muted-foreground rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-400">
+              <span className="text-muted-foreground rounded-sm bg-warn/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warn">
                 required
               </span>
             )}
@@ -152,9 +152,9 @@ function StatusIcon({
       className={cn(
         "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
         configured
-          ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+          ? "bg-success/15 text-success"
           : required
-            ? "bg-amber-500/20 text-amber-700 dark:text-amber-400"
+            ? "bg-warn/20 text-warn"
             : "bg-muted text-muted-foreground",
       )}
       aria-label={configured ? "Configured" : "Not configured"}

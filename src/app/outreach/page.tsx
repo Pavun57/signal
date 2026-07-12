@@ -257,7 +257,7 @@ export default function OutreachPage() {
       <div className="space-y-8 p-4 md:p-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Outreach</h1>
+            <h1 className="type-title">Outreach</h1>
             <p className="text-muted-foreground text-sm">
               Signal-driven email sequences across all campaigns.
             </p>

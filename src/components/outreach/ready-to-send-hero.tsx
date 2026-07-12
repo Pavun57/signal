@@ -57,7 +57,7 @@ export function ReadyToSendHero({ drafts, onRefresh }: ReadyToSendHeroProps) {
     <section className="border-primary/20 bg-primary/5 rounded-lg border p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">
+          <h2 className="type-header">
             {drafts.length} email{drafts.length === 1 ? "" : "s"} ready to send
           </h2>
           <p className="text-muted-foreground mt-0.5 text-sm">

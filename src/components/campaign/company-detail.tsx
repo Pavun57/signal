@@ -259,10 +259,10 @@ export function CompanyDetail({
 
       {data.errors && data.errors.length > 0 && (
         <section className="space-y-1">
-          <h4 className="text-xs font-medium uppercase tracking-wide text-red-600 dark:text-red-400">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-destructive">
             Enrichment errors
           </h4>
-          <ul className="space-y-0.5 text-xs text-red-600 dark:text-red-400">
+          <ul className="space-y-0.5 text-xs text-destructive">
             {data.errors.map((e, i) => (
               <li key={i} className="flex items-start gap-1.5">
                 <span className="mt-0.5">•</span>

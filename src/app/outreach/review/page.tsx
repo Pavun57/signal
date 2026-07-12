@@ -755,7 +755,7 @@ function ReviewPageInner() {
 
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4">
-        <h2 className="text-xl font-bold">Review complete</h2>
+        <h2 className="type-header">Review complete</h2>
         <p className="text-muted-foreground text-sm">
           {approvedCount} approved, {rejectedCount} rejected across{" "}
           {totalContacts} contacts.
@@ -838,9 +838,7 @@ function ReviewPageInner() {
         <div className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
             <div className="space-y-1">
-              <h2 className="text-lg font-semibold">
-                {currentContact.person_name}
-              </h2>
+              <h2 className="type-header">{currentContact.person_name}</h2>
               <div className="text-muted-foreground flex items-center gap-1 text-xs">
                 <span className="shrink-0">Email:</span>
                 <EditableEmail
@@ -854,10 +852,10 @@ function ReviewPageInner() {
                   if (!chip) return null;
                   const toneClass =
                     chip.tone === "verified"
-                      ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                      ? "bg-success/10 text-success"
                       : chip.tone === "ok"
                         ? "bg-muted text-muted-foreground"
-                        : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400";
+                        : "bg-warn/10 text-warn";
                   return (
                     <span
                       className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${toneClass}`}
@@ -1040,7 +1038,7 @@ function EmailCard({
         </div>
         <div className="flex items-center gap-2">
           {isSent ? (
-            <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+            <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
               Sent
             </span>
           ) : alreadyReviewed ? (

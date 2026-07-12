@@ -17,7 +17,7 @@ export function MissingKeyBanner({
   return (
     <div
       role="alert"
-      className="border-b border-amber-500/30 bg-amber-500/15 px-4 py-2 text-sm"
+      className="border-b border-warn/30 bg-warn/15 px-4 py-2 text-sm"
     >
       <strong>{integration.name} not configured.</strong>{" "}
       {integration.consequence}{" "}
@@ -26,7 +26,7 @@ export function MissingKeyBanner({
         {missingEnvVars.map((v, i) => (
           <span key={v}>
             {i > 0 && ", "}
-            <code className="rounded bg-amber-500/20 px-1">{v}</code>
+            <code className="rounded bg-warn/20 px-1">{v}</code>
           </span>
         ))}
         . {integration.fixHint && <>{integration.fixHint}. </>}

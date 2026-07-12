@@ -122,7 +122,7 @@ export default function DashboardPage() {
     <div className="flex-1 overflow-y-auto">
       <div className="space-y-6 p-4 md:p-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
+          <h1 className="type-title">Overview</h1>
           <p className="text-muted-foreground text-sm">
             Cross-campaign performance at a glance.
           </p>
@@ -137,7 +137,7 @@ export default function DashboardPage() {
         />
 
         <div>
-          <h2 className="mb-3 text-lg font-semibold">Campaigns</h2>
+          <h2 className="mb-3 type-header">Campaigns</h2>
           <CampaignTable campaigns={data.campaigns} />
         </div>
       </div>

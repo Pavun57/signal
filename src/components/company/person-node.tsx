@@ -4,58 +4,39 @@ import { useState } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import { Linkedin, Loader2, Mail, Trash2 } from "lucide-react";
 
+import { outreachStatusStyles, type OutreachStatus } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
-const STATUS_STYLES: Record<
-  string,
-  { bg: string; ring: string; label: string }
-> = {
-  not_contacted: {
-    bg: "bg-muted text-muted-foreground",
-    ring: "ring-border",
-    label: "Not contacted",
-  },
-  queued: {
-    bg: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
-    ring: "ring-blue-500/30",
-    label: "Queued",
-  },
-  sent: {
-    bg: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
-    ring: "ring-blue-500/30",
-    label: "Sent",
-  },
-  delivered: {
-    bg: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
-    ring: "ring-blue-500/30",
-    label: "Delivered",
-  },
-  opened: {
-    bg: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-    ring: "ring-amber-500/30",
-    label: "Opened",
-  },
-  clicked: {
-    bg: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-    ring: "ring-amber-500/30",
-    label: "Clicked",
-  },
-  replied: {
-    bg: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-    ring: "ring-emerald-500/40",
-    label: "Replied",
-  },
-  bounced: {
-    bg: "bg-red-500/10 text-red-700 dark:text-red-400",
-    ring: "ring-red-500/30",
-    label: "Bounced",
-  },
-  complained: {
-    bg: "bg-red-500/10 text-red-700 dark:text-red-400",
-    ring: "ring-red-500/30",
-    label: "Complained",
-  },
+// Pill colors and labels come from the shared map, so a contact can't show one
+// status colour in the outreach table and a different one in the org chart.
+// Only the ring — which the table has no equivalent of — lives here.
+const STATUS_RINGS: Record<OutreachStatus, string> = {
+  queued: "ring-border",
+  sent: "ring-info/30",
+  delivered: "ring-info/30",
+  opened: "ring-warn/30",
+  clicked: "ring-category/30",
+  replied: "ring-success/40",
+  bounced: "ring-destructive/30",
+  complained: "ring-destructive/30",
 };
+
+const NOT_CONTACTED = {
+  bg: "bg-muted text-muted-foreground",
+  ring: "ring-border",
+  label: "Not contacted",
+};
+
+function statusStyle(status: string) {
+  const shared = outreachStatusStyles[status as OutreachStatus];
+  if (!shared) return NOT_CONTACTED;
+
+  return {
+    bg: shared.className,
+    ring: STATUS_RINGS[status as OutreachStatus],
+    label: shared.label,
+  };
+}
 
 export interface PersonNodeData {
   personId: string;
@@ -74,21 +55,17 @@ export interface PersonNodeData {
 function EnrichmentLabel({ status }: { status: string | null }) {
   if (status === "enriched") {
     return (
-      <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-        Enriched
-      </span>
+      <span className="text-[10px] font-medium text-success">Enriched</span>
     );
   }
   if (status === "in_progress") {
     return (
-      <span className="text-[10px] font-medium text-amber-700 dark:text-amber-400">
-        Enriching…
-      </span>
+      <span className="text-[10px] font-medium text-warn">Enriching…</span>
     );
   }
   if (status === "failed") {
     return (
-      <span className="text-[10px] font-medium text-red-700 dark:text-red-400">
+      <span className="text-[10px] font-medium text-destructive">
         Enrichment failed
       </span>
     );
@@ -100,7 +77,7 @@ function EnrichmentLabel({ status }: { status: string | null }) {
 
 export function PersonNode({ data, selected }: NodeProps<PersonNodeData>) {
   const status = data.outreach_status ?? "not_contacted";
-  const style = STATUS_STYLES[status] ?? STATUS_STYLES.not_contacted;
+  const style = statusStyle(status);
 
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);

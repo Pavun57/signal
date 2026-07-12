@@ -249,7 +249,7 @@ export default function CompanyPage() {
     <div className="mx-auto max-w-7xl space-y-4 p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{org.name}</h1>
+          <h1 className="type-title">{org.name}</h1>
           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-2 text-sm">
             {org.domain && (
               <a

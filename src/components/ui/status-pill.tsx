@@ -7,9 +7,9 @@ import {
 
 const TONE_STYLES: Record<OutreachTone, string> = {
   primary: "bg-primary/10 text-primary",
-  warn: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+  warn: "bg-warn/15 text-warn",
   muted: "bg-muted text-muted-foreground",
-  success: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  success: "bg-success/10 text-success",
   neutral: "bg-muted text-muted-foreground",
 };
 

@@ -71,7 +71,7 @@ export function ToolCallCard({
     return (
       <div className="my-1">
         <div className="bg-muted/40 border-border flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
-          <CheckCircle2 className="h-4 w-4 text-green-500" />
+          <CheckCircle2 className="h-4 w-4 text-success" />
           <Icon className="text-muted-foreground h-4 w-4" />
           <span className="text-muted-foreground flex-1 truncate">
             {config.label}
@@ -94,9 +94,9 @@ export function ToolCallCard({
           {isLoading ? (
             <Loader2 className="text-muted-foreground h-4 w-4 animate-spin" />
           ) : hasError ? (
-            <AlertCircle className="h-4 w-4 text-red-500" />
+            <AlertCircle className="h-4 w-4 text-destructive" />
           ) : (
-            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <CheckCircle2 className="h-4 w-4 text-success" />
           )}
           <Icon className="text-muted-foreground h-4 w-4" />
           <span className="text-muted-foreground flex-1 truncate">
@@ -124,7 +124,7 @@ export function ToolCallCard({
 
       {expanded && hasError && errorText && (
         <div className="border-border border-t px-3 py-2">
-          <p className="text-xs text-red-500">{errorText}</p>
+          <p className="text-xs text-destructive">{errorText}</p>
         </div>
       )}
 
@@ -226,7 +226,7 @@ function CollapsibleToolResult({
     const campaign = data.campaign as { name: string; status: string };
     return (
       <div className="flex items-center gap-2">
-        <CheckCircle2 className="h-3 w-3 text-green-500" />
+        <CheckCircle2 className="h-3 w-3 text-success" />
         <span className="text-xs">
           Campaign &quot;{campaign.name}&quot; {data.action as string} (
           {campaign.status})
@@ -262,7 +262,7 @@ function CollapsibleToolResult({
         <span className="text-muted-foreground">Enriched from:</span>{" "}
         {sources.join(", ") || "no sources"}
         {data.errors ? (
-          <p className="mt-1 text-red-500">
+          <p className="mt-1 text-destructive">
             Errors: {(data.errors as string[]).join(", ")}
           </p>
         ) : null}

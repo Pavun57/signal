@@ -20,9 +20,9 @@ export function SequenceProgressBar({
   return (
     <div className={cn("flex flex-col gap-1.5 min-w-[180px]", className)}>
       <div className="bg-muted flex h-1.5 overflow-hidden rounded-full">
-        <span className="bg-emerald-500" style={{ width: pct(replied) }} />
-        <span className="bg-orange-500" style={{ width: pct(sent) }} />
-        <span className="bg-amber-400" style={{ width: pct(waiting) }} />
+        <span className="bg-success" style={{ width: pct(replied) }} />
+        <span className="bg-info" style={{ width: pct(sent) }} />
+        <span className="bg-warn" style={{ width: pct(waiting) }} />
       </div>
       <div className="text-muted-foreground flex gap-3 text-xs tabular-nums">
         <span>{replied} replied</span>

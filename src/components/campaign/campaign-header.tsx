@@ -101,9 +101,7 @@ export function CampaignHeader({
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-2xl font-bold tracking-tight">
-            {campaign.name}
-          </h1>
+          <h1 className="truncate type-title">{campaign.name}</h1>
           <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
             <span>
               {contactCount} {contactCount === 1 ? "contact" : "contacts"}

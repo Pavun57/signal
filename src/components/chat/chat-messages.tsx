@@ -52,7 +52,7 @@ export function ChatMessages({
             <MessageSquare className="text-muted-foreground h-6 w-6" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold">How can I help?</h3>
+            <h3 className="type-header">How can I help?</h3>
             <p className="text-muted-foreground mt-1 text-sm">
               I&apos;m Signal, your AI assistant. Ask me anything or pick a
               suggestion below.

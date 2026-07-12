@@ -161,7 +161,7 @@ export function OutreachDraftsPanel({
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Needs attention</h2>
+        <h2 className="type-header">Needs attention</h2>
         <span className="text-muted-foreground text-xs tabular-nums">
           {drafts.length} draft{drafts.length === 1 ? "" : "s"} in flight
         </span>

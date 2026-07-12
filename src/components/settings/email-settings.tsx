@@ -130,7 +130,7 @@ export function EmailSettings() {
   }
 
   const statusBadge = isConfigured ? (
-    <span className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full px-2.5 py-0.5 text-xs font-medium">
+    <span className="bg-success/10 text-success rounded-full px-2.5 py-0.5 text-xs font-medium">
       Connected
     </span>
   ) : (

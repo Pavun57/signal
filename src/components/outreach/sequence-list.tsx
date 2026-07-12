@@ -35,7 +35,7 @@ export function SequenceList({
   if (sequences.length === 0) {
     return (
       <section className="space-y-4">
-        <h2 className="text-lg font-semibold">Sequences</h2>
+        <h2 className="type-header">Sequences</h2>
         <p className="text-muted-foreground text-sm">
           No sequences yet. Ask the AI to set up outreach for a campaign.
         </p>
@@ -45,7 +45,7 @@ export function SequenceList({
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Sequences</h2>
+      <h2 className="type-header">Sequences</h2>
       <div className="border-border overflow-hidden rounded-lg border">
         <table className="w-full text-sm">
           <thead>

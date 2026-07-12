@@ -7,10 +7,52 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── Typography scale (ported from PLG dashboard) ─────────────────────── */
+@utility type-jumbo {
+  font-family: var(--font-display);
+  font-size: 2.25rem;
+  line-height: 2.5rem;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+}
+@utility type-title {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 2rem;
+  letter-spacing: -0.015em;
+  font-weight: 500;
+}
+@utility type-header {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  line-height: 2rem;
+  letter-spacing: -0.01em;
+  font-weight: 500;
+}
+@utility type-large {
+  font-size: 1.125rem;
+  line-height: 1.75rem;
+  letter-spacing: -0.005em;
+}
+@utility type-base {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+@utility type-body {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+@utility type-caption {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0.01em;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-inter);
+  --font-sans: var(--font-geist-sans);
+  --font-display: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -25,6 +67,10 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --color-warn: var(--warn);
+  --color-category: var(--category);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -54,77 +100,94 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(0.99 0.002 260);
-  --foreground: oklch(0.2 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.02 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.02 260);
+  /* PLG dashboard palette — warm neutrals, tight corners, violet accent */
+  --radius: 0.375rem;
+  --background: #f6f5f5;
+  --foreground: #260f17;
+  --card: #ffffff;
+  --card-foreground: #260f17;
+  --popover: #ffffff;
+  --popover-foreground: #260f17;
   --primary: oklch(0.56 0.23 265);
-  --primary-foreground: oklch(0.99 0.002 260);
-  --secondary: oklch(0.96 0.004 260);
-  --secondary-foreground: oklch(0.2 0.02 260);
-  --muted: oklch(0.96 0.004 260);
-  --muted-foreground: oklch(0.5 0.015 260);
-  --accent: oklch(0.96 0.004 260);
-  --accent-foreground: oklch(0.2 0.02 260);
-  --highlight: oklch(0.7 0.21 355);
-  --highlight-foreground: oklch(0.99 0.002 260);
-  --destructive: oklch(0.6 0.22 28);
-  --destructive-foreground: oklch(0.99 0.002 260);
-  --border: oklch(0.92 0.006 260);
-  --input: oklch(0.92 0.006 260);
+  --primary-foreground: #ffffff;
+  --secondary: #f1f0f0;
+  --secondary-foreground: #260f17;
+  --muted: #f1f0f0;
+  --muted-foreground: #6e6c6a;
+  --accent: #f1f0f0;
+  --accent-foreground: #260f17;
+  --highlight: oklch(0.56 0.23 265);
+  --highlight-foreground: #ffffff;
+  --destructive: #ce1f02;
+  --destructive-foreground: #ffffff;
+  /* Categorical status colors. Each doubles as pill text on its own /10 tint,
+     so these are the AA-safe dark shades (>=4.9:1), not the PLG display hues —
+     the brighter versions measured 3.2-3.7:1 and failed at pill text sizes. */
+  --success: #3d6b1a;
+  --info: #1a6ba8;
+  --warn: #8a5f0a;
+  --category: #b02d63;
+  --border: #edebeb;
+  --input: #edebeb;
   --ring: oklch(0.56 0.23 265);
   --chart-1: oklch(0.56 0.23 265);
-  --chart-2: oklch(0.7 0.21 355);
-  --chart-3: oklch(0.72 0.14 255);
-  --chart-4: oklch(0.55 0.2 350);
-  --chart-5: oklch(0.82 0.08 245);
-  --sidebar: oklch(0.985 0.003 260);
-  --sidebar-foreground: oklch(0.2 0.02 260);
+  --chart-2: #4da9e4;
+  --chart-3: #90c94d;
+  --chart-4: #f4ba41;
+  --chart-5: #ec679b;
+  --sidebar: #f6f5f5;
+  --sidebar-foreground: #260f17;
   --sidebar-primary: oklch(0.56 0.23 265);
-  --sidebar-primary-foreground: oklch(0.99 0.002 260);
-  --sidebar-accent: oklch(0.96 0.004 260);
-  --sidebar-accent-foreground: oklch(0.2 0.02 260);
-  --sidebar-border: oklch(0.92 0.006 260);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f1f0f0;
+  --sidebar-accent-foreground: #260f17;
+  --sidebar-border: #edebeb;
   --sidebar-ring: oklch(0.56 0.23 265);
 }
 
 .dark {
-  --background: oklch(0.16 0.008 260);
-  --foreground: oklch(0.96 0.004 260);
-  --card: oklch(0.21 0.01 260);
-  --card-foreground: oklch(0.96 0.004 260);
-  --popover: oklch(0.21 0.01 260);
-  --popover-foreground: oklch(0.96 0.004 260);
+  /* PLG dashboard dark palette — warm near-black, warm-white text, violet accent */
+  --background: #0c0a0a;
+  --foreground: #f4f1ef;
+  --card: #161213;
+  --card-foreground: #f4f1ef;
+  --popover: #161213;
+  --popover-foreground: #f4f1ef;
   --primary: oklch(0.66 0.22 265);
-  --primary-foreground: oklch(0.16 0.008 260);
-  --secondary: oklch(0.28 0.01 260);
-  --secondary-foreground: oklch(0.96 0.004 260);
-  --muted: oklch(0.28 0.01 260);
-  --muted-foreground: oklch(0.64 0.012 260);
-  --accent: oklch(0.28 0.01 260);
-  --accent-foreground: oklch(0.96 0.004 260);
-  --highlight: oklch(0.75 0.21 355);
-  --highlight-foreground: oklch(0.16 0.008 260);
-  --destructive: oklch(0.66 0.21 28);
-  --destructive-foreground: oklch(0.96 0.004 260);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  --primary-foreground: #0c0a0a;
+  /* One step above --card (#161213), never equal to it: --muted is what marks
+     the highlighted Select option on a --popover surface, so collapsing the two
+     leaves keyboard focus with nothing to show. */
+  --secondary: #221d1e;
+  --secondary-foreground: #f4f1ef;
+  --muted: #221d1e;
+  --muted-foreground: #a8a29e;
+  --accent: #221d1e;
+  --accent-foreground: #f4f1ef;
+  --highlight: oklch(0.66 0.22 265);
+  --highlight-foreground: #0c0a0a;
+  --destructive: oklch(0.62 0.2 28);
+  --destructive-foreground: #f4f1ef;
+  /* Categorical status colors (PLG palette, lifted for contrast on dark bg) */
+  --success: #9fd45f;
+  --info: #6fbef0;
+  --warn: #f0c24a;
+  --category: #f481ad;
+  --border: #2e2929;
+  --input: #2e2929;
   --ring: oklch(0.66 0.22 265);
   --chart-1: oklch(0.66 0.22 265);
-  --chart-2: oklch(0.75 0.21 355);
-  --chart-3: oklch(0.78 0.14 250);
-  --chart-4: oklch(0.6 0.2 350);
-  --chart-5: oklch(0.85 0.08 245);
-  --sidebar: oklch(0.19 0.008 260);
-  --sidebar-foreground: oklch(0.96 0.004 260);
+  --chart-2: #4da9e4;
+  --chart-3: #90c94d;
+  --chart-4: #f4ba41;
+  --chart-5: #ec679b;
+  --sidebar: #0c0a0a;
+  --sidebar-foreground: #f4f1ef;
   --sidebar-primary: oklch(0.66 0.22 265);
-  --sidebar-primary-foreground: oklch(0.16 0.008 260);
-  --sidebar-accent: oklch(0.28 0.01 260);
-  --sidebar-accent-foreground: oklch(0.96 0.004 260);
-  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-primary-foreground: #0c0a0a;
+  --sidebar-accent: #221d1e;
+  --sidebar-accent-foreground: #f4f1ef;
+  --sidebar-border: #2e2929;
   --sidebar-ring: oklch(0.66 0.22 265);
 }
 
@@ -134,6 +197,8 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-weight: 300;
+    -webkit-font-smoothing: antialiased;
     font-synthesis-weight: none;
     text-rendering: optimizeLegibility;
   }

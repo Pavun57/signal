@@ -29,33 +29,33 @@ export type CampaignStatus =
 export const campaignStatusStyles: Record<CampaignStatus, StatusStyle> = {
   discovery: {
     label: "discovery",
-    className: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+    className: "bg-info/15 text-info",
   },
   researching: {
     label: "researching",
-    className: "bg-yellow-500/15 text-yellow-700 dark:text-yellow-400",
+    className: "bg-warn/15 text-warn",
   },
   active: {
     label: "active",
-    className: "bg-green-500/15 text-green-700 dark:text-green-400",
+    className: "bg-success/15 text-success",
   },
   paused: {
     label: "paused",
-    className: "bg-gray-500/15 text-gray-600 dark:text-gray-400",
+    className: "bg-muted text-muted-foreground",
   },
   completed: {
     label: "completed",
-    className: "bg-gray-500/15 text-gray-600 dark:text-gray-400",
+    className: "bg-muted text-muted-foreground",
   },
 };
 
 // Solid bg color used for the small dot indicator in the sidebar nav (no text).
 export const campaignStatusDotStyles: Record<CampaignStatus, string> = {
-  discovery: "bg-blue-500",
-  researching: "bg-yellow-500",
-  active: "bg-green-500",
-  paused: "bg-gray-400",
-  completed: "bg-gray-300",
+  discovery: "bg-info",
+  researching: "bg-warn",
+  active: "bg-success",
+  paused: "bg-muted-foreground/60",
+  completed: "bg-muted-foreground/40",
 };
 
 /**
@@ -73,38 +73,41 @@ export type OutreachStatus =
   | "bounced"
   | "complained";
 
+// Colors track the funnel, not the individual state: pending (muted), in
+// flight (info), engaged (warn -> category), won (success), failed
+// (destructive). Adjacent states share a hue; the label disambiguates.
 export const outreachStatusStyles: Record<OutreachStatus, StatusStyle> = {
   queued: {
     label: "Queued",
-    className: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    className: "bg-muted text-muted-foreground",
   },
   sent: {
     label: "Sent",
-    className: "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
+    className: "bg-info/10 text-info",
   },
   opened: {
     label: "Opened",
-    className: "bg-orange-500/10 text-orange-700 dark:text-orange-400",
+    className: "bg-warn/10 text-warn",
   },
   replied: {
     label: "Replied",
-    className: "bg-green-500/10 text-green-700 dark:text-green-400",
+    className: "bg-success/10 text-success",
   },
   delivered: {
     label: "Delivered",
-    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    className: "bg-info/20 text-info",
   },
   clicked: {
     label: "Clicked",
-    className: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
+    className: "bg-category/10 text-category",
   },
   bounced: {
     label: "Bounced",
-    className: "bg-red-500/10 text-red-700 dark:text-red-400",
+    className: "bg-destructive/10 text-destructive",
   },
   complained: {
     label: "Spam",
-    className: "bg-red-500/10 text-red-700 dark:text-red-400",
+    className: "bg-destructive/10 text-destructive",
   },
 };
 
@@ -121,10 +124,10 @@ export type EnrichmentStatus =
   | "failed";
 
 export const enrichmentStatusStyles: Record<EnrichmentStatus, StatusStyle> = {
-  pending: { label: "Pending", className: "bg-gray-400" },
-  in_progress: { label: "In Progress", className: "bg-yellow-500" },
-  enriched: { label: "Enriched", className: "bg-green-500" },
-  failed: { label: "Failed", className: "bg-red-500" },
+  pending: { label: "Pending", className: "bg-muted-foreground/40" },
+  in_progress: { label: "In Progress", className: "bg-warn" },
+  enriched: { label: "Enriched", className: "bg-success" },
+  failed: { label: "Failed", className: "bg-destructive" },
 };
 
 /**
@@ -134,11 +137,11 @@ export const enrichmentStatusStyles: Record<EnrichmentStatus, StatusStyle> = {
 export const trackingReadinessStyles: Record<ReadinessTag, StatusStyle> = {
   ready_to_contact: {
     label: "Ready",
-    className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    className: "bg-success/10 text-success",
   },
   monitoring: {
     label: "Monitoring",
-    className: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    className: "bg-warn/10 text-warn",
   },
   not_ready: {
     label: "Not Ready",

@@ -202,7 +202,7 @@ export function ContactDetail({
   if (contact.enrichment_status === "failed") {
     return (
       <div className="flex flex-col items-center gap-2 px-4 py-4 text-center">
-        <p className="text-sm text-red-600 dark:text-red-400">
+        <p className="text-sm text-destructive">
           Enrichment failed for this contact.
         </p>
         {onRetry && (

@@ -387,7 +387,7 @@ export default function CampaignDetailPage() {
 
         <div>
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Pipeline</h2>
+            <h2 className="type-header">Pipeline</h2>
             {hasScoringCapable && (
               <Button
                 variant="ghost"
