@@ -1,5 +1,9 @@
 import { getAdminClient } from "@/lib/supabase/admin";
-import { verifyQStashSignature, getBaseUrl } from "@/lib/services/qstash";
+import {
+  verifyQStashSignature,
+  getQStashClient,
+  getBaseUrl,
+} from "@/lib/services/qstash";
 import { withAction } from "@/lib/services/cost-tracker";
 import { executeSignal } from "@/lib/signals/executor";
 import type { Signal } from "@/lib/types/signal";
@@ -262,21 +266,25 @@ export async function POST(request: Request) {
         .eq("campaign_id", config.campaign_id)
         .eq(entityField, entityId);
 
-      const outreachBaseUrl = getBaseUrl();
-      void fetch(`${outreachBaseUrl}/api/outreach/process`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "signal",
-          signalId: config.signal_id,
-          campaignId: config.campaign_id,
-          organizationId: config.organization_id ?? undefined,
-          reason: verdict.reason,
-          confidence: verdict.confidence,
-        }),
-      }).catch(() => {
-        // Fire-and-forget -- don't block tracking response
-      });
+      // Publish via QStash (not a bare fetch) so the request arrives signed —
+      // /api/outreach/process rejects anything without a valid signature.
+      // Fire-and-forget: don't block the tracking response on the dispatch.
+      void getQStashClient()
+        .publishJSON({
+          url: `${getBaseUrl()}/api/outreach/process`,
+          body: {
+            type: "signal",
+            signalId: config.signal_id,
+            campaignId: config.campaign_id,
+            organizationId: config.organization_id ?? undefined,
+            reason: verdict.reason,
+            confidence: verdict.confidence,
+          },
+          retries: 2,
+        })
+        .catch((err) => {
+          console.error("[tracking] Failed to dispatch outreach:", err);
+        });
     }
 
     return Response.json({

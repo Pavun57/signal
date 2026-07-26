@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
+import { verifyQStashSignature } from "@/lib/services/qstash";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { sendApprovedDraft } from "@/lib/services/outreach-sender";
 import {
@@ -49,11 +50,17 @@ interface FollowupPayload {
 type Payload = SignalPayload | FollowupPayload;
 
 export async function POST(request: Request) {
+  // This route is public (QStash can't send Clerk cookies) and sends real
+  // email through the admin client, so the signature check is the only thing
+  // standing between the internet and the user's outbox. All callers must go
+  // through QStash: the signal path publishes from /api/tracking/run, and the
+  // followups schedule must be a QStash schedule, not a bare cron.
   let payload: Payload;
   try {
-    payload = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    payload = await verifyQStashSignature<Payload>(request);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Invalid signature";
+    return NextResponse.json({ error: msg }, { status: 401 });
   }
 
   const supabase = getAdminClient();

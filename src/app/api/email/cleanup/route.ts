@@ -1,12 +1,21 @@
 import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
+import { verifyQStashSignature } from "@/lib/services/qstash";
 
 /**
- * Draft cleanup endpoint. Call via cron or QStash schedule.
+ * Draft cleanup endpoint. Call via a QStash schedule (the route is public,
+ * so the signature check is the only auth).
  * - Deletes discarded drafts older than 7 days
  * - Deletes stale drafts (never sent) older than 30 days
  */
-export async function POST() {
+export async function POST(request: Request) {
+  try {
+    await verifyQStashSignature(request);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Invalid signature";
+    return NextResponse.json({ error: msg }, { status: 401 });
+  }
+
   const supabase = getAdminClient();
 
   const sevenDaysAgo = new Date(
