@@ -1,6 +1,8 @@
 import { auth } from "@clerk/nextjs/server";
 import { createServerClient } from "@supabase/ssr";
 
+import { withTimeout } from "@/lib/utils/timeout";
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
@@ -45,6 +47,14 @@ function warnIfKeyless() {
 
 /** Comfortably longer than the longest route maxDuration (300s). */
 const MINTED_TOKEN_TTL_SECONDS = 600;
+/**
+ * Minting goes over the network to api.clerk.com, and every concurrent query
+ * in the session awaits the same in-flight mint. Without a bound, one stalled
+ * connection (undici waits ~5min for headers) freezes every DB call behind a
+ * single promise. Fail fast instead — the error surfaces as a normal query
+ * failure and the next call starts a fresh mint.
+ */
+const MINT_TIMEOUT_MS = 15_000;
 /** Treat a token expiring within this window as already spent. */
 const REFRESH_SKEW_MS = 30_000;
 
@@ -143,9 +153,11 @@ function createTokenProvider(getToken: GetToken, sessionId: string | null) {
     const pending = inFlightMints.get(sessionId);
     if (pending) return pending;
 
-    const mintPromise = getToken({
-      expiresInSeconds: MINTED_TOKEN_TTL_SECONDS,
-    })
+    const mintPromise = withTimeout(
+      getToken({ expiresInSeconds: MINTED_TOKEN_TTL_SECONDS }),
+      MINT_TIMEOUT_MS,
+      "Clerk session token mint",
+    )
       .then((token) => {
         if (token) cacheToken(sessionId, token);
         return token;

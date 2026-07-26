@@ -203,6 +203,32 @@ describe("createClient token freshness", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("fails fast instead of hanging when the mint call stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const incoming = jwt("incoming", -1_000);
+      // Mint never settles — simulates a stalled connection to api.clerk.com.
+      const getToken = vi.fn((options?: { expiresInSeconds?: number }) =>
+        options?.expiresInSeconds === undefined
+          ? Promise.resolve(incoming)
+          : new Promise<string>(() => {}),
+      );
+      h.auth.mockResolvedValue({ getToken, sessionId: "sess_1" });
+
+      const { createClient } = await import("@/lib/supabase/server");
+      await createClient();
+      const pending = h.fetches[0]("http://db/rest/v1/companies", {});
+      pending.catch(() => {}); // avoid unhandled rejection between timers
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      await expect(pending).rejects.toThrow(/timed out/);
+      // The wrapper never reached the network — it failed on the mint.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back to the plain token when there is no session to mint against", async () => {
     const getToken = stubGetToken(jwt("incoming", -1_000));
     h.auth.mockResolvedValue({ getToken, sessionId: null });

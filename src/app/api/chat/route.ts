@@ -124,7 +124,13 @@ export async function POST(request: Request) {
         messages: modelMessages,
         tools: allTools,
         maxOutputTokens: 8192,
-        stopWhen: stepCountIs(15),
+        // Full-pipeline agent runs (enrich → score → find contacts → draft)
+        // routinely take 20+ steps; at 15 the loop halted silently mid-batch
+        // and the UI just looked stuck. 40 covers the longest observed runs.
+        stopWhen: stepCountIs(40),
+        // Without this, Stop / closing the tab leaves the server running the
+        // whole remaining pipeline (and paying for it) invisibly.
+        abortSignal: request.signal,
         // Cache the system prompt + tool definitions (~30k stable tokens) across
         // turns in a conversation. Follow-up turns read them at ~10% of input cost.
         providerOptions: {
@@ -167,6 +173,10 @@ export async function POST(request: Request) {
       });
       writer.merge(result.toUIMessageStream());
     },
+    // Default masks every failure as "An error occurred" — surface the real
+    // message (rate limit, overloaded, tool crash) so the banner is actionable.
+    onError: (error) =>
+      error instanceof Error ? error.message : "Stream failed",
   });
 
   return createUIMessageStreamResponse({ stream });
