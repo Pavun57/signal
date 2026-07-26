@@ -1,5 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
+import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 import { MODELS } from "@/lib/ai/models";
 import {
@@ -52,6 +53,7 @@ export async function filterRelevantResults(
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
       schema: z.object({
         relevant: z

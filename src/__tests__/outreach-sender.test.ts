@@ -158,7 +158,7 @@ describe("sendApprovedDraft claim semantics", () => {
   });
 
   it("keeps the claim when bookkeeping fails after the email left", async () => {
-    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: null });
+    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: "t1" });
 
     const base = fakeSupabase([
       ...preSendResponses,

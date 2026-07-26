@@ -19,9 +19,16 @@ import {
 import { getPostHogClient } from "@/lib/posthog-server";
 import { buildSystemPrompt } from "@/lib/system-prompt";
 import { allTools } from "@/lib/tools";
+import { saveChat } from "@/lib/services/chat-history";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
-export const maxDuration = 120;
+// Full-pipeline agent runs (enrich → score → find contacts) regularly exceed
+// two minutes; at 120 the platform killed the function mid-stream and the UI
+// looked stuck. Vercel fluid compute allows up to 300s on all current plans.
+export const maxDuration = 300;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── Token budget ───────────────────────────────────────────────────────────
 // Chat context is capped aggressively: once cache_control is applied to the
@@ -81,11 +88,15 @@ export async function POST(request: Request) {
     messages: uiMessages,
     campaignId,
     pageContext,
+    chatId,
   } = body as {
     messages: UIMessage[];
     campaignId?: string;
     pageContext?: string;
+    chatId?: string;
   };
+  const persistChatId =
+    typeof chatId === "string" && UUID_RE.test(chatId) ? chatId : null;
   const modelMessages = trimMessages(await convertToModelMessages(uiMessages));
 
   // Mark the last message with ephemeral cache_control so everything before
@@ -117,6 +128,21 @@ export async function POST(request: Request) {
   });
 
   const stream = createUIMessageStream({
+    // originalMessages + onFinish give us the full final message list so the
+    // conversation is persisted server-side — the client-side save in
+    // agent-panel never runs when the tab dies or navigates mid-stream.
+    originalMessages: uiMessages,
+    onFinish: persistChatId
+      ? async ({ messages }) => {
+          await saveChat(
+            ctx.supabase,
+            user.id,
+            persistChatId,
+            messages,
+            campaignId,
+          );
+        }
+      : undefined,
     execute: ({ writer }) => {
       const result = streamText({
         model: anthropic(MODELS.CHAT),

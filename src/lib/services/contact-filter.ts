@@ -1,5 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
+import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 import { MODELS } from "@/lib/ai/models";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
@@ -160,6 +161,7 @@ export async function findPeopleOnDomain(
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
       schema: z.object({
         people: z.array(
@@ -290,6 +292,7 @@ export async function filterContactsByCompany(
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
       schema: z.object({
         verified: z.array(
