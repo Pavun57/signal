@@ -1,4 +1,5 @@
-import { getAdminClient } from "@/lib/supabase/admin";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import { sendMessage } from "@/lib/services/agentmail-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
 
@@ -10,9 +11,128 @@ export interface EnrollmentForSend {
   current_step: number;
 }
 
+/** The columns the send core needs from an email_drafts row. */
+export interface DraftForSend {
+  id: string;
+  user_id: string;
+  campaign_id: string | null;
+  person_id: string | null;
+  campaign_people_id: string | null;
+  to_email: string;
+  subject: string;
+  body_html: string;
+  body_text: string | null;
+}
+
 export type SendResult =
   | { ok: true; messageId: string; draftId: string }
   | { ok: false; reason: string };
+
+/**
+ * The one path an email leaves through. Claims the draft atomically, sends,
+ * and does the bookkeeping. Every sender — the followups cron, send-now, and
+ * the agent's sendEmail/sendBulkEmails tools — must go through here so that
+ * overlapping callers can't double-email a prospect.
+ *
+ * Accepts any Supabase client: the admin client from QStash handlers, or the
+ * RLS-scoped client from agent tools (RLS restricts it to the caller's rows,
+ * which is exactly right there).
+ */
+export async function claimAndSendDraft(
+  supabase: SupabaseClient,
+  draft: DraftForSend,
+  inboxId: string,
+  trackMetadata?: Record<string, unknown>,
+): Promise<SendResult> {
+  const now = new Date().toISOString();
+
+  // Atomically claim the draft before sending. Overlapping callers — the
+  // followups cron racing a send-now click, agent retries, or two process
+  // invocations — all pass their reads; only the one whose conditional
+  // update lands gets to send.
+  const { data: claimed } = await supabase
+    .from("email_drafts")
+    .update({ status: "queued", updated_at: now })
+    .eq("id", draft.id)
+    .eq("status", "draft")
+    .select("id")
+    .maybeSingle();
+
+  if (!claimed) {
+    return { ok: false, reason: "Draft already claimed by another send" };
+  }
+
+  // Only a failure of the send itself releases the claim. Once the email has
+  // left, bookkeeping errors below must NOT flip the draft back to "draft" —
+  // a retry would email the prospect twice. Worst case there is a draft
+  // stuck in "queued" with the message already delivered (the cleanup cron
+  // reconciles those).
+  let result: Awaited<ReturnType<typeof sendMessage>>;
+  try {
+    result = await sendMessage(inboxId, {
+      to: draft.to_email,
+      subject: draft.subject,
+      html: draft.body_html,
+      text: draft.body_text ?? undefined,
+    });
+  } catch (err) {
+    // Release the claim so the draft is retryable instead of stuck in
+    // "queued" forever.
+    await supabase
+      .from("email_drafts")
+      .update({ status: "draft", updated_at: new Date().toISOString() })
+      .eq("id", draft.id)
+      .eq("status", "queued");
+
+    const reason = err instanceof Error ? err.message : "Send failed";
+    return { ok: false, reason };
+  }
+
+  const messageId = result.messageId ?? crypto.randomUUID();
+  const threadId = result.threadId ?? null;
+
+  await supabase.from("sent_emails").insert({
+    agentmail_message_id: messageId,
+    agentmail_thread_id: threadId,
+    draft_id: draft.id,
+    campaign_people_id: draft.campaign_people_id,
+    campaign_id: draft.campaign_id,
+    person_id: draft.person_id,
+    user_id: draft.user_id,
+    to_email: draft.to_email,
+    from_email: inboxId,
+    subject: draft.subject,
+    status: "sent",
+    sent_at: now,
+  });
+
+  await supabase
+    .from("email_drafts")
+    .update({ status: "sent", sent_at: now, updated_at: now })
+    .eq("id", draft.id);
+
+  if (draft.campaign_people_id) {
+    await supabase
+      .from("campaign_people")
+      .update({ outreach_status: "sent" })
+      .eq("id", draft.campaign_people_id);
+  }
+
+  trackUsage({
+    service: "agentmail",
+    operation: "send-email",
+    estimated_cost_usd: 0.0004,
+    campaign_id: draft.campaign_id ?? undefined,
+    user_id: draft.user_id,
+    metadata: {
+      draftId: draft.id,
+      to: draft.to_email,
+      ...trackMetadata,
+    },
+  });
+
+  return { ok: true, messageId, draftId: draft.id };
+}
 
 /**
  * Sends the next pending approved draft for an enrollment.
@@ -20,13 +140,13 @@ export type SendResult =
  * Expects the enrollment's step to have a draft with
  * `review_status = "approved"` and `status = "draft"`.
  *
- * On success: marks draft sent, records sent_emails row, updates
- * campaign_people.outreach_status, advances the enrollment to the next
- * step (or marks it completed). Ignores enrollment.next_send_at — callers
- * that need to respect delays must check before calling.
+ * On success: sends via claimAndSendDraft (claim, sent_emails row,
+ * outreach_status), then advances the enrollment to the next step (or marks
+ * it completed). Ignores enrollment.next_send_at — callers that need to
+ * respect delays must check before calling.
  */
 export async function sendApprovedDraft(
-  supabase: ReturnType<typeof getAdminClient>,
+  supabase: SupabaseClient,
   enrollment: EnrollmentForSend,
 ): Promise<SendResult> {
   const now = new Date().toISOString();
@@ -63,74 +183,19 @@ export async function sendApprovedDraft(
     return { ok: false, reason: "No AgentMail inbox configured" };
   }
 
-  // Atomically claim the draft before sending. Overlapping callers — the
-  // followups cron racing a send-now click, or two process invocations — all
-  // pass the read above; only the one whose conditional update lands gets to
-  // send, so the prospect can't receive the same email twice.
-  const { data: claimed } = await supabase
-    .from("email_drafts")
-    .update({ status: "queued", updated_at: now })
-    .eq("id", draft.id)
-    .eq("status", "draft")
-    .select("id")
-    .maybeSingle();
+  const sent = await claimAndSendDraft(
+    supabase,
+    {
+      ...(draft as DraftForSend),
+      // The enrollment is the authority on who this send is for.
+      campaign_people_id: enrollment.campaign_people_id,
+      person_id: enrollment.person_id,
+    },
+    settings.agentmail_inbox_id,
+    { sequenceId: enrollment.sequence_id },
+  );
 
-  if (!claimed) {
-    return { ok: false, reason: "Draft already claimed by another send" };
-  }
-
-  // Only a failure of the send itself releases the claim. Once the email has
-  // left, bookkeeping errors below must NOT flip the draft back to "draft" —
-  // a retry would email the prospect twice. Worst case there is a draft
-  // stuck in "queued" with the message already delivered.
-  let result: Awaited<ReturnType<typeof sendMessage>>;
-  try {
-    result = await sendMessage(settings.agentmail_inbox_id, {
-      to: draft.to_email,
-      subject: draft.subject,
-      html: draft.body_html,
-      text: draft.body_text ?? undefined,
-    });
-  } catch (err) {
-    // Release the claim so the draft is retryable instead of stuck in
-    // "queued" forever.
-    await supabase
-      .from("email_drafts")
-      .update({ status: "draft", updated_at: new Date().toISOString() })
-      .eq("id", draft.id)
-      .eq("status", "queued");
-
-    const reason = err instanceof Error ? err.message : "Send failed";
-    return { ok: false, reason };
-  }
-
-  const messageId = result.messageId ?? crypto.randomUUID();
-  const threadId = result.threadId ?? null;
-
-  await supabase.from("sent_emails").insert({
-    agentmail_message_id: messageId,
-    agentmail_thread_id: threadId,
-    draft_id: draft.id,
-    campaign_people_id: enrollment.campaign_people_id,
-    campaign_id: draft.campaign_id,
-    person_id: enrollment.person_id,
-    user_id: draft.user_id,
-    to_email: draft.to_email,
-    from_email: settings.agentmail_inbox_id,
-    subject: draft.subject,
-    status: "sent",
-    sent_at: now,
-  });
-
-  await supabase
-    .from("email_drafts")
-    .update({ status: "sent", sent_at: now, updated_at: now })
-    .eq("id", draft.id);
-
-  await supabase
-    .from("campaign_people")
-    .update({ outreach_status: "sent" })
-    .eq("id", enrollment.campaign_people_id);
+  if (!sent.ok) return sent;
 
   const nextStep = enrollment.current_step + 1;
   const { data: nextStepRow } = await supabase
@@ -163,18 +228,5 @@ export async function sendApprovedDraft(
       .eq("id", enrollment.id);
   }
 
-  trackUsage({
-    service: "agentmail",
-    operation: "send-email",
-    estimated_cost_usd: 0.0004,
-    campaign_id: draft.campaign_id,
-    user_id: draft.user_id,
-    metadata: {
-      draftId: draft.id,
-      to: draft.to_email,
-      sequenceId: enrollment.sequence_id,
-    },
-  });
-
-  return { ok: true, messageId, draftId: draft.id };
+  return sent;
 }

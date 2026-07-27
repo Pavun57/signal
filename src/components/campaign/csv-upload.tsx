@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { apiFetch } from "@/lib/api-fetch";
+import { MAX_ROWS_PER_REQUEST } from "@/lib/import-limits";
 
 interface ParsedCompany {
   name: string;
@@ -226,21 +227,36 @@ export function CsvUpload({ campaignId, onImported }: CsvUploadProps) {
   const handleImport = async () => {
     setImporting(true);
     setError(null);
+    // The API caps rows per request; send big files as sequential batches
+    // and keep whatever earlier batches already imported if a later one dies.
+    let imported = 0;
+    let skipped = 0;
     try {
-      const res = await apiFetch("/api/import-csv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId, companies }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Import failed");
-        return;
+      for (let i = 0; i < companies.length; i += MAX_ROWS_PER_REQUEST) {
+        const batch = companies.slice(i, i + MAX_ROWS_PER_REQUEST);
+        const res = await apiFetch("/api/import-csv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ campaignId, companies: batch }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(
+            imported + skipped > 0
+              ? `Imported ${imported} (${skipped} skipped) before batch ${Math.floor(i / MAX_ROWS_PER_REQUEST) + 1} failed: ${data.error || "Import failed"}`
+              : data.error || "Import failed",
+          );
+          if (imported > 0) onImported();
+          return;
+        }
+        imported += data.imported ?? 0;
+        skipped += (data.skipped ?? 0) + (data.failed ?? 0);
       }
-      setResult({ imported: data.imported, skipped: data.skipped });
+      setResult({ imported, skipped });
       onImported();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
+      if (imported > 0) onImported();
     } finally {
       setImporting(false);
     }

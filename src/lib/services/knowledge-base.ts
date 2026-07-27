@@ -86,12 +86,13 @@ export async function findOrCreateOrganization(data: {
     }
   }
 
-  // Fallback: match by name if no domain
+  // Fallback: match by name if no domain. Escape ilike wildcards so a name
+  // like "100% Design" matches literally instead of as a pattern.
   if (!normalizedDomain) {
     const { data: existing } = await supabase
       .from("organizations")
       .select("*")
-      .ilike("name", data.name)
+      .ilike("name", data.name.replace(/[%_\\]/g, "\\$&"))
       .maybeSingle();
 
     if (existing) return existing as Organization;

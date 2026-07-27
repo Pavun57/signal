@@ -3,6 +3,13 @@ import { chromium } from "playwright-core";
 import Browserbase from "@browserbasehq/sdk";
 import { PRICING, trackUsage } from "@/lib/services/cost-tracker";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { withTimeout } from "@/lib/utils/timeout";
+
+/** Waiting longer than this means we're queued behind the plan's session cap. */
+const SESSION_CREATE_TIMEOUT_MS = 45_000;
+const CDP_CONNECT_TIMEOUT_MS = 30_000;
+/** Cleanup must never be what hangs a request. */
+const CLEANUP_TIMEOUT_MS = 15_000;
 
 export interface WebExtractionResult {
   success: boolean;
@@ -497,9 +504,16 @@ export class WebExtractionService {
     },
   ) {
     const bb = new Browserbase({ apiKey });
-    const session = await bb.sessions.create({
-      projectId: process.env.BROWSERBASE_PROJECT_ID!,
-    });
+    const projectId = process.env.BROWSERBASE_PROJECT_ID!;
+
+    // Browserbase queues sessions.create when the plan's concurrent-session
+    // limit is reached, with no error and no deadline — an unbounded await
+    // here is how enrichment used to hang for many minutes doing nothing.
+    const session = await withTimeout(
+      bb.sessions.create({ projectId }),
+      SESSION_CREATE_TIMEOUT_MS,
+      "Browserbase sessions.create",
+    );
 
     console.log(`[WebExtract] Browser session created: ${session.id}`);
 
@@ -513,9 +527,16 @@ export class WebExtractionService {
     }
 
     const sessionStart = Date.now();
-    const browser = await chromium.connectOverCDP(session.connectUrl);
+    let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | null =
+      null;
 
     try {
+      browser = await withTimeout(
+        chromium.connectOverCDP(session.connectUrl),
+        CDP_CONNECT_TIMEOUT_MS,
+        "Browserbase CDP connect",
+      );
+
       const context = browser.contexts()[0];
       const page = context.pages()[0];
 
@@ -529,7 +550,28 @@ export class WebExtractionService {
       const durationSec = (Date.now() - sessionStart) / 1000;
       return { parsed, durationSec, sessionId: session.id };
     } finally {
-      await browser.close();
+      // Always hand the concurrency slot back. Nothing released sessions
+      // before, so every run leaked one until the account's limit was full
+      // and all later creates queued forever — the stall got worse the
+      // longer the app ran. Closing the browser alone is not enough; the
+      // session must be explicitly released.
+      if (browser) {
+        await withTimeout(
+          browser.close(),
+          CLEANUP_TIMEOUT_MS,
+          "Browserbase browser.close",
+        ).catch((err) => console.warn(`[WebExtract] browser.close: ${err}`));
+      }
+      await withTimeout(
+        bb.sessions.update(session.id, {
+          projectId,
+          status: "REQUEST_RELEASE",
+        }),
+        CLEANUP_TIMEOUT_MS,
+        "Browserbase session release",
+      ).catch((err) =>
+        console.warn(`[WebExtract] session release failed: ${err}`),
+      );
     }
   }
 }
