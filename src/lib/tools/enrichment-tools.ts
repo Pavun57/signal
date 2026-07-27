@@ -23,6 +23,10 @@ import {
 } from "@/lib/services/contact-filter";
 import { recordVerifiedEmail } from "@/lib/services/email-pattern";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
+import { withTimeout } from "@/lib/utils/timeout";
+
+/** Ceiling for one company's full enrichment chain. */
+const PER_COMPANY_TIMEOUT_MS = 150_000;
 
 export const searchPeople = tool({
   description:
@@ -1185,8 +1189,19 @@ export const enrichCompanies = tool({
     const CHUNK_SIZE = 3;
     for (let i = 0; i < input.companyIds.length; i += CHUNK_SIZE) {
       const chunk = input.companyIds.slice(i, i + CHUNK_SIZE);
+      // Bound each company. Every downstream call has its own timeout, but
+      // one company chains enough of them (fetch → Browserbase fetch →
+      // browser session → several Exa searches → summarization) that a slow
+      // site could still hold the whole batch — and the batch holds the
+      // agent's turn, which just looks frozen.
       const results = await Promise.allSettled(
-        chunk.map((id) => enrichCompanyById(id, input.campaignId)),
+        chunk.map((id) =>
+          withTimeout(
+            enrichCompanyById(id, input.campaignId),
+            PER_COMPANY_TIMEOUT_MS,
+            `Enrich company ${id}`,
+          ),
+        ),
       );
 
       results.forEach((result, j) => {

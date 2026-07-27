@@ -85,7 +85,11 @@ async function scrapeDirectoryListing(filters: YCFilters): Promise<{
     "bb.sessions.create (yc-scraper-listing)",
   );
   const sessionStart = Date.now();
-  const browser = await chromium.connectOverCDP(session.connectUrl);
+  const browser = await withTimeout(
+    chromium.connectOverCDP(session.connectUrl),
+    30_000,
+    "CDP connect",
+  );
 
   try {
     const context = browser.contexts()[0];
@@ -222,7 +226,7 @@ async function scrapeDirectoryListing(filters: YCFilters): Promise<{
     const sessionDurationSec = (Date.now() - sessionStart) / 1000;
     return { cards, directoryUrl, sessionDurationSec };
   } finally {
-    await browser.close();
+    await releaseSession(bb, projectId, session.id, browser);
   }
 }
 
@@ -243,7 +247,11 @@ async function scrapeCompanyDetails(
     "bb.sessions.create (yc-scraper-details)",
   );
   const sessionStart = Date.now();
-  const browser = await chromium.connectOverCDP(session.connectUrl);
+  const browser = await withTimeout(
+    chromium.connectOverCDP(session.connectUrl),
+    30_000,
+    "CDP connect",
+  );
 
   const details: YCCompanyDetail[] = [];
 
@@ -408,7 +416,7 @@ async function scrapeCompanyDetails(
     const sessionDurationSec = (Date.now() - sessionStart) / 1000;
     return { details, sessionDurationSec };
   } finally {
-    await browser.close();
+    await releaseSession(bb, projectId, session.id, browser);
   }
 }
 
@@ -479,4 +487,28 @@ function getBrowserbase() {
   }
 
   return { bb: new Browserbase({ apiKey }), projectId };
+}
+
+/**
+ * Close the browser and hand the Browserbase concurrency slot back. Closing
+ * the browser alone leaves the session occupying a slot until Browserbase's
+ * own inactivity timeout, so a few runs could exhaust the plan's limit and
+ * make every later sessions.create queue with no error.
+ */
+async function releaseSession(
+  bb: Browserbase,
+  projectId: string,
+  sessionId: string,
+  browser: { close: () => Promise<void> } | null,
+): Promise<void> {
+  if (browser) {
+    await withTimeout(browser.close(), 15_000, "browser.close").catch((err) =>
+      console.warn(`[yc-scraper] browser.close failed: ${err}`),
+    );
+  }
+  await withTimeout(
+    bb.sessions.update(sessionId, { projectId, status: "REQUEST_RELEASE" }),
+    15_000,
+    "session release",
+  ).catch((err) => console.warn(`[yc-scraper] session release failed: ${err}`));
 }
