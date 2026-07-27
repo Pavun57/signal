@@ -1,10 +1,15 @@
 import { getPostHogClient } from "@/lib/posthog-server";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { MAX_ROWS_PER_REQUEST } from "@/lib/import-limits";
 import {
   findOrCreateOrganization,
   linkOrganizationToCampaign,
   normalizeDomain,
 } from "@/lib/services/knowledge-base";
+
+export const maxDuration = 60;
+
+const CHUNK_SIZE = 10;
 
 export async function POST(request: Request) {
   const ctx = await getSupabaseAndUser();
@@ -41,6 +46,14 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+  if (companies.length > MAX_ROWS_PER_REQUEST) {
+    return Response.json(
+      {
+        error: `Too many rows (${companies.length}). Send at most ${MAX_ROWS_PER_REQUEST} per request and batch the rest.`,
+      },
+      { status: 413 },
+    );
+  }
 
   // Verify campaign exists and belongs to the signed-in user (defense in
   // depth on top of RLS).
@@ -73,9 +86,18 @@ export async function POST(request: Request) {
       .filter(Boolean) as string[],
   );
 
+  // Pass 1 (sequential, cheap): normalize + dedup into a candidate list.
   const seenDomains = new Set<string>();
-  let imported = 0;
+  const seenNames = new Set<string>();
   let skipped = 0;
+  const candidates: Array<{
+    name: string;
+    domain: string | null;
+    url: string | null;
+    industry: string | null;
+    location: string | null;
+    description: string | null;
+  }> = [];
 
   for (const company of companies) {
     if (!company.name?.trim()) {
@@ -110,18 +132,50 @@ export async function POST(request: Request) {
     }
     if (domain) seenDomains.add(domain);
 
-    const org = await findOrCreateOrganization({
+    // Domain-less rows dedup by normalized name — findOrCreateOrganization's
+    // name matching can't be trusted to serialize two identical rows racing
+    // in the same parallel chunk.
+    if (!domain) {
+      const nameKey = company.name.trim().toLowerCase();
+      if (seenNames.has(nameKey)) {
+        skipped++;
+        continue;
+      }
+      seenNames.add(nameKey);
+    }
+
+    candidates.push({
       name: company.name.trim(),
       domain,
       url: company.url?.trim() || (domain ? `https://${domain}` : null),
       industry: company.industry?.trim() || null,
       location: company.location?.trim() || null,
       description: company.description?.trim() || null,
-      source: "csv",
     });
+  }
 
-    await linkOrganizationToCampaign(org.id, campaignId);
-    imported++;
+  // Pass 2 (parallel chunks): create/link. Org creation recovers from 23505
+  // races and the campaign link is an upsert, so chunk-internal parallelism
+  // is safe. Sequential rows previously blew past the route duration on
+  // large files.
+  let imported = 0;
+  let failed = 0;
+
+  for (let i = 0; i < candidates.length; i += CHUNK_SIZE) {
+    const chunk = candidates.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.allSettled(
+      chunk.map(async (c) => {
+        const org = await findOrCreateOrganization({ ...c, source: "csv" });
+        await linkOrganizationToCampaign(org.id, campaignId);
+      }),
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") imported++;
+      else {
+        failed++;
+        console.error("[import-csv] row failed:", r.reason);
+      }
+    }
   }
 
   const posthog = getPostHogClient();
@@ -132,9 +186,10 @@ export async function POST(request: Request) {
       campaign_id: campaignId,
       imported,
       skipped,
+      failed,
       total: companies.length,
     },
   });
 
-  return Response.json({ imported, skipped });
+  return Response.json({ imported, skipped, failed });
 }

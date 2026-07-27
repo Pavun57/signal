@@ -2,8 +2,11 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createClient, getSupabaseAndUser } from "@/lib/supabase/server";
 import { ExaService } from "@/lib/services/exa-service";
-import { sendMessage } from "@/lib/services/agentmail-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
+import {
+  claimAndSendDraft,
+  type DraftForSend,
+} from "@/lib/services/outreach-sender";
 import { saveDraft } from "@/lib/email-composition/save";
 import {
   applyPattern,
@@ -380,7 +383,7 @@ export const writeEmail = tool({
 
 export const sendEmail = tool({
   description:
-    "Send a previously written email draft via AgentMail. Only call this after the user has reviewed and confirmed the draft.",
+    "Send a previously written email draft via AgentMail. Only approved drafts can be sent: ad-hoc drafts from writeEmail are approved at creation, but sequence drafts must be approved by the user in the outreach review queue first. Rejected drafts can never be sent.",
   inputSchema: z.object({
     draftId: z.string().uuid().describe("Draft ID to send."),
   }),
@@ -403,6 +406,23 @@ export const sendEmail = tool({
       };
     }
 
+    // Hard gate, not advisory: the review decision lives in the DB, and this
+    // tool's inputs can be influenced by scraped web content. The tool
+    // description alone must never be what stands between a rejected draft
+    // and a prospect's inbox.
+    if (draft.review_status === "rejected") {
+      return {
+        error:
+          "This draft was rejected in review and cannot be sent. Write a new draft if the user wants to contact this person.",
+      };
+    }
+    if (draft.review_status !== "approved") {
+      return {
+        error:
+          "This draft is awaiting review. The user must approve it in the outreach review queue before it can be sent.",
+      };
+    }
+
     const { data: settings } = await supabase
       .from("user_settings")
       .select("agentmail_inbox_id, from_name, reply_to_email")
@@ -415,62 +435,18 @@ export const sendEmail = tool({
       };
     }
 
-    let messageId: string;
-    let threadId: string | null = null;
-    try {
-      const result = await sendMessage(settings.agentmail_inbox_id, {
-        to: draft.to_email,
-        subject: draft.subject,
-        html: draft.body_html,
-        text: draft.body_text ?? undefined,
-      });
-      messageId = result.messageId ?? crypto.randomUUID();
-      threadId = result.threadId ?? null;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      return { error: `Failed to send email: ${msg}` };
+    const result = await claimAndSendDraft(
+      supabase,
+      draft as DraftForSend,
+      settings.agentmail_inbox_id,
+    );
+
+    if (!result.ok) {
+      return { error: `Failed to send email: ${result.reason}` };
     }
 
-    const now = new Date().toISOString();
-
-    await supabase.from("sent_emails").insert({
-      agentmail_message_id: messageId,
-      agentmail_thread_id: threadId,
-      draft_id: draftId,
-      campaign_people_id: draft.campaign_people_id,
-      campaign_id: draft.campaign_id,
-      person_id: draft.person_id,
-      user_id: draft.user_id,
-      to_email: draft.to_email,
-      from_email: settings.agentmail_inbox_id,
-      subject: draft.subject,
-      status: "sent",
-      sent_at: now,
-    });
-
-    await supabase
-      .from("email_drafts")
-      .update({ status: "sent", sent_at: now, updated_at: now })
-      .eq("id", draftId);
-
-    await supabase
-      .from("campaign_people")
-      .update({ outreach_status: "sent" })
-      .eq("id", draft.campaign_people_id);
-
-    trackUsage({
-      service: "agentmail",
-      operation: "send-email",
-      estimated_cost_usd: 0.0004,
-      campaign_id: draft.campaign_id,
-      metadata: {
-        draftId,
-        to: draft.to_email,
-      },
-    });
-
     return {
-      emailId: messageId,
+      emailId: result.messageId,
       to: draft.to_email,
       subject: draft.subject,
       status: "sent",
@@ -539,34 +515,58 @@ export const discardDraft = tool({
 
 export const sendBulkEmails = tool({
   description:
-    "Send multiple email drafts at once. If no draftIds provided, sends all unsent drafts for the campaign. Only call after user confirms sending all drafts.",
+    "Send multiple email drafts at once. Only APPROVED drafts are sent — sequence drafts awaiting review or rejected in the review queue are excluded and reported back. If no draftIds provided, sends all approved unsent drafts for the campaign. Only call after user confirms sending.",
   inputSchema: z.object({
     campaignId: z.string().uuid().describe("Campaign ID."),
     draftIds: z
       .array(z.string().uuid())
       .optional()
       .describe(
-        "Specific draft IDs to send. If omitted, sends all drafts for the campaign.",
+        "Specific draft IDs to send. If omitted, sends all approved drafts for the campaign.",
       ),
   }),
   execute: async ({ campaignId, draftIds }) => {
     const supabase = await createClient();
 
-    let query = supabase
+    // Count everything in scope first so unapproved drafts are reported,
+    // never silently dropped.
+    let scopeQuery = supabase
       .from("email_drafts")
-      .select("*")
+      .select("id, review_status")
       .eq("campaign_id", campaignId)
       .eq("status", "draft");
-
     if (draftIds && draftIds.length > 0) {
-      query = query.in("id", draftIds);
+      scopeQuery = scopeQuery.in("id", draftIds);
     }
-
-    const { data: drafts, error } = await query;
-    if (error) return { error: error.message };
-    if (!drafts || drafts.length === 0) {
+    const { data: inScope, error: scopeError } = await scopeQuery;
+    if (scopeError) return { error: scopeError.message };
+    if (!inScope || inScope.length === 0) {
       return { error: "No drafts found to send." };
     }
+
+    const awaitingReview = inScope.filter(
+      (d) => d.review_status !== "approved" && d.review_status !== "rejected",
+    ).length;
+    const rejected = inScope.filter(
+      (d) => d.review_status === "rejected",
+    ).length;
+    const approvedIds = inScope
+      .filter((d) => d.review_status === "approved")
+      .map((d) => d.id);
+
+    if (approvedIds.length === 0) {
+      return {
+        error: `None of the ${inScope.length} drafts are approved (${awaitingReview} awaiting review, ${rejected} rejected). The user must approve them in the outreach review queue first.`,
+      };
+    }
+
+    const { data: drafts, error } = await supabase
+      .from("email_drafts")
+      .select("*")
+      .in("id", approvedIds)
+      .eq("review_status", "approved")
+      .eq("status", "draft");
+    if (error) return { error: error.message };
 
     const { data: settings } = await supabase
       .from("user_settings")
@@ -582,68 +582,48 @@ export const sendBulkEmails = tool({
     const results: Array<{ draftId: string; status: string; error?: string }> =
       [];
 
-    for (const draft of drafts) {
-      try {
-        const result = await sendMessage(settings.agentmail_inbox_id, {
-          to: draft.to_email,
-          subject: draft.subject,
-          html: draft.body_html,
-          text: draft.body_text ?? undefined,
-        });
-
-        const messageId = result.messageId ?? crypto.randomUUID();
-        const threadId = result.threadId ?? null;
-        const now = new Date().toISOString();
-
-        await supabase.from("sent_emails").insert({
-          agentmail_message_id: messageId,
-          agentmail_thread_id: threadId,
-          draft_id: draft.id,
-          campaign_people_id: draft.campaign_people_id,
-          campaign_id: draft.campaign_id,
-          person_id: draft.person_id,
-          user_id: draft.user_id,
-          to_email: draft.to_email,
-          from_email: settings.agentmail_inbox_id,
-          subject: draft.subject,
-          status: "sent",
-          sent_at: now,
-        });
-
-        await supabase
-          .from("email_drafts")
-          .update({ status: "sent", sent_at: now, updated_at: now })
-          .eq("id", draft.id);
-
-        await supabase
-          .from("campaign_people")
-          .update({ outreach_status: "sent" })
-          .eq("id", draft.campaign_people_id);
-
-        trackUsage({
-          service: "agentmail",
-          operation: "send-email",
-          estimated_cost_usd: 0.0004,
-          campaign_id: campaignId,
-          metadata: { draftId: draft.id, to: draft.to_email },
-        });
-
+    // Sequential on purpose: polite to AgentMail, and each send claims its
+    // draft atomically so a concurrent cron can't double-send any of them.
+    for (const draft of drafts ?? []) {
+      const result = await claimAndSendDraft(
+        supabase,
+        draft as DraftForSend,
+        settings.agentmail_inbox_id,
+      );
+      if (result.ok) {
         results.push({ draftId: draft.id, status: "sent" });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unknown error";
-        results.push({ draftId: draft.id, status: "failed", error: msg });
+      } else if (result.reason.includes("claimed")) {
+        results.push({
+          draftId: draft.id,
+          status: "skipped",
+          error: result.reason,
+        });
+      } else {
+        results.push({
+          draftId: draft.id,
+          status: "failed",
+          error: result.reason,
+        });
       }
     }
 
     const sent = results.filter((r) => r.status === "sent").length;
     const failed = results.filter((r) => r.status === "failed").length;
+    const skippedHeld = awaitingReview + rejected;
 
     return {
       sent,
       failed,
-      total: drafts.length,
+      awaitingReview,
+      rejected,
+      total: inScope.length,
       results,
-      summary: `Sent ${sent} of ${drafts.length} emails.${failed > 0 ? ` ${failed} failed.` : ""}`,
+      summary:
+        `Sent ${sent} of ${approvedIds.length} approved drafts.` +
+        (failed > 0 ? ` ${failed} failed.` : "") +
+        (skippedHeld > 0
+          ? ` ${awaitingReview} held for review and ${rejected} rejected — not sent.`
+          : ""),
     };
   },
 });
