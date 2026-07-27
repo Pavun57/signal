@@ -108,10 +108,13 @@ function ChatView({
     };
   }, [chatId]);
 
-  // Auto-send the initial query passed via ?q= search param
-  const requestOptions = activeCampaignId
-    ? { body: { campaignId: activeCampaignId } }
-    : undefined;
+  // chatId lets the server persist the conversation even when the tab dies
+  // mid-stream and the client-side onFinish save never runs.
+  const requestOptions = {
+    body: activeCampaignId
+      ? { chatId, campaignId: activeCampaignId }
+      : { chatId },
+  };
 
   useEffect(() => {
     if (autoSendText && !didAutoSend.current) {

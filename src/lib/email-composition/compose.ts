@@ -1,4 +1,5 @@
 import { generateObject } from "ai";
+import { llmTimeout } from "@/lib/utils/timeout";
 import { anthropic } from "@ai-sdk/anthropic";
 import {
   ComposedEmailSchema,
@@ -37,6 +38,7 @@ export async function composeEmail(
   try {
     const { skills, ...userPromptInput } = input;
     const { object } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: ComposedEmailSchema,
       system: buildEmailSystemPrompt(skills ?? []),

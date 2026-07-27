@@ -1,5 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
+import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 
 import { MODELS } from "@/lib/ai/models";
@@ -42,6 +43,7 @@ export async function summarizeWebsite(input: {
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODEL_ID),
       schema: z.object({
         summary: z
@@ -140,6 +142,7 @@ export async function summarizePerson(
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODEL_ID),
       schema: z.object({
         summary: z
@@ -194,6 +197,7 @@ export async function summarizeSearchResults<T extends SearchResultLike>(
 
   try {
     const { object, usage } = await generateObject({
+      abortSignal: llmTimeout(),
       model: anthropic(MODEL_ID),
       schema: z.object({
         summaries: z.array(

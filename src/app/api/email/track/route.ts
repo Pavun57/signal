@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { getMessage } from "@/lib/services/agentmail-service";
 import { getPostHogClient } from "@/lib/posthog-server";
+import { verifyQStashSignature } from "@/lib/services/qstash";
 
 const STATUS_EVENT: Record<string, string> = {
   delivered: "email_delivered",
@@ -13,7 +14,10 @@ const STATUS_EVENT: Record<string, string> = {
 };
 
 /**
- * Delivery tracking endpoint. Call via cron or QStash schedule.
+ * Delivery tracking endpoint. Call via a QStash schedule (the route is
+ * public, so the signature check is the only auth — each run makes one
+ * AgentMail API call per pending email, which an open endpoint would let
+ * anyone burn through).
  * Polls AgentMail for delivery status of recently sent emails
  * and updates outreach_status accordingly.
  */
@@ -31,7 +35,14 @@ const STATUS_PRIORITY: Record<string, number> = {
   complained: 6,
 };
 
-export async function POST() {
+export async function POST(request: Request) {
+  try {
+    await verifyQStashSignature(request);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Invalid signature";
+    return NextResponse.json({ error: msg }, { status: 401 });
+  }
+
   const supabase = getAdminClient();
 
   // Load recent sent emails that haven't reached a terminal state

@@ -177,10 +177,12 @@ function AgentPanelInner({
 
   const buildRequestOptions = useCallback(() => {
     const pageContext = pageContextFromPath(pathname ?? "", campaignId);
-    const body: Record<string, unknown> = { pageContext };
+    // chatId lets the server persist the conversation even when the tab dies
+    // mid-stream and the client-side onFinish save never runs.
+    const body: Record<string, unknown> = { pageContext, chatId };
     if (campaignId) body.campaignId = campaignId;
     return { body };
-  }, [campaignId, pathname]);
+  }, [campaignId, chatId, pathname]);
 
   // Auto-send any prompt that was queued via openAgentWith()
   useEffect(() => {
