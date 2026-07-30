@@ -43,7 +43,6 @@
     "@supabase/supabase-js": "^2.99.2",
     "@upstash/qstash": "^2.10.1",
     "@x402/fetch": "^2.10.0",
-    "agentmail": "^0.4.19",
     "ai": "^6.0.116",
     "cheerio": "^1.2.0",
     "class-variance-authority": "^0.7.1",

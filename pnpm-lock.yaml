@@ -41,9 +41,6 @@ importers:
       '@x402/fetch':
         specifier: ^2.10.0
         version: 2.10.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
-      agentmail:
-        specifier: ^0.4.19
-        version: 0.4.19(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       ai:
         specifier: ^6.0.116
         version: 6.0.168(zod@3.25.76)
@@ -2488,10 +2485,6 @@ packages:
   agentkeepalive@4.6.0:
     resolution: {integrity: sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==}
     engines: {node: '>= 8.0.0'}
-
-  agentmail@0.4.19:
-    resolution: {integrity: sha512-mTCaO/yXDKI+P+SOLKwtvxIH1p+z6/parhQFtG+8fH7S7lXpWOdyOrDyaPUArhmX6qSmppDu7QO7jOqnraNOiA==}
-    engines: {node: '>=18.0.0'}
 
   ai@5.0.179:
     resolution: {integrity: sha512-tuq/r2FH/pBuY3jo0yHF3UglDV73WONGLhW80DuwgO6w0ftPIqRsAm5p9cE3Bu4LfEuCkMXpiUG/pQRzqKRRaA==}
@@ -9226,13 +9219,6 @@ snapshots:
   agentkeepalive@4.6.0:
     dependencies:
       humanize-ms: 1.2.1
-
-  agentmail@0.4.19(bufferutil@4.1.0)(utf-8-validate@6.0.6):
-    dependencies:
-      ws: 8.20.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
 
   ai@5.0.179(zod@3.25.76):
     dependencies:

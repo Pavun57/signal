@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   // process died before finishing. If a sent_emails row exists the message
   // left the building — finish the bookkeeping as "sent". If none exists the
   // send (almost certainly) never happened — release back to "draft" so it's
-  // retryable. The residual risk (crash in the instant between AgentMail
+  // retryable. The residual risk (crash in the instant between the SMTP send
   // accepting the send and the sent_emails insert) is taken deliberately:
   // after 24h, a stuck invisible draft is worse than the sliver of a chance
   // of a duplicate.

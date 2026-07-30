@@ -31,8 +31,6 @@ export const PRICING = {
   browserbase_session_per_hr: 0.1,
   // Google Places API (New) -- Text Search with reviews field mask
   google_places_search: 0.032,
-  // AgentMail -- usage-based pricing, ~$0.40 per 1,000 emails
-  agentmail_email: 0.0004,
 } as const;
 
 // ── Action context (AsyncLocalStorage) ───────────────────────────────────

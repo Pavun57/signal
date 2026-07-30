@@ -46,7 +46,7 @@ It's built for teams that want a CRM-adjacent tool they can read, fork, self-hos
 - 🛰️ **Signals engine** — authorable "recipes" that watch companies and surface buying triggers.
 - 💬 **Campaign workspace** — chat-driven interface backed by Claude to research, shortlist, and draft.
 - 🔎 **Contact enrichment** — pulls LinkedIn, GitHub, and company pages into a single profile.
-- ✉️ **Outreach sequences** — multi-step emails via AgentMail with open / reply tracking.
+- ✉️ **Outreach sequences** — multi-step emails sent from your own Gmail with reply / bounce tracking.
 - 🤖 **Browser automation** — Browserbase + Stagehand for the long tail of sites without APIs.
 - 🔐 **Own your data** — Postgres + RLS on your Supabase; bring your own LLM keys.
 
@@ -67,7 +67,7 @@ It's built for teams that want a CRM-adjacent tool they can read, fork, self-hos
 - **Database** — Supabase (Postgres + Auth + RLS)
 - **AI** — Anthropic Claude via `@ai-sdk/anthropic` and the Vercel AI SDK
 - **Automation** — Browserbase + Stagehand for browser tasks
-- **Email** — AgentMail for send / reply / open tracking
+- **Email** — your own Gmail (app password) for sending, IMAP for reply tracking
 - **Jobs** — QStash (Upstash) for scheduled signal runs
 - **UI** — Tailwind CSS 4, shadcn/ui
 - **Testing** — Vitest, Playwright

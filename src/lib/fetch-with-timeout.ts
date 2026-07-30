@@ -1,6 +1,6 @@
 /**
  * `fetch` with a hard deadline. Without this, a slow upstream (Apify,
- * Browserbase, Exa, AgentMail, Twitter) can hang a request path forever —
+ * Browserbase, Exa, Gmail, Twitter) can hang a request path forever —
  * the outer Next.js route times out at the platform level, but the service
  * call keeps consuming connections and (for paid APIs) billing.
  *

@@ -1,7 +1,9 @@
 export interface EmailSettings {
-  agentmail_inbox_id: string | null;
+  gmail_address: string | null;
+  gmail_connected_at: string | null;
   from_name: string | null;
   reply_to_email: string | null;
+  daily_send_limit: number;
   is_configured: boolean;
 }
 
@@ -24,7 +26,8 @@ export interface EmailDraft {
 
 export interface SentEmail {
   id: string;
-  agentmail_message_id: string;
+  /** RFC 5322 Message-ID of the sent mail — the reply-tracking match key. */
+  message_id: string | null;
   draft_id: string | null;
   campaign_people_id: string;
   campaign_id: string;
@@ -36,9 +39,4 @@ export interface SentEmail {
   status: string;
   sent_at: string;
   created_at: string;
-}
-
-export interface AgentMailInbox {
-  inbox_id: string;
-  display_name: string | null;
 }

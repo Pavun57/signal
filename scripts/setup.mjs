@@ -9,6 +9,7 @@ import {
   copyFileSync,
 } from "node:fs";
 import { createInterface } from "node:readline/promises";
+import { randomBytes } from "node:crypto";
 import { stdin as input, stdout as output, exit, argv } from "node:process";
 import { execSync, spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -350,10 +351,12 @@ async function promptOptional() {
       ],
     },
     {
-      name: "AgentMail (outbound email + tracking)",
+      name: "Email sending (encrypts users' Gmail app passwords at rest)",
       prompts: [
-        ["AGENTMAIL_API_KEY", "AgentMail API key"],
-        ["AGENTMAIL_WEBHOOK_SECRET", "AgentMail webhook secret (whsec_...)"],
+        [
+          "EMAIL_CREDENTIALS_KEY",
+          "Credentials encryption key (leave blank to auto-generate)",
+        ],
       ],
     },
     {
@@ -385,7 +388,13 @@ async function promptOptional() {
   for (const group of groups) {
     if (!(await confirm(`Enable ${group.name}?`, false))) continue;
     for (const [key, label] of group.prompts) {
-      const value = await ask(label, { secret: true });
+      let value = await ask(label, { secret: true });
+      // EMAIL_CREDENTIALS_KEY is a random symmetric key, not a vendor
+      // credential — generate one when the user has nothing to paste.
+      if (key === "EMAIL_CREDENTIALS_KEY" && !value.trim()) {
+        value = randomBytes(32).toString("base64");
+        log.ok("Generated a fresh EMAIL_CREDENTIALS_KEY.");
+      }
       content = setEnvKey(content, key, value);
     }
   }
