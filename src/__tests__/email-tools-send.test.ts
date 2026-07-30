@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { sendMessage } from "@/lib/services/agentmail-service";
+import { encryptSecret } from "@/lib/crypto";
+import { sendGmailMessage } from "@/lib/services/gmail-service";
 
 const h = vi.hoisted(() => ({
   createClient: vi.fn(),
@@ -11,9 +12,11 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: h.createClient,
   getSupabaseAndUser: h.getSupabaseAndUser,
 }));
-vi.mock("@/lib/services/agentmail-service", () => ({
-  sendMessage: vi.fn(),
-}));
+vi.mock("@/lib/services/gmail-service", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/services/gmail-service")>();
+  return { ...actual, sendGmailMessage: vi.fn() };
+});
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
   PRICING: {},
@@ -21,7 +24,7 @@ vi.mock("@/lib/services/cost-tracker", () => ({
 
 import { sendEmail, sendBulkEmails } from "@/lib/tools/email-tools";
 
-const sendMessageMock = vi.mocked(sendMessage);
+const sendGmailMock = vi.mocked(sendGmailMessage);
 
 interface RecordedCall {
   table: string;
@@ -29,7 +32,9 @@ interface RecordedCall {
 }
 
 /** Thenable query-builder fake — same pattern as outreach-sender.test.ts. */
-function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
+function fakeSupabase(
+  responses: Array<{ data?: unknown; error?: unknown; count?: number }>,
+) {
   let i = 0;
   const calls: RecordedCall[] = [];
 
@@ -41,6 +46,7 @@ function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
       "select",
       "eq",
       "in",
+      "gte",
       "update",
       "insert",
       "single",
@@ -78,15 +84,36 @@ const baseDraft = {
   status: "draft",
 };
 
-const settings = { data: { agentmail_inbox_id: "inbox_1" } };
+function settingsResponse() {
+  return {
+    data: {
+      gmail_address: "jay@sahnan.co",
+      gmail_app_password_enc: encryptSecret("abcd efgh ijkl mnop"),
+      gmail_connected_at: new Date(Date.now() - 20 * 86400_000).toISOString(),
+      from_name: "Jay Sahnan",
+      reply_to_email: null,
+      daily_send_limit: 30,
+    },
+  };
+}
+
+let savedKey: string | undefined;
+
+beforeEach(() => {
+  savedKey = process.env.EMAIL_CREDENTIALS_KEY;
+  process.env.EMAIL_CREDENTIALS_KEY = Buffer.alloc(32, 7).toString("base64");
+  sendGmailMock.mockReset();
+  h.createClient.mockReset();
+});
+
+afterEach(() => {
+  process.env.EMAIL_CREDENTIALS_KEY = savedKey;
+});
 
 describe("sendEmail review gating", () => {
-  beforeEach(() => {
-    sendMessageMock.mockReset();
-    h.createClient.mockReset();
-  });
-
-  function wire(responses: Array<{ data?: unknown; error?: unknown }>) {
+  function wire(
+    responses: Array<{ data?: unknown; error?: unknown; count?: number }>,
+  ) {
     const fake = fakeSupabase(responses);
     h.createClient.mockResolvedValue(fake.client);
     return fake;
@@ -101,7 +128,7 @@ describe("sendEmail review gating", () => {
     )) as { error?: string };
 
     expect(result.error).toMatch(/rejected/i);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("refuses to send a draft still awaiting review", async () => {
@@ -113,29 +140,48 @@ describe("sendEmail review gating", () => {
     )) as { error?: string };
 
     expect(result.error).toMatch(/awaiting review|review queue/i);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses when gmail is not connected", async () => {
+    wire([
+      { data: { ...baseDraft, review_status: "approved" } },
+      { data: { gmail_address: null, gmail_app_password_enc: null } },
+    ]);
+
+    const result = (await sendEmail.execute!(
+      { draftId: baseDraft.id },
+      {} as never,
+    )) as { error?: string };
+
+    expect(result.error).toMatch(/connect/i);
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("claims atomically and sends an approved draft", async () => {
     const { calls } = wire([
       { data: { ...baseDraft, review_status: "approved" } }, // draft select
-      settings, // settings select
+      settingsResponse(), // resolveSenderConfig
+      { count: 0 }, // daily-cap count
       { data: { id: baseDraft.id } }, // claim won
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent
     ]);
-    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: "t1" });
+    sendGmailMock.mockResolvedValue({ messageId: "<m1@sahnan.co>" });
 
     const result = (await sendEmail.execute!(
       { draftId: baseDraft.id },
       {} as never,
     )) as { emailId?: string; error?: string };
 
-    expect(result).toMatchObject({ emailId: "m1", status: "sent" });
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      emailId: "<m1@sahnan.co>",
+      status: "sent",
+    });
+    expect(sendGmailMock).toHaveBeenCalledTimes(1);
 
-    const claim = calls[2];
+    const claim = calls[3];
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -147,7 +193,8 @@ describe("sendEmail review gating", () => {
   it("surfaces a lost claim instead of double-sending", async () => {
     wire([
       { data: { ...baseDraft, review_status: "approved" } },
-      settings,
+      settingsResponse(),
+      { count: 0 },
       { data: null }, // claim lost
     ]);
 
@@ -157,16 +204,11 @@ describe("sendEmail review gating", () => {
     )) as { error?: string };
 
     expect(result.error).toMatch(/already claimed/i);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 });
 
 describe("sendBulkEmails review gating", () => {
-  beforeEach(() => {
-    sendMessageMock.mockReset();
-    h.createClient.mockReset();
-  });
-
   it("sends only approved drafts and reports the held ones", async () => {
     const fake = fakeSupabase([
       {
@@ -178,14 +220,15 @@ describe("sendBulkEmails review gating", () => {
         ],
       },
       { data: [{ ...baseDraft, id: "d_ok", review_status: "approved" }] },
-      settings,
+      settingsResponse(),
+      { count: 0 }, // daily-cap count
       { data: { id: "d_ok" } }, // claim won
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent
     ]);
     h.createClient.mockResolvedValue(fake.client);
-    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: "t1" });
+    sendGmailMock.mockResolvedValue({ messageId: "<m1@sahnan.co>" });
 
     const result = (await sendBulkEmails.execute!(
       { campaignId: "camp_1" },
@@ -201,7 +244,7 @@ describe("sendBulkEmails review gating", () => {
     expect(result.awaitingReview).toBe(1);
     expect(result.rejected).toBe(1);
     expect(result.summary).toMatch(/1 held for review and 1 rejected/);
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendGmailMock).toHaveBeenCalledTimes(1);
 
     // The actual send query is pinned to approved ids + approved status.
     const draftsQuery = fake.calls[1];
@@ -228,6 +271,6 @@ describe("sendBulkEmails review gating", () => {
     )) as { error?: string };
 
     expect(result.error).toMatch(/1 awaiting review, 1 rejected/);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 });

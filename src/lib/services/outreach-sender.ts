@@ -1,6 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { sendMessage } from "@/lib/services/agentmail-service";
+import {
+  getEffectiveDailyLimit,
+  sendGmailMessage,
+} from "@/lib/services/gmail-service";
+import {
+  resolveSenderConfig,
+  type SenderConfig,
+} from "@/lib/services/email-transport";
 import { trackUsage } from "@/lib/services/cost-tracker";
 
 export interface EnrollmentForSend {
@@ -29,10 +36,11 @@ export type SendResult =
   | { ok: false; reason: string };
 
 /**
- * The one path an email leaves through. Claims the draft atomically, sends,
- * and does the bookkeeping. Every sender — the followups cron, send-now, and
- * the agent's sendEmail/sendBulkEmails tools — must go through here so that
- * overlapping callers can't double-email a prospect.
+ * The one path an email leaves through. Enforces the warmup-ramped daily
+ * cap, claims the draft atomically, sends via the user's Gmail, and does the
+ * bookkeeping. Every sender — the followups cron, send-now, and the agent's
+ * sendEmail/sendBulkEmails tools — must go through here so that overlapping
+ * callers can't double-email a prospect.
  *
  * Accepts any Supabase client: the admin client from QStash handlers, or the
  * RLS-scoped client from agent tools (RLS restricts it to the caller's rows,
@@ -41,10 +49,33 @@ export type SendResult =
 export async function claimAndSendDraft(
   supabase: SupabaseClient,
   draft: DraftForSend,
-  inboxId: string,
+  sender: SenderConfig,
   trackMetadata?: Record<string, unknown>,
 ): Promise<SendResult> {
   const now = new Date().toISOString();
+
+  // Warmup-aware daily cap, checked before the claim so a capped run leaves
+  // drafts untouched for tomorrow's cron.
+  const effectiveLimit = getEffectiveDailyLimit(
+    sender.connectedAt,
+    sender.dailyLimit,
+  );
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const { count } = await supabase
+    .from("sent_emails")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", draft.user_id)
+    .gte("sent_at", todayStart.toISOString());
+
+  if ((count ?? 0) >= effectiveLimit) {
+    return {
+      ok: false,
+      reason: `Daily send limit reached (${effectiveLimit}/day${
+        effectiveLimit < sender.dailyLimit ? ", warmup ramp" : ""
+      }) — draft left for tomorrow`,
+    };
+  }
 
   // Atomically claim the draft before sending. Overlapping callers — the
   // followups cron racing a send-now click, agent retries, or two process
@@ -67,14 +98,19 @@ export async function claimAndSendDraft(
   // a retry would email the prospect twice. Worst case there is a draft
   // stuck in "queued" with the message already delivered (the cleanup cron
   // reconciles those).
-  let result: Awaited<ReturnType<typeof sendMessage>>;
+  let sent: { messageId: string };
   try {
-    result = await sendMessage(inboxId, {
-      to: draft.to_email,
-      subject: draft.subject,
-      html: draft.body_html,
-      text: draft.body_text ?? undefined,
-    });
+    sent = await sendGmailMessage(
+      { address: sender.address, appPassword: sender.appPassword },
+      {
+        fromName: sender.fromName,
+        to: draft.to_email,
+        subject: draft.subject,
+        html: draft.body_html,
+        text: draft.body_text ?? undefined,
+        replyTo: sender.replyTo ?? undefined,
+      },
+    );
   } catch (err) {
     // Release the claim so the draft is retryable instead of stuck in
     // "queued" forever.
@@ -88,19 +124,20 @@ export async function claimAndSendDraft(
     return { ok: false, reason };
   }
 
-  const messageId = result.messageId ?? crypto.randomUUID();
-  const threadId = result.threadId ?? null;
+  // message_id is the RFC 5322 Message-ID — the key IMAP reply/bounce
+  // tracking matches In-Reply-To/References against. Never substitute a
+  // random value: an unmatched id is better than an unmatchable one.
+  const messageId = sent.messageId || null;
 
   await supabase.from("sent_emails").insert({
-    agentmail_message_id: messageId,
-    agentmail_thread_id: threadId,
+    message_id: messageId,
     draft_id: draft.id,
     campaign_people_id: draft.campaign_people_id,
     campaign_id: draft.campaign_id,
     person_id: draft.person_id,
     user_id: draft.user_id,
     to_email: draft.to_email,
-    from_email: inboxId,
+    from_email: sender.address,
     subject: draft.subject,
     status: "sent",
     sent_at: now,
@@ -119,9 +156,9 @@ export async function claimAndSendDraft(
   }
 
   trackUsage({
-    service: "agentmail",
+    service: "gmail",
     operation: "send-email",
-    estimated_cost_usd: 0.0004,
+    estimated_cost_usd: 0,
     campaign_id: draft.campaign_id ?? undefined,
     user_id: draft.user_id,
     metadata: {
@@ -131,7 +168,7 @@ export async function claimAndSendDraft(
     },
   });
 
-  return { ok: true, messageId, draftId: draft.id };
+  return { ok: true, messageId: messageId ?? draft.id, draftId: draft.id };
 }
 
 /**
@@ -173,15 +210,8 @@ export async function sendApprovedDraft(
     return { ok: false, reason: "No approved draft ready for this step" };
   }
 
-  const { data: settings } = await supabase
-    .from("user_settings")
-    .select("agentmail_inbox_id")
-    .eq("user_id", draft.user_id)
-    .single();
-
-  if (!settings?.agentmail_inbox_id) {
-    return { ok: false, reason: "No AgentMail inbox configured" };
-  }
+  const sender = await resolveSenderConfig(supabase, draft.user_id);
+  if ("error" in sender) return { ok: false, reason: sender.error };
 
   const sent = await claimAndSendDraft(
     supabase,
@@ -191,7 +221,7 @@ export async function sendApprovedDraft(
       campaign_people_id: enrollment.campaign_people_id,
       person_id: enrollment.person_id,
     },
-    settings.agentmail_inbox_id,
+    sender,
     { sequenceId: enrollment.sequence_id },
   );
 

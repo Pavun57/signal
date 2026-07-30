@@ -67,7 +67,7 @@ export type ServiceName =
   | "apify"
   | "browserbase"
   | "google"
-  | "agentmail";
+  | "gmail";
 
 interface UsageEntry {
   service: ServiceName;

@@ -7,6 +7,7 @@ import {
   claimAndSendDraft,
   type DraftForSend,
 } from "@/lib/services/outreach-sender";
+import { resolveSenderConfig } from "@/lib/services/email-transport";
 import { saveDraft } from "@/lib/email-composition/save";
 import {
   applyPattern,
@@ -383,7 +384,7 @@ export const writeEmail = tool({
 
 export const sendEmail = tool({
   description:
-    "Send a previously written email draft via AgentMail. Only approved drafts can be sent: ad-hoc drafts from writeEmail are approved at creation, but sequence drafts must be approved by the user in the outreach review queue first. Rejected drafts can never be sent.",
+    "Send a previously written email draft via the user's connected Gmail. Only approved drafts can be sent: ad-hoc drafts from writeEmail are approved at creation, but sequence drafts must be approved by the user in the outreach review queue first. Rejected drafts can never be sent.",
   inputSchema: z.object({
     draftId: z.string().uuid().describe("Draft ID to send."),
   }),
@@ -423,22 +424,15 @@ export const sendEmail = tool({
       };
     }
 
-    const { data: settings } = await supabase
-      .from("user_settings")
-      .select("agentmail_inbox_id, from_name, reply_to_email")
-      .single();
-
-    if (!settings?.agentmail_inbox_id) {
-      return {
-        error:
-          "Email is not configured. Go to Settings > Email and select an AgentMail inbox first.",
-      };
+    const sender = await resolveSenderConfig(supabase, draft.user_id);
+    if ("error" in sender) {
+      return { error: sender.error };
     }
 
     const result = await claimAndSendDraft(
       supabase,
       draft as DraftForSend,
-      settings.agentmail_inbox_id,
+      sender,
     );
 
     if (!result.ok) {
@@ -568,27 +562,25 @@ export const sendBulkEmails = tool({
       .eq("status", "draft");
     if (error) return { error: error.message };
 
-    const { data: settings } = await supabase
-      .from("user_settings")
-      .select("agentmail_inbox_id")
-      .single();
-
-    if (!settings?.agentmail_inbox_id) {
-      return {
-        error: "Email not configured. Go to Settings > Email first.",
-      };
+    const firstDraft = (drafts ?? [])[0];
+    if (!firstDraft) {
+      return { error: "No sendable drafts found." };
+    }
+    const sender = await resolveSenderConfig(supabase, firstDraft.user_id);
+    if ("error" in sender) {
+      return { error: sender.error };
     }
 
     const results: Array<{ draftId: string; status: string; error?: string }> =
       [];
 
-    // Sequential on purpose: polite to AgentMail, and each send claims its
+    // Sequential on purpose: keeps Gmail SMTP happy, and each send claims its
     // draft atomically so a concurrent cron can't double-send any of them.
     for (const draft of drafts ?? []) {
       const result = await claimAndSendDraft(
         supabase,
         draft as DraftForSend,
-        settings.agentmail_inbox_id,
+        sender,
       );
       if (result.ok) {
         results.push({ draftId: draft.id, status: "sent" });
