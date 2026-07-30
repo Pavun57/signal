@@ -55,12 +55,15 @@ export async function POST(request: Request) {
   // standing between the internet and the user's outbox. All callers must go
   // through QStash: the signal path publishes from /api/tracking/run, and the
   // followups schedule must be a QStash schedule, not a bare cron.
-  let payload: Payload;
+  let payload: Payload | null;
   try {
     payload = await verifyQStashSignature<Payload>(request);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Invalid signature";
     return NextResponse.json({ error: msg }, { status: 401 });
+  }
+  if (!payload) {
+    return NextResponse.json({ error: "Missing payload" }, { status: 400 });
   }
 
   const supabase = getAdminClient();
