@@ -23,17 +23,6 @@ export const maxDuration = 120;
  *    Checks sequence_enrollments where next_send_at <= now and conditions are met.
  */
 
-const _STATUS_PRIORITY: Record<string, number> = {
-  waiting: 0,
-  queued: 1,
-  active: 2,
-  replied: 10,
-  bounced: 10,
-  completed: 10,
-  removed: 10,
-};
-void _STATUS_PRIORITY; // reserved for future use
-
 interface SignalPayload {
   type: "signal";
   signalId: string;
@@ -146,15 +135,24 @@ async function handleSignalTrigger(
   }
 
   let sent = 0;
+  const failures: Record<string, number> = {};
   for (const enrollment of enrollments) {
-    const didSend = await sendStepEmail(supabase, enrollment);
-    if (didSend) sent++;
+    const result = await sendApprovedDraft(supabase, enrollment);
+    if (result.ok) {
+      sent++;
+    } else {
+      console.error(
+        `[outreach/process] signal send failed for enrollment ${enrollment.id}: ${result.reason}`,
+      );
+      failures[result.reason] = (failures[result.reason] ?? 0) + 1;
+    }
   }
 
   return NextResponse.json({
     sent,
     drafted,
     total: enrollments.length,
+    failures,
   });
 }
 
@@ -197,7 +195,18 @@ async function pickAndDraft(
     cpByPersonId.set(cp.person_id as string, cp as Record<string, unknown>);
   }
 
-  const SKIP_STATUSES = new Set(["replied", "bounced", "complained"]);
+  // Anyone already in flight or contacted is off-limits for a fresh draft —
+  // a second signal fire must not re-email someone mid-sequence.
+  const SKIP_STATUSES = new Set([
+    "queued",
+    "sent",
+    "delivered",
+    "opened",
+    "clicked",
+    "replied",
+    "bounced",
+    "complained",
+  ]);
   const candidates: Candidate[] = [];
   for (const p of people) {
     const cp = cpByPersonId.get(p.id as string);
@@ -432,19 +441,48 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
   const now = new Date().toISOString();
 
   // Find enrollments where it's time to send the next step
-  const { data: enrollments } = await supabase
+  const { data: dueEnrollments } = await supabase
     .from("sequence_enrollments")
     .select("id, sequence_id, person_id, campaign_people_id, current_step")
     .eq("status", "active")
     .lte("next_send_at", now)
     .limit(50);
 
-  if (!enrollments || enrollments.length === 0) {
+  // Also pick up enrollments still parked at "waiting": pickAndDraft leaves
+  // them there pending review, and nothing re-enters after the reviewer
+  // approves — without this, bulk-approved step-1 drafts never send.
+  const { data: waitingEnrollments } = await supabase
+    .from("sequence_enrollments")
+    .select("id, sequence_id, person_id, campaign_people_id, current_step")
+    .eq("status", "waiting")
+    .limit(50);
+
+  let approvedWaiting: typeof waitingEnrollments = [];
+  if (waitingEnrollments && waitingEnrollments.length > 0) {
+    const { data: approvedDrafts } = await supabase
+      .from("email_drafts")
+      .select("enrollment_id")
+      .in(
+        "enrollment_id",
+        waitingEnrollments.map((e) => e.id),
+      )
+      .eq("review_status", "approved")
+      .eq("status", "draft");
+    const approvedIds = new Set(
+      (approvedDrafts ?? []).map((d) => d.enrollment_id as string),
+    );
+    approvedWaiting = waitingEnrollments.filter((e) => approvedIds.has(e.id));
+  }
+
+  const enrollments = [...(dueEnrollments ?? []), ...(approvedWaiting ?? [])];
+
+  if (enrollments.length === 0) {
     return NextResponse.json({ sent: 0 });
   }
 
   let sent = 0;
   let skipped = 0;
+  const failures: Record<string, number> = {};
 
   for (const enrollment of enrollments) {
     // Load the step to check its condition
@@ -500,11 +538,25 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
       continue;
     }
 
-    const didSend = await sendStepEmail(supabase, enrollment);
-    if (didSend) sent++;
+    const result = await sendApprovedDraft(supabase, enrollment);
+    if (result.ok) {
+      sent++;
+    } else {
+      // Never swallow the reason: capped, unconfigured, and claimed-elsewhere
+      // outcomes must be distinguishable in QStash logs.
+      console.error(
+        `[outreach/process] followup send failed for enrollment ${enrollment.id}: ${result.reason}`,
+      );
+      failures[result.reason] = (failures[result.reason] ?? 0) + 1;
+    }
   }
 
-  return NextResponse.json({ sent, skipped, total: enrollments.length });
+  return NextResponse.json({
+    sent,
+    skipped,
+    total: enrollments.length,
+    failures,
+  });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -522,18 +574,4 @@ function checkCondition(condition: string, outreachStatus: string): boolean {
     default:
       return true;
   }
-}
-
-async function sendStepEmail(
-  supabase: ReturnType<typeof getAdminClient>,
-  enrollment: {
-    id: string;
-    sequence_id: string;
-    person_id: string;
-    campaign_people_id: string;
-    current_step: number;
-  },
-): Promise<boolean> {
-  const result = await sendApprovedDraft(supabase, enrollment);
-  return result.ok;
 }
