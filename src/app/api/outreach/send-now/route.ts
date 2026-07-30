@@ -93,6 +93,28 @@ export async function POST(request: Request) {
     );
   }
 
+  // sendApprovedDraft resolves the draft from the enrollment's current step,
+  // NOT from body.draftId — so if the clicked draft belongs to a different
+  // step, proceeding would silently send a different email than the one the
+  // reviewer looked at. Refuse instead.
+  const { data: currentStep } = await supabase
+    .from("sequence_steps")
+    .select("id")
+    .eq("sequence_id", enrollment.sequence_id)
+    .eq("step_number", enrollment.current_step)
+    .single();
+
+  if (!currentStep || currentStep.id !== draft.sequence_step_id) {
+    return NextResponse.json(
+      {
+        ok: false,
+        blocker: "step_mismatch",
+        error: `This draft is not the enrollment's current step (step ${enrollment.current_step}). Send or discard the current step's draft first.`,
+      },
+      { status: 409 },
+    );
+  }
+
   const result = await sendApprovedDraft(supabase, enrollment);
 
   if (!result.ok) {
