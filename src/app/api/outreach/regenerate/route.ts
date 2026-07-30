@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { composeEmail } from "@/lib/email-composition/compose";
-import { loadActiveEmailSkills } from "@/lib/email-composition/load-skills";
+import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
@@ -129,14 +129,10 @@ export async function POST(request: Request) {
     isFinal = stepNumber === totalSteps;
   }
 
-  const skills = await loadActiveEmailSkills(supabase, {
-    userId: user.id,
-    profileId: (campaign?.profile_id as string | null) ?? null,
-    campaignId: draft.campaign_id,
-  });
+  const voice = await loadVoiceProfile(supabase, user.id, draft.campaign_id);
 
   const composed = await composeEmail({
-    skills,
+    voice,
     contact: {
       name: (person.name as string) ?? null,
       title: (person.title as string) ?? null,

@@ -1,453 +1,422 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Plus } from "lucide-react";
-import { toast } from "sonner";
-
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogFooter,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import { Textarea } from "@/components/ui/textarea";
-import { TogglePill } from "@/components/ui/toggle-pill";
-import { EmailSkillCard } from "@/components/email-skills/email-skill-card";
-import { EmailSkillDetailDialog } from "@/components/email-skills/email-skill-detail-dialog";
-import { createClient } from "@/lib/supabase/client";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { AlertTriangle, Check, Loader2, Mic } from "lucide-react";
 import { useAuth } from "@clerk/nextjs";
-import type { EmailSkill, EmailSkillScopeType } from "@/lib/types/email-skill";
-import type { Campaign } from "@/lib/types/campaign";
-import type { UserProfile } from "@/lib/types/profile";
-import { profileDisplayName } from "@/lib/types/profile";
 
-type ScopeFilter = "global" | "profile" | "campaign";
+import { SafeLink } from "@/components/safe-link";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { VoiceProfileView } from "@/components/email-skills/voice-profile-view";
+import {
+  VoiceWizard,
+  buildRefinementTranscript,
+  clearSavedInterview,
+  readSavedInterview,
+} from "@/components/email-skills/voice-wizard";
+import { createClient } from "@/lib/supabase/client";
+import type { InterviewTurn, VoiceProfile } from "@/lib/types/email-voice";
 
-const SCOPE_OPTIONS: { label: string; value: ScopeFilter }[] = [
-  { label: "Global default", value: "global" },
-  { label: "Per profile", value: "profile" },
-  { label: "Per campaign", value: "campaign" },
-];
+interface CampaignRow {
+  id: string;
+  name: string;
+}
 
-const SOURCE_FILTERS = [
-  { label: "All", value: "all" },
-  { label: "Built-in", value: "builtin" },
-  { label: "Custom", value: "custom" },
-] as const;
+/**
+ * The list view's shape. `source_transcript` is deliberately absent: it holds
+ * cold emails the user pasted, which are third-party correspondence, and
+ * nothing on this page renders it. A refinement fetches the one row it needs.
+ */
+type VoiceSummary = Omit<VoiceProfile, "source_transcript">;
 
-type SourceFilter = (typeof SOURCE_FILTERS)[number]["value"];
+/**
+ * Voice is per campaign, because which signal to open on and which credibility
+ * framing lands differ by audience — a voice interviewed against a dev-tools
+ * campaign tells the composer to reference release cadence, which is nonsense
+ * for a beauty brand. A user-level default covers campaigns without their own.
+ *
+ * `?campaign=<id>` selects the scope. Without it the page shows the default plus
+ * a row per campaign so the state of each is visible in one place.
+ */
+function EmailVoiceScope() {
+  const { userId, isLoaded } = useAuth();
+  const searchParams = useSearchParams();
+  const campaignId = searchParams.get("campaign");
 
-export default function EmailSkillsPage() {
-  const { userId } = useAuth();
-  const [skills, setSkills] = useState<EmailSkill[]>([]);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-
-  const [scope, setScope] = useState<ScopeFilter>("global");
-  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
-  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("");
-  const [attachedIds, setAttachedIds] = useState<Set<string>>(new Set());
-
-  const [source, setSource] = useState<SourceFilter>("all");
-  const [detailSkill, setDetailSkill] = useState<EmailSkill | null>(null);
+  const [profiles, setProfiles] = useState<VoiceSummary[]>([]);
+  const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [createOpen, setCreateOpen] = useState(false);
-  const mountedRef = useRef(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Non-null means the interview is on screen; the value seeds the wizard. */
+  const [interview, setInterview] = useState<InterviewTurn[] | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const mountedRef = useRef(true);
+  /** Which scope has already been restored — not a boolean, or a soft
+   * navigation into a campaign never looks for that campaign's transcript. */
+  const restoredScopeRef = useRef<string | null | undefined>(undefined);
+
+  const fetchAll = useCallback(async () => {
     const supabase = createClient();
-    const [skillsRes, campaignsRes, profilesRes] = await Promise.all([
+    // RLS scopes both reads to the signed-in user, so no user filter is needed.
+    const [voiceRes, campaignRes] = await Promise.all([
       supabase
-        .from("email_skills")
-        .select("*")
-        .order("is_builtin", { ascending: false })
-        .order("name"),
-      supabase
-        .from("campaigns")
-        .select("id, name, status")
-        .order("updated_at", { ascending: false }),
-      supabase
-        .from("user_profile")
-        .select("*")
-        .order("created_at", { ascending: false }),
+        .from("email_voice_profiles")
+        .select(
+          "id, user_id, campaign_id, instructions, summary, created_at, updated_at",
+        ),
+      supabase.from("campaigns").select("id, name").order("updated_at", {
+        ascending: false,
+      }),
     ]);
 
     if (!mountedRef.current) return;
-    setSkills((skillsRes.data as EmailSkill[]) ?? []);
-    setCampaigns((campaignsRes.data as Campaign[]) ?? []);
-    setProfiles((profilesRes.data as UserProfile[]) ?? []);
+    setLoadError(voiceRes.error?.message ?? campaignRes.error?.message ?? null);
+    setProfiles((voiceRes.data as VoiceSummary[] | null) ?? []);
+    setCampaigns((campaignRes.data as CampaignRow[] | null) ?? []);
     setLoading(false);
   }, []);
 
-  const currentScopeId: string | null = (() => {
-    if (scope === "global") return userId ?? null;
-    if (scope === "profile") return selectedProfileId || null;
-    return selectedCampaignId || null;
-  })();
-
-  const currentScopeType: EmailSkillScopeType = (
-    scope === "global" ? "user" : scope
-  ) as EmailSkillScopeType;
-
-  const fetchAttachments = useCallback(
-    async (scopeType: EmailSkillScopeType, scopeId: string | null) => {
-      if (!scopeId) {
-        setAttachedIds(new Set());
-        return;
-      }
-      const supabase = createClient();
-      const { data } = await supabase
-        .from("email_skill_attachments")
-        .select("skill_id, enabled")
-        .eq("scope_type", scopeType)
-        .eq("scope_id", scopeId)
-        .eq("enabled", true);
-      if (!mountedRef.current) return;
-      setAttachedIds(new Set((data ?? []).map((r) => r.skill_id as string)));
-    },
-    [],
-  );
-
   useEffect(() => {
     mountedRef.current = true;
-
-    fetchData();
+    fetchAll();
     return () => {
       mountedRef.current = false;
     };
-  }, [fetchData]);
+  }, [fetchAll]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchAttachments(currentScopeType, currentScopeId);
-  }, [currentScopeType, currentScopeId, fetchAttachments]);
+    // Restore an interview interrupted by a reload. Keyed per user and scope,
+    // so there is nothing to look up until Clerk tells us who this is — and a
+    // campaign's interview must not resurrect on the default's page.
+    if (!userId || restoredScopeRef.current === campaignId) return;
+    restoredScopeRef.current = campaignId;
+    const saved = readSavedInterview(userId, campaignId);
+    setInterview(saved ?? null);
+  }, [userId, campaignId]);
 
-  const handleToggle = async (skillId: string, attached: boolean) => {
-    if (!currentScopeId) {
-      toast.error(
-        scope === "profile"
-          ? "Select a profile first."
-          : "Select a campaign first.",
-      );
-      return;
-    }
-    setAttachedIds((prev) => {
-      const next = new Set(prev);
-      if (attached) next.add(skillId);
-      else next.delete(skillId);
-      return next;
-    });
-    const supabase = createClient();
-    if (attached) {
-      const { error } = await supabase.from("email_skill_attachments").upsert(
+  /**
+   * Both accepting and exiting have to refetch. The interview route saves the
+   * profile the moment it returns a `complete` move, so the row already exists
+   * by the time the review screen appears — without a refetch, closing it drops
+   * back to stale state that reads as lost work.
+   */
+  const startRefinement = async (
+    profile: VoiceSummary,
+    instruction: string,
+  ) => {
+    const { data } = await createClient()
+      .from("email_voice_profiles")
+      .select("source_transcript")
+      .eq("id", profile.id)
+      .maybeSingle();
+
+    setInterview(
+      buildRefinementTranscript(
         {
-          skill_id: skillId,
-          scope_type: currentScopeType,
-          scope_id: currentScopeId,
-          enabled: true,
+          ...profile,
+          source_transcript:
+            (data as Pick<VoiceProfile, "source_transcript"> | null)
+              ?.source_transcript ?? null,
         },
-        { onConflict: "skill_id,scope_type,scope_id" },
-      );
-      if (error) {
-        toast.error("Failed to attach skill");
-        setAttachedIds((prev) => {
-          const next = new Set(prev);
-          next.delete(skillId);
-          return next;
-        });
-      }
-    } else {
-      const { error } = await supabase
-        .from("email_skill_attachments")
-        .delete()
-        .eq("skill_id", skillId)
-        .eq("scope_type", currentScopeType)
-        .eq("scope_id", currentScopeId);
-      if (error) {
-        toast.error("Failed to detach skill");
-        setAttachedIds((prev) => new Set(prev).add(skillId));
-      }
-    }
+        instruction,
+      ),
+    );
   };
 
-  const handleSkillSaved = (updated: EmailSkill) => {
-    setSkills((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-    setDetailSkill(updated);
+  const closeInterview = () => {
+    setInterview(null);
+    setLoading(true);
+    fetchAll();
   };
 
-  const handleSkillDeleted = (skillId: string) => {
-    setSkills((prev) => prev.filter((s) => s.id !== skillId));
-    setDetailSkill(null);
-  };
+  const scoped = profiles.find((p) => (p.campaign_id ?? null) === campaignId);
+  const campaign = campaigns.find((c) => c.id === campaignId);
+  const scopeLabel = campaignId ? (campaign?.name ?? "this campaign") : null;
 
-  const filtered = skills.filter((s) => {
-    if (source === "builtin") return s.is_builtin;
-    if (source === "custom") return !s.is_builtin;
-    return true;
-  });
-
-  if (loading) {
+  if (loading || !isLoaded) {
     return (
-      <div className="flex-1 overflow-y-auto">
-        <div className="space-y-6 p-4 md:p-6">
-          <div>
-            <h1 className="type-title">Email Skills</h1>
-            <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Loading...
-            </p>
-          </div>
-        </div>
-      </div>
+      <PageShell scopeLabel={scopeLabel}>
+        <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading...
+        </p>
+      </PageShell>
     );
   }
 
-  const showToggle = currentScopeId !== null;
+  if (interview && userId) {
+    return (
+      <PageShell scopeLabel={scopeLabel}>
+        <VoiceWizard
+          // Keyed on scope so switching campaigns (a soft navigation, which
+          // re-renders rather than remounting) rebuilds the wizard instead of
+          // carrying one campaign's transcript into another scope and saving it
+          // there. The transcript survives in sessionStorage under its own key,
+          // so the remount resumes the correct interview rather than losing work.
+          key={campaignId ?? "user"}
+          userId={userId}
+          campaignId={campaignId}
+          initialTranscript={interview}
+          onExit={closeInterview}
+          onAccepted={closeInterview}
+        />
+      </PageShell>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <PageShell scopeLabel={scopeLabel}>
+        <div
+          role="alert"
+          className="border-destructive/30 bg-destructive/5 space-y-3 rounded-xl border p-5"
+        >
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="text-destructive mt-0.5 size-4 shrink-0" />
+            <div className="space-y-1">
+              <p className="text-destructive text-sm font-medium">
+                Could not load your email voice
+              </p>
+              <p className="text-muted-foreground text-sm">{loadError}</p>
+            </div>
+          </div>
+          <Button
+            onClick={() => {
+              setLoading(true);
+              fetchAll();
+            }}
+          >
+            Try again
+          </Button>
+        </div>
+      </PageShell>
+    );
+  }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="space-y-6 p-4 md:p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="type-title">Email Skills</h1>
-            <p className="text-muted-foreground text-sm">
-              Reusable rule packs that shape how the agent writes emails. Attach
-              at the global, profile, or campaign scope.
-            </p>
-          </div>
-          <CreateSkillButton
-            open={createOpen}
-            onOpenChange={setCreateOpen}
-            onCreated={(skill) => {
-              setSkills((prev) => [skill, ...prev]);
-              setDetailSkill(skill);
-            }}
-          />
-        </div>
+    <PageShell scopeLabel={scopeLabel}>
+      {scoped ? (
+        <VoiceProfileView
+          profile={scoped}
+          onRefine={(instruction) => {
+            void startRefinement(scoped, instruction);
+          }}
+          onRebuild={() => {
+            // Start from an empty transcript: rebuild means the agent asks
+            // again from scratch rather than replaying the old answers.
+            if (userId) clearSavedInterview(userId, campaignId);
+            setInterview([]);
+          }}
+        />
+      ) : (
+        <BuildPrompt
+          scopeLabel={scopeLabel}
+          disabled={!userId}
+          hasDefault={profiles.some((p) => !p.campaign_id)}
+          onStart={() => setInterview([])}
+        />
+      )}
 
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="w-48">
-            <label className="text-muted-foreground mb-1 block text-xs font-medium">
-              Attach to
-            </label>
-            <Select
-              value={scope}
-              onValueChange={(v) => setScope(v as ScopeFilter)}
-              items={SCOPE_OPTIONS.map((o) => ({
-                value: o.value,
-                label: o.label,
-              }))}
-            />
-          </div>
-          {scope === "profile" && (
-            <div className="w-64">
-              <label className="text-muted-foreground mb-1 block text-xs font-medium">
-                Profile
-              </label>
-              <Select
-                value={selectedProfileId}
-                onValueChange={setSelectedProfileId}
-                items={[
-                  { value: "", label: "Select a profile…" },
-                  ...profiles.map((p) => ({
-                    value: p.id,
-                    label: profileDisplayName(p),
-                  })),
-                ]}
-              />
-            </div>
-          )}
-          {scope === "campaign" && (
-            <div className="w-64">
-              <label className="text-muted-foreground mb-1 block text-xs font-medium">
-                Campaign
-              </label>
-              <Select
-                value={selectedCampaignId}
-                onValueChange={setSelectedCampaignId}
-                items={[
-                  { value: "", label: "Select a campaign…" },
-                  ...campaigns.map((c) => ({ value: c.id, label: c.name })),
-                ]}
-              />
-            </div>
-          )}
-        </div>
+      {/* Only on the overview — inside a campaign's own scope this list would
+          just be a way to wander off mid-task. */}
+      {!campaignId && campaigns.length > 0 && (
+        <CampaignVoiceList campaigns={campaigns} profiles={profiles} />
+      )}
+    </PageShell>
+  );
+}
 
-        <Separator />
-
-        <div className="flex flex-wrap gap-1.5">
-          {SOURCE_FILTERS.map((f) => (
-            <TogglePill
-              key={f.value}
-              active={source === f.value}
-              onClick={() => setSource(f.value)}
-            >
-              {f.label}
-            </TogglePill>
-          ))}
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((skill) => (
-            <EmailSkillCard
-              key={skill.id}
-              skill={skill}
-              attached={attachedIds.has(skill.id)}
-              showToggle={showToggle}
-              onToggle={handleToggle}
-              onClick={setDetailSkill}
-            />
-          ))}
-          {filtered.length === 0 && (
-            <p className="text-muted-foreground col-span-full py-8 text-center text-sm">
-              No skills match this filter.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <EmailSkillDetailDialog
-        skill={detailSkill}
-        open={!!detailSkill}
-        onOpenChange={(open) => {
-          if (!open) setDetailSkill(null);
-        }}
-        onSaved={handleSkillSaved}
-        onDeleted={handleSkillDeleted}
+function BuildPrompt({
+  scopeLabel,
+  disabled,
+  hasDefault,
+  onStart,
+}: {
+  scopeLabel: string | null;
+  disabled: boolean;
+  hasDefault: boolean;
+  onStart: () => void;
+}) {
+  return (
+    <div className="border-border bg-card overflow-hidden rounded-xl border">
+      <EmptyState
+        icon={Mic}
+        title={
+          scopeLabel ? `No voice for ${scopeLabel} yet` : "No default voice yet"
+        }
+        description={
+          scopeLabel
+            ? hasDefault
+              ? "This campaign will use your default voice, which was interviewed against a different audience — so it may reach for the wrong kind of signal."
+              : "Until you build one, the agent writes to generic best-practice rules — correct, and identical to everybody else's."
+            : "The fallback for any campaign without its own voice. Until you build one, those campaigns write to generic best-practice rules."
+        }
+        action={
+          <Button size="lg" disabled={disabled} onClick={onStart}>
+            {scopeLabel
+              ? `Build the voice for ${scopeLabel}`
+              : "Build my default voice"}
+          </Button>
+        }
       />
+
+      <div className="border-border border-t px-5 py-5 md:px-6">
+        <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
+          How it works
+        </p>
+        <ol className="text-muted-foreground marker:text-muted-foreground mt-3 list-decimal space-y-2 pl-5 text-sm">
+          <li>
+            <span className="text-foreground font-medium">
+              The agent interviews you.
+            </span>{" "}
+            Short questions about how you actually write — not a form to fill
+            in.
+          </li>
+          <li>
+            <span className="text-foreground font-medium">
+              You react to real emails.
+            </span>{" "}
+            It drafts pairs{" "}
+            {scopeLabel
+              ? `about ${scopeLabel}'s offer`
+              : "against a live campaign"}{" "}
+            that differ in exactly one thing, and you pick the one that sounds
+            like you. What people choose is a better signal than what they say
+            about their style.
+          </li>
+          <li>
+            <span className="text-foreground font-medium">
+              You review the result.
+            </span>{" "}
+            The agent writes the rules; you read them and accept, or say what
+            should change.
+          </li>
+        </ol>
+        <p className="text-muted-foreground mt-3 text-xs">
+          Usually 8 to 14 questions, and a reload does not lose your place.
+        </p>
+      </div>
     </div>
   );
 }
 
-function CreateSkillButton({
-  open,
-  onOpenChange,
-  onCreated,
+/** Which campaigns have their own voice, and a way into each one's interview. */
+function CampaignVoiceList({
+  campaigns,
+  profiles,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCreated: (skill: EmailSkill) => void;
+  campaigns: CampaignRow[];
+  profiles: VoiceSummary[];
 }) {
-  const { userId } = useAuth();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const slugify = (s: string) =>
-    s
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 64);
-
-  const reset = () => {
-    setName("");
-    setDescription("");
-    setInstructions("");
-  };
-
-  const handleCreate = async () => {
-    if (!name || !instructions) return;
-    setSaving(true);
-    if (!userId) {
-      toast.error("Not signed in");
-      setSaving(false);
-      return;
-    }
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("email_skills")
-      .insert({
-        user_id: userId,
-        name,
-        slug: slugify(name) || `skill-${Date.now()}`,
-        description: description || null,
-        instructions,
-        is_builtin: false,
-      })
-      .select("*")
-      .single();
-    setSaving(false);
-    if (error || !data) {
-      toast.error(error?.message ?? "Failed to create");
-      return;
-    }
-    toast.success("Skill created");
-    onCreated(data as EmailSkill);
-    reset();
-    onOpenChange(false);
-  };
+  const byCampaign = new Set(
+    profiles.map((p) => p.campaign_id).filter(Boolean) as string[],
+  );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTrigger
-        render={
-          <Button variant="outline" size="sm" className="gap-1.5">
-            <Plus className="size-3.5" />
-            New Skill
-          </Button>
-        }
-      />
-      <DialogContent className="sm:max-w-[560px]">
-        <DialogTitle>Create email skill</DialogTitle>
-        <div className="space-y-3">
-          <div>
-            <label className="text-muted-foreground mb-1 block text-xs font-medium">
-              Name
-            </label>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Short & direct"
-              disabled={saving}
-            />
-          </div>
-          <div>
-            <label className="text-muted-foreground mb-1 block text-xs font-medium">
-              Description
-            </label>
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="One-line summary (optional)"
-              disabled={saving}
-            />
-          </div>
-          <div>
-            <label className="text-muted-foreground mb-1 block text-xs font-medium">
-              Instructions
-            </label>
-            <Textarea
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              rows={10}
-              placeholder="Write imperative rules. Example: 'Never exceed 3 sentences. Open with the specific trigger signal.'"
-              className="font-mono text-xs"
-              disabled={saving}
-            />
-          </div>
+    <div className="border-border bg-card rounded-xl border">
+      <div className="border-border border-b px-5 py-4 md:px-6">
+        <h2 className="type-large text-foreground">Per-campaign voices</h2>
+        <p className="text-muted-foreground text-sm">
+          Each campaign can have its own, interviewed against that audience.
+          Campaigns without one fall back to your default.
+        </p>
+      </div>
+      <ul>
+        {campaigns.map((c) => {
+          const has = byCampaign.has(c.id);
+          return (
+            <li
+              key={c.id}
+              className="border-border flex items-center justify-between gap-3 border-b px-5 py-3 last:border-b-0 md:px-6"
+            >
+              <div className="min-w-0">
+                <p className="text-foreground truncate text-sm font-medium">
+                  {c.name}
+                </p>
+                <p className="text-muted-foreground flex items-center gap-1 text-xs">
+                  {has ? (
+                    <>
+                      <Check className="size-3" aria-hidden />
+                      Has its own voice
+                    </>
+                  ) : (
+                    "Using your default"
+                  )}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                render={<SafeLink href={`/email-skills?campaign=${c.id}`} />}
+              >
+                {has ? "View" : "Build"}
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Wider than /settings on purpose: the two comparison emails have to sit side
+ * by side at a measure you can actually read.
+ */
+function PageShell({
+  scopeLabel,
+  children,
+}: {
+  scopeLabel: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
+        <div>
+          <h1 className="type-title">
+            {scopeLabel ? `Email voice — ${scopeLabel}` : "Email voice"}
+          </h1>
+          <p className="text-muted-foreground text-sm">
+            {scopeLabel
+              ? "How this campaign's cold emails sound. Written by the agent after it interviews you about this audience."
+              : "How your cold emails sound. Each campaign can have its own voice; this default covers the rest."}
+          </p>
+          {scopeLabel && (
+            <SafeLink
+              href="/email-skills"
+              className="text-muted-foreground hover:text-foreground mt-2 inline-block text-xs underline underline-offset-2"
+            >
+              All email voices
+            </SafeLink>
+          )}
         </div>
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline" disabled={saving} />}>
-            Cancel
-          </DialogClose>
-          <Button
-            onClick={handleCreate}
-            disabled={saving || !name || !instructions}
-          >
-            {saving ? "Creating..." : "Create"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * `useSearchParams` opts a page out of prerendering unless it sits under a
+ * Suspense boundary — without one `next build` fails on this route while
+ * `next dev` renders it fine. The fallback is the page chrome the scoped view
+ * would draw anyway, so the boundary costs nothing visually.
+ */
+export default function EmailVoicePage() {
+  return (
+    <Suspense
+      fallback={
+        <PageShell scopeLabel={null}>
+          <div className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
+            <Loader2 className="size-4 animate-spin" />
+            Loading your email voice...
+          </div>
+        </PageShell>
+      }
+    >
+      <EmailVoiceScope />
+    </Suspense>
   );
 }

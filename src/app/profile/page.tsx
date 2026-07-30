@@ -13,7 +13,6 @@ import {
   PageHeaderSkeleton,
 } from "@/components/ui/skeleton-presets";
 import { Textarea } from "@/components/ui/textarea";
-import { EmailSkillsAttacher } from "@/components/email-skills/email-skills-attacher";
 import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@clerk/nextjs";
 import { profileDisplayName } from "@/lib/types/profile";
@@ -432,15 +431,6 @@ export default function ProfilePage() {
                 : "Create Profile"}
           </Button>
         </div>
-
-        <Separator />
-
-        <EmailSkillsAttacher
-          scopeType="profile"
-          scopeId={selectedId}
-          title="Email skills for this profile"
-          description="Applied whenever a campaign uses this sender identity."
-        />
       </div>
     </div>
   );

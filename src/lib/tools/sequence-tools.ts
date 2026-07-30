@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createClient, getSupabaseAndUser } from "@/lib/supabase/server";
 import { composeEmail, mapConcurrent } from "@/lib/email-composition/compose";
-import { loadActiveEmailSkills } from "@/lib/email-composition/load-skills";
+import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { saveDraft } from "@/lib/email-composition/save";
 
 export const createSequence = tool({
@@ -278,7 +278,10 @@ export const draftEmailsForSequence = tool({
     "per contact × step, and saves drafts to the database. This is the " +
     "preferred way to draft sequence emails — the main agent does not need " +
     "to loop through contacts or call writeEmail itself. Use writeEmail only " +
-    "for ad-hoc single-draft flows outside a sequence.",
+    "for ad-hoc single-draft flows outside a sequence. " +
+    "If the campaign has no email voice yet this returns needsVoice instead of " +
+    "drafting — offer the user the interview or an explicit skip, then call " +
+    "again with voiceChoice.",
   inputSchema: z.object({
     sequenceId: z.string().uuid().describe("Sequence ID to draft emails for."),
     concurrency: z
@@ -288,8 +291,17 @@ export const draftEmailsForSequence = tool({
       .max(12)
       .default(6)
       .describe("How many sub-agents to run in parallel. Default 6."),
+    voiceChoice: z
+      .enum(["interviewed", "skip"])
+      .optional()
+      .describe(
+        "The user's decision about this campaign's email voice. Omit on the " +
+          "first call: if the campaign has no voice you get needsVoice back and " +
+          "should ask the user. Pass 'skip' once they have chosen to go ahead " +
+          "without one, or 'interviewed' after they have built it.",
+      ),
   }),
-  execute: async ({ sequenceId, concurrency }) => {
+  execute: async ({ sequenceId, concurrency, voiceChoice }) => {
     const ctx = await getSupabaseAndUser();
     if (!ctx) {
       return {
@@ -361,11 +373,37 @@ export const draftEmailsForSequence = tool({
         : { data: [] };
     const orgMap = new Map((orgs ?? []).map((o) => [o.id, o]));
 
-    const activeSkills = await loadActiveEmailSkills(supabase, {
+    // Scoped to the campaign so the voice matches this audience, falling back
+    // to the user's default when the campaign has none.
+    const voice = await loadVoiceProfile(
+      supabase,
       userId,
-      profileId: campaign.profile_id as string | null,
-      campaignId: campaign.id as string,
-    });
+      sequence.campaign_id,
+    );
+
+    // Gate the first drafting run on a decision about this campaign's voice.
+    // A voice interviewed against this campaign's ICP writes about the right
+    // signals in the user's own register; the alternative is copy that reads
+    // as generic, which is the failure mode the base rules spend most of their
+    // length trying to avoid. The user can still decline — but explicitly,
+    // before a batch of drafts exists, rather than discovering it afterwards.
+    const hasCampaignVoice = voice?.campaign_id === sequence.campaign_id;
+    if (!hasCampaignVoice && !voiceChoice) {
+      return {
+        needsVoice: true,
+        campaignId: sequence.campaign_id,
+        campaignName: campaign.name,
+        usingFallbackVoice: Boolean(voice),
+        message:
+          `"${campaign.name}" has no email voice yet. Ask the user whether to build one before drafting, and tell them why it matters: ` +
+          `the interview learns how they write and which signals to open on for this specific audience, so the drafts read as written by them rather than as generic outreach. ` +
+          (voice
+            ? "If they skip, drafting will use their default voice, which was built for a different campaign and may reference the wrong kind of signal. "
+            : "If they skip, drafting will use the base rules only, with no personal voice at all. ") +
+          `They can build it at /email-skills?campaign=${sequence.campaign_id} (about 8-14 questions). ` +
+          `Once they have decided, call this tool again with voiceChoice: "interviewed" or "skip".`,
+      };
+    }
 
     // Build the (contact × step) task list. Skip contacts with no email.
     type Task = {
@@ -412,7 +450,7 @@ export const draftEmailsForSequence = tool({
         : null;
 
       const composed = await composeEmail({
-        skills: activeSkills,
+        voice,
         contact: {
           name: person.name ?? null,
           title: person.title ?? null,
@@ -503,7 +541,22 @@ export const draftEmailsForSequence = tool({
       total: results.length,
       reviewUrl: `/outreach/review?sequence=${sequenceId}`,
       failures: failed.length > 0 ? failed : undefined,
-      message: `Drafted ${drafted} of ${results.length} emails (${skipped} skipped, ${failed.length} failed). Tell the user to review at /outreach/review?sequence=${sequenceId}.`,
+      // Surfaced so the agent can tell the user which voice actually wrote
+      // these, rather than leaving them to infer it from the copy.
+      voiceScope: hasCampaignVoice
+        ? "campaign"
+        : voice
+          ? "user-default"
+          : "base-rules",
+      voiceSkipped: voiceChoice === "skip" || undefined,
+      message:
+        `Drafted ${drafted} of ${results.length} emails (${skipped} skipped, ${failed.length} failed). ` +
+        (hasCampaignVoice
+          ? ""
+          : voice
+            ? "Written in the user's default voice, not one built for this campaign. "
+            : "Written from the base rules only — no personal voice. ") +
+        `Tell the user to review at /outreach/review?sequence=${sequenceId}.`,
     };
   },
 });

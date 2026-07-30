@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ChevronDown, Mail } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { CampaignVoiceLink } from "@/components/campaign/campaign-voice-link";
 import { CsvUpload } from "@/components/campaign/csv-upload";
 import { ProfileSelector } from "@/components/campaign/profile-selector";
 import { CampaignSignalsPopover } from "@/components/signals/campaign-signals-popover";
@@ -110,6 +111,7 @@ export function CampaignHeader({
             <span>
               {companyCount} {companyCount === 1 ? "company" : "companies"}
             </span>
+            <CampaignVoiceLink campaignId={campaign.id} />
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">

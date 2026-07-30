@@ -2,7 +2,6 @@
 
 import { useSyncExternalStore } from "react";
 import { useTheme } from "next-themes";
-import { useAuth } from "@clerk/nextjs";
 
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,7 +9,6 @@ import { CostCenter } from "@/components/settings/cost-center";
 import { EmailSettings } from "@/components/settings/email-settings";
 import { IntegrationsPanel } from "@/components/settings/integrations-panel";
 import { SettingsSection } from "@/components/settings/settings-section";
-import { EmailSkillsAttacher } from "@/components/email-skills/email-skills-attacher";
 
 const noop = () => () => {};
 const getTrue = () => true;
@@ -39,8 +37,6 @@ function DarkModeToggle() {
 }
 
 export default function SettingsPage() {
-  const { userId } = useAuth();
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="mx-auto max-w-3xl space-y-6 p-4 md:p-6">
@@ -61,13 +57,6 @@ export default function SettingsPage() {
 
           <TabsContent value="email" className="space-y-8">
             <EmailSettings />
-            <EmailSkillsAttacher
-              scopeType="user"
-              scopeId={userId ?? null}
-              title="Default email skills"
-              description="Markdown rule packs applied to every email you draft, across all campaigns."
-              unscopedMessage="Signing in…"
-            />
           </TabsContent>
 
           <TabsContent value="integrations">
