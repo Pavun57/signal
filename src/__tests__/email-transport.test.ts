@@ -61,6 +61,21 @@ describe("resolveSenderConfig", () => {
     expect(result).toEqual({ error: expect.stringContaining("connect") });
   });
 
+  it("returns an error (not a throw) for undecryptable credentials", async () => {
+    const result = await resolveSenderConfig(
+      fakeSupabase({
+        gmail_address: "jay@sahnan.co",
+        gmail_app_password_enc: "not.valid.ciphertext",
+        gmail_connected_at: null,
+        from_name: null,
+        reply_to_email: null,
+        daily_send_limit: 30,
+      }),
+      "user_1",
+    );
+    expect(result).toEqual({ error: expect.stringContaining("Reconnect") });
+  });
+
   it("errors when no settings row exists", async () => {
     const result = await resolveSenderConfig(fakeSupabase(null), "user_1");
     expect(result).toEqual({ error: expect.stringContaining("connect") });

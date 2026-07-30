@@ -98,6 +98,21 @@ describe("classifyInboundMessage", () => {
     ).toBeNull();
   });
 
+  it("does not drop replies from lookalike addresses containing ours", () => {
+    expect(
+      classifyInboundMessage(
+        {
+          fromAddress: "ajay@sahnan.co",
+          inReplyTo: "<sent-1@sahnan.co>",
+          references: [],
+          bodyText: "",
+        },
+        pending,
+        "jay@sahnan.co",
+      ),
+    ).toEqual({ status: "replied", sentEmailId: "email_row_1" });
+  });
+
   it("is case-insensitive on our own address", () => {
     expect(
       classifyInboundMessage(

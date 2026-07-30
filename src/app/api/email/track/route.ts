@@ -61,11 +61,15 @@ export async function POST(request: Request) {
 
   const supabase = getAdminClient();
 
-  // Load recent sent emails that haven't reached a terminal state
+  // Load recent sent emails that haven't reached a terminal state. Clamped
+  // to 14 days: unanswered sends and migrated legacy rows must not drag the
+  // IMAP fetch window (each user's real inbox!) weeks into the past.
+  const windowStart = new Date(Date.now() - 14 * 86400_000).toISOString();
   const { data: emails, error } = await supabase
     .from("sent_emails")
     .select("id, message_id, campaign_people_id, user_id, status, sent_at")
     .in("status", ["sent", "delivered", "opened"])
+    .gte("sent_at", windowStart)
     .order("sent_at", { ascending: false })
     .limit(100);
 
@@ -145,7 +149,9 @@ export async function POST(request: Request) {
 
     const pending = new Map<string, string>();
     for (const e of userEmails) {
-      if (e.message_id) pending.set(e.message_id, e.id);
+      // Only RFC 5322 Message-IDs ("<...>") can ever match a reply header;
+      // legacy provider ids would just waste window and lookups.
+      if (e.message_id?.startsWith("<")) pending.set(e.message_id, e.id);
     }
     if (pending.size === 0) continue;
 

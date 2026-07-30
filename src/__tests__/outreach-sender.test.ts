@@ -98,15 +98,10 @@ function settingsRow(overrides: Record<string, unknown> = {}) {
 
 // Await order inside sendApprovedDraft:
 // 0 step select · 1 draft select · 2 settings select (resolveSenderConfig) ·
-// 3 daily-cap count · 4 claim update
+// 3 claim update · 4 daily-cap count (after the claim, latest snapshot)
 // then send, then bookkeeping (insert, updates, next-step select, enrollment)
 function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
-  return [
-    { data: { id: "step_1" } },
-    { data: draft },
-    { data: settings },
-    { count: 0 },
-  ];
+  return [{ data: { id: "step_1" } }, { data: draft }, { data: settings }];
 }
 
 let savedKey: string | undefined;
@@ -125,6 +120,7 @@ describe("sendApprovedDraft claim semantics", () => {
     const { client, calls } = fakeSupabase([
       ...preSendResponses(),
       { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent
@@ -147,7 +143,7 @@ describe("sendApprovedDraft claim semantics", () => {
       }),
     );
 
-    const claim = calls[4];
+    const claim = calls[3];
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -160,7 +156,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
 
     // The sent_emails row records the RFC Message-ID and the real address.
-    const insert = calls[5];
+    const insert = calls[5]; // 4 is the cap count (also sent_emails)
     expect(insert.table).toBe("sent_emails");
     expect(insert.ops).toContainEqual({
       name: "insert",
@@ -177,6 +173,7 @@ describe("sendApprovedDraft claim semantics", () => {
     const { client } = fakeSupabase([
       ...preSendResponses(settingsRow({ reply_to_email: "jay@jaysahnan.com" })),
       { data: { id: draft.id } },
+      { count: 0 },
       {},
       {},
       {},
@@ -193,8 +190,8 @@ describe("sendApprovedDraft claim semantics", () => {
     );
   });
 
-  it("refuses to send past the ramp limit for a fresh mailbox", async () => {
-    const { client } = fakeSupabase([
+  it("refuses to send past the ramp limit and releases the claim", async () => {
+    const { client, calls } = fakeSupabase([
       { data: { id: "step_1" } },
       { data: draft },
       {
@@ -202,7 +199,9 @@ describe("sendApprovedDraft claim semantics", () => {
           gmail_connected_at: new Date().toISOString(), // day 0 → ramp cap 5
         }),
       },
+      { data: { id: draft.id } }, // claim won
       { count: 5 }, // already sent 5 today
+      {}, // claim release
     ]);
 
     const result = await sendApprovedDraft(client, enrollment);
@@ -212,12 +211,21 @@ describe("sendApprovedDraft claim semantics", () => {
       reason: expect.stringContaining("warmup ramp"),
     });
     expect(sendGmailMock).not.toHaveBeenCalled();
+    // The capped draft must go back to "draft" so tomorrow's cron sends it.
+    const release = calls[5];
+    expect(release.table).toBe("email_drafts");
+    expect(release.ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ status: "draft" })],
+    });
   });
 
   it("refuses to send past the configured daily cap", async () => {
     const { client } = fakeSupabase([
-      ...preSendResponses(settingsRow({ daily_send_limit: 10 })).slice(0, 3),
+      ...preSendResponses(settingsRow({ daily_send_limit: 10 })),
+      { data: { id: draft.id } }, // claim won
       { count: 10 },
+      {}, // claim release
     ]);
 
     const result = await sendApprovedDraft(client, enrollment);
@@ -262,6 +270,7 @@ describe("sendApprovedDraft claim semantics", () => {
     const { client, calls } = fakeSupabase([
       ...preSendResponses(),
       { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // release update
     ]);
     sendGmailMock.mockRejectedValue(new Error("SMTP 421 try again later"));
@@ -290,7 +299,8 @@ describe("sendApprovedDraft claim semantics", () => {
 
     const base = fakeSupabase([
       ...preSendResponses(),
-      { data: { id: draft.id } },
+      { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
     ]);
     const origFrom = (base.client as { from: (t: string) => unknown }).from;
     // The sent_emails insert (first call after the send) blows up. Note the

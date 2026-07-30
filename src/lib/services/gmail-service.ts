@@ -19,6 +19,11 @@ function smtpTransport(creds: GmailCreds) {
     port: 465,
     secure: true,
     auth: { user: creds.address, pass: creds.appPassword },
+    // Fail fast instead of riding nodemailer's 2-minute defaults into the
+    // route's maxDuration.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 30_000,
   });
 }
 
@@ -29,6 +34,8 @@ function imapClient(creds: GmailCreds) {
     secure: true,
     auth: { user: creds.address, pass: creds.appPassword },
     logger: false,
+    connectionTimeout: 10_000,
+    socketTimeout: 60_000,
   });
 }
 
@@ -112,30 +119,42 @@ export async function fetchInboundSince(
   const imap = imapClient(creds);
   await imap.connect();
   const results: InboundSummary[] = [];
+  const daemonDownloads: Array<{ uid: number; index: number }> = [];
   try {
     const lock = await imap.getMailboxLock("INBOX");
     try {
+      // Collect rows ONLY inside the fetch loop. imapflow forbids issuing
+      // other IMAP commands while the fetch generator is live: the FETCH
+      // doesn't complete until every row is consumed, and a nested command
+      // (like download) queues behind it — mutual wait, guaranteed hang.
       for await (const msg of imap.fetch(
         { since },
         { envelope: true, headers: ["references"], uid: true },
       )) {
         const fromAddress = msg.envelope?.from?.[0]?.address ?? "";
         const isDaemon = /mailer-daemon|postmaster/i.test(fromAddress);
-        let bodyText = "";
-        if (isDaemon) {
-          const dl = await imap.download(String(msg.uid), undefined, {
-            uid: true,
-          });
-          bodyText = dl
-            ? (await streamToString(dl.content)).slice(0, 20_000)
-            : "";
-        }
         results.push({
           fromAddress,
           inReplyTo: msg.envelope?.inReplyTo?.trim() || null,
           references: msg.headers?.toString().match(/<[^<>\s]+>/g) ?? [],
-          bodyText,
+          bodyText: "",
         });
+        if (isDaemon && msg.uid) {
+          daemonDownloads.push({ uid: msg.uid, index: results.length - 1 });
+        }
+      }
+
+      // Bounce bodies (needed to match reports that quote the Message-ID
+      // instead of threading) are downloaded after the fetch completes.
+      for (const { uid, index } of daemonDownloads) {
+        const dl = await imap.download(String(uid), undefined, { uid: true });
+        // download resolves with an empty object for a missing message.
+        if (dl?.content) {
+          results[index].bodyText = (await streamToString(dl.content)).slice(
+            0,
+            20_000,
+          );
+        }
       }
     } finally {
       lock.release();
@@ -167,7 +186,11 @@ export function classifyInboundMessage(
   ourAddress: string,
 ): { status: "replied" | "bounced"; sentEmailId: string } | null {
   const from = message.fromAddress.toLowerCase();
-  if (!from || from.includes(ourAddress.toLowerCase())) return null;
+  if (!from) return null;
+  // Compare the parsed address for equality, not substring — a reply from
+  // ajay@sahnan.co must not be dropped as "our own" when we are jay@sahnan.co.
+  const fromEmail = from.match(/[^\s<>"']+@[^\s<>"']+/)?.[0] ?? from;
+  if (fromEmail === ourAddress.toLowerCase()) return null;
 
   const isDaemon = /mailer-daemon|postmaster|mail delivery subsystem/.test(
     from,

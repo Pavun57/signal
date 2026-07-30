@@ -162,8 +162,8 @@ describe("sendEmail review gating", () => {
     const { calls } = wire([
       { data: { ...baseDraft, review_status: "approved" } }, // draft select
       settingsResponse(), // resolveSenderConfig
-      { count: 0 }, // daily-cap count
       { data: { id: baseDraft.id } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent
@@ -181,7 +181,7 @@ describe("sendEmail review gating", () => {
     });
     expect(sendGmailMock).toHaveBeenCalledTimes(1);
 
-    const claim = calls[3];
+    const claim = calls[2];
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -194,7 +194,6 @@ describe("sendEmail review gating", () => {
     wire([
       { data: { ...baseDraft, review_status: "approved" } },
       settingsResponse(),
-      { count: 0 },
       { data: null }, // claim lost
     ]);
 
@@ -221,8 +220,8 @@ describe("sendBulkEmails review gating", () => {
       },
       { data: [{ ...baseDraft, id: "d_ok", review_status: "approved" }] },
       settingsResponse(),
-      { count: 0 }, // daily-cap count
       { data: { id: "d_ok" } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent

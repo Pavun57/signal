@@ -54,29 +54,6 @@ export async function claimAndSendDraft(
 ): Promise<SendResult> {
   const now = new Date().toISOString();
 
-  // Warmup-aware daily cap, checked before the claim so a capped run leaves
-  // drafts untouched for tomorrow's cron.
-  const effectiveLimit = getEffectiveDailyLimit(
-    sender.connectedAt,
-    sender.dailyLimit,
-  );
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-  const { count } = await supabase
-    .from("sent_emails")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", draft.user_id)
-    .gte("sent_at", todayStart.toISOString());
-
-  if ((count ?? 0) >= effectiveLimit) {
-    return {
-      ok: false,
-      reason: `Daily send limit reached (${effectiveLimit}/day${
-        effectiveLimit < sender.dailyLimit ? ", warmup ramp" : ""
-      }) — draft left for tomorrow`,
-    };
-  }
-
   // Atomically claim the draft before sending. Overlapping callers — the
   // followups cron racing a send-now click, agent retries, or two process
   // invocations — all pass their reads; only the one whose conditional
@@ -91,6 +68,38 @@ export async function claimAndSendDraft(
 
   if (!claimed) {
     return { ok: false, reason: "Draft already claimed by another send" };
+  }
+
+  // Warmup-aware daily cap, counted AFTER winning the claim so the snapshot
+  // is as late as possible. Concurrent callers claiming different drafts can
+  // still each read a pre-insert count, so the cap can overshoot by at most
+  // the number of concurrent send paths (cron + send-now + agent tool ≈ 3) —
+  // an accepted tolerance; exact enforcement would need a DB-side lock.
+  const effectiveLimit = getEffectiveDailyLimit(
+    sender.connectedAt,
+    sender.dailyLimit,
+  );
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const { count } = await supabase
+    .from("sent_emails")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", draft.user_id)
+    .gte("sent_at", todayStart.toISOString());
+
+  if ((count ?? 0) >= effectiveLimit) {
+    // Release the claim — the draft should send tomorrow, not rot in queued.
+    await supabase
+      .from("email_drafts")
+      .update({ status: "draft", updated_at: new Date().toISOString() })
+      .eq("id", draft.id)
+      .eq("status", "queued");
+    return {
+      ok: false,
+      reason: `Daily send limit reached (${effectiveLimit}/day${
+        effectiveLimit < sender.dailyLimit ? ", warmup ramp" : ""
+      }) — draft left for tomorrow`,
+    };
   }
 
   // Only a failure of the send itself releases the claim. Once the email has
@@ -129,7 +138,7 @@ export async function claimAndSendDraft(
   // random value: an unmatched id is better than an unmatchable one.
   const messageId = sent.messageId || null;
 
-  await supabase.from("sent_emails").insert({
+  const { error: insertError } = await supabase.from("sent_emails").insert({
     message_id: messageId,
     draft_id: draft.id,
     campaign_people_id: draft.campaign_people_id,
@@ -142,6 +151,14 @@ export async function claimAndSendDraft(
     status: "sent",
     sent_at: now,
   });
+  if (insertError) {
+    // The email already left — never release the claim — but a missing
+    // sent_emails row is invisible to cap counting, reply tracking, and the
+    // cleanup reconciler, so it must at least be loud.
+    console.error(
+      `[outreach-sender] sent_emails insert failed for draft ${draft.id} (message ${messageId}): ${insertError.message}`,
+    );
+  }
 
   await supabase
     .from("email_drafts")

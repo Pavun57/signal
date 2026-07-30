@@ -37,9 +37,22 @@ export async function resolveSenderConfig(
     return { error: NOT_CONNECTED };
   }
 
+  // A rotated EMAIL_CREDENTIALS_KEY or corrupt ciphertext must fail as this
+  // user's error, not an exception — a throw here would 500 the multi-tenant
+  // followups cron and halt every user's sends.
+  let appPassword: string;
+  try {
+    appPassword = decryptSecret(settings.gmail_app_password_enc);
+  } catch {
+    return {
+      error:
+        "Stored Gmail credentials can't be decrypted (encryption key changed?). Reconnect your mailbox in Settings > Email.",
+    };
+  }
+
   return {
     address: settings.gmail_address,
-    appPassword: decryptSecret(settings.gmail_app_password_enc),
+    appPassword,
     fromName: settings.from_name ?? null,
     replyTo: settings.reply_to_email ?? null,
     dailyLimit: settings.daily_send_limit ?? DEFAULT_DAILY_LIMIT,
