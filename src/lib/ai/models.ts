@@ -2,7 +2,7 @@ export const MODELS = {
   AGENT: "claude-sonnet-4-6",
   CHAT: "claude-sonnet-4-6",
 
-  EMAIL: "claude-opus-4-6",
+  EMAIL: "claude-opus-5",
 
   BROWSER: "claude-sonnet-4-6",
   STRUCTURED: "claude-sonnet-4-6",

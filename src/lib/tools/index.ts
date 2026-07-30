@@ -71,14 +71,6 @@ import {
   draftEmailsForSequence,
   getSequenceStatus,
 } from "./sequence-tools";
-import {
-  listEmailSkills,
-  getEmailSkillDetail,
-  createEmailSkill,
-  updateEmailSkill,
-  deleteEmailSkill,
-  toggleEmailSkill,
-} from "./email-skill-tools";
 import { getPostHogClient } from "@/lib/posthog-server";
 
 const rawTools = {
@@ -141,12 +133,6 @@ const rawTools = {
   draftSequenceEmails,
   draftEmailsForSequence,
   getSequenceStatus,
-  listEmailSkills,
-  getEmailSkillDetail,
-  createEmailSkill,
-  updateEmailSkill,
-  deleteEmailSkill,
-  toggleEmailSkill,
 };
 
 type ToolCtx = { userId?: string; campaignId?: string | null };

@@ -168,7 +168,7 @@ export async function cleanupTestUsers(): Promise<void> {
   await supabase.from("sequences").delete().in("user_id", ids);
   await supabase.from("campaigns").delete().in("user_id", ids);
   await supabase.from("user_profile").delete().in("user_id", ids);
-  await supabase.from("email_skill_attachments").delete().in("scope_id", ids);
+  await supabase.from("email_voice_profiles").delete().in("user_id", ids);
 
   for (const u of targets) {
     await clerk.users.deleteUser(u.id);

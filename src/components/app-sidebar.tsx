@@ -8,6 +8,7 @@ import {
   Mail,
   MessageCircle,
   MessageSquare,
+  PenLine,
   Settings,
   Target,
   UserCircle,
@@ -66,6 +67,15 @@ const navItems = [
     title: "Profiles",
     url: "/profile",
     icon: UserCircle,
+  },
+  // The email voice wizard used to be reachable only from the skills attacher
+  // that lived on the settings and profile pages. That component is gone, so
+  // without an entry here the page is unreachable — and the system prompt tells
+  // the agent to send users to it.
+  {
+    title: "Email voice",
+    url: "/email-skills",
+    icon: PenLine,
   },
 ];
 

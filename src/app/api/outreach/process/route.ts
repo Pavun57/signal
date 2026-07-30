@@ -8,7 +8,7 @@ import {
   type Candidate,
 } from "@/lib/services/contact-selector";
 import { composeEmail } from "@/lib/email-composition/compose";
-import { loadActiveEmailSkills } from "@/lib/email-composition/load-skills";
+import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { saveDraft } from "@/lib/email-composition/save";
 
 export const maxDuration = 120;
@@ -252,16 +252,9 @@ async function pickAndDraft(
     .single();
 
   const ownerId = sequences[0]?.user_id ?? null;
-  const activeSkills = ownerId
-    ? await loadActiveEmailSkills(
-        supabase as unknown as Parameters<typeof loadActiveEmailSkills>[0],
-        {
-          userId: ownerId,
-          profileId: (campaign?.profile_id as string | null) ?? null,
-          campaignId: payload.campaignId,
-        },
-      )
-    : [];
+  const voice = ownerId
+    ? await loadVoiceProfile(supabase, ownerId, payload.campaignId)
+    : null;
 
   let drafted = 0;
 
@@ -333,7 +326,7 @@ async function pickAndDraft(
 
       // Compose.
       const composed = await composeEmail({
-        skills: activeSkills,
+        voice,
         contact: {
           name: (person.name as string) ?? null,
           title: (person.title as string) ?? null,
