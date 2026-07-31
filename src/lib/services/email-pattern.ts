@@ -8,6 +8,7 @@ export type EmailSource =
   | "send_confirmed"
   | "team_page"
   | "exa_search"
+  | "provider_found"
   | "pattern_derived";
 
 export interface VerifiedEmail {
@@ -22,8 +23,15 @@ export interface VerifiedEmail {
 export const SOURCE_WEIGHT: Record<EmailSource, number> = {
   user_entered: 1.0,
   send_confirmed: 0.95,
+  // A dedicated email provider returned this address for this person at this
+  // domain. Ranked above a team-page scrape because it is an answer to the
+  // question we asked, not a string that happened to sit near the name on a
+  // page — and well above exa_search for the same reason.
+  provider_found: 0.75,
   team_page: 0.7,
   exa_search: 0.3,
+  // A guess, by construction. Zero weight keeps derived addresses out of the
+  // evidence that infers the pattern they came from.
   pattern_derived: 0,
 };
 

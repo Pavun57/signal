@@ -17,11 +17,17 @@ import {
   isRolePrefix,
   mxCheck,
   recomputeOrgPattern,
-  recordVerifiedEmail,
   splitName,
   SOURCE_WEIGHT,
+  type EmailSource,
   type VerifiedEmail,
 } from "@/lib/services/email-pattern";
+import {
+  getEmailProvider,
+  MAX_VERIFICATIONS_PER_PERSON,
+  type EmailVerification,
+  type VerifyResult,
+} from "@/lib/services/email-provider";
 
 // ── Shared findEmail logic ─────────────────────────────────────────────────
 
@@ -31,10 +37,70 @@ const PATTERN_CONFIDENCE_THRESHOLD = 0.5;
 const PATTERN_DERIVED_CONFIDENCE_FACTOR = 0.85;
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
+/**
+ * Confidence awarded to an address a verifier confirmed as deliverable,
+ * whatever produced it. This is the point of the whole exercise: proof of
+ * delivery outranks provenance, so a pattern guess that verifies is as
+ * trustworthy as one scraped off a team page.
+ */
+const VERIFIED_CONFIDENCE = 0.95;
+/** Catch-all domains accept everything, so "deliverable" there proves nothing. */
+const CATCH_ALL_CONFIDENCE_CAP = 0.5;
+/** The verifier was asked and shrugged — better than unchecked, well short of proof. */
+const UNRESOLVED_CONFIDENCE_CAP = 0.6;
+
+/** One address the waterfall produced, before anyone has checked whether it works. */
+interface EmailCandidate {
+  email: string;
+  source: Exclude<EmailSource, "user_entered" | "send_confirmed">;
+  /** What we'd have written for this address before verification existed. */
+  discoveryConfidence: number;
+}
+
+/**
+ * Adds a candidate if it is plausible and not already present.
+ *
+ * Ordering is significance-ordered by the caller, so the first occurrence of an
+ * address wins and later duplicates are dropped — that keeps the strongest
+ * provenance when two strategies converge on the same string (which they
+ * routinely do: an org pattern and a blind {first}.{last} agree whenever the
+ * pattern *is* {first}.{last}).
+ */
+function pushCandidate(
+  candidates: EmailCandidate[],
+  candidate: EmailCandidate | null,
+  first: string | null,
+  last: string | null,
+): void {
+  if (!candidate) return;
+  const email = candidate.email.toLowerCase();
+  if (isRolePrefix(email.split("@")[0])) return;
+  if (!emailMatchesName(email, first, last)) return;
+  if (candidates.some((c) => c.email === email)) return;
+  candidates.push({ ...candidate, email });
+}
+
+/**
+ * Finds a work email for a person and, where a provider is configured, proves
+ * it exists before writing it.
+ *
+ * The shape here matters. Every step used to write-and-return the instant it
+ * produced a string, which meant the *first* strategy to guess something won,
+ * regardless of whether the address was real — and the last strategy is a blind
+ * {first}.{last}@domain. Now the strategies only nominate candidates; a
+ * verifier decides. That inverts the ranking: proof of delivery outranks
+ * provenance, so a pattern guess that verifies beats a scraped address that
+ * doesn't.
+ *
+ * With no provider configured this degrades to the old behaviour — best
+ * candidate by discovery order, marked `unchecked` — so a self-hosted instance
+ * without a key keeps working exactly as before.
+ */
 export async function findEmailForPerson(personId: string): Promise<{
   email: string | null;
   source?: string;
   confidence?: number;
+  verification?: EmailVerification | "unchecked";
   reason?: string;
   personId: string;
 }> {
@@ -43,7 +109,7 @@ export async function findEmailForPerson(personId: string): Promise<{
   const { data: person, error: personErr } = await supabase
     .from("people")
     .select(
-      "id, name, title, work_email, personal_email, organization_id, work_email_source, work_email_confidence",
+      "id, name, title, work_email, personal_email, organization_id, work_email_source, work_email_confidence, work_email_verification, enrichment_data",
     )
     .eq("id", personId)
     .single();
@@ -57,6 +123,7 @@ export async function findEmailForPerson(personId: string): Promise<{
       email: person.work_email,
       source: person.work_email_source ?? "existing",
       confidence: person.work_email_confidence ?? undefined,
+      verification: person.work_email_verification ?? "unchecked",
       personId,
     };
   }
@@ -65,60 +132,339 @@ export async function findEmailForPerson(personId: string): Promise<{
   }
 
   let domain: string | null = null;
+  let orgIsCatchAll: boolean | null = null;
   if (person.organization_id) {
     const { data: org } = await supabase
       .from("organizations")
-      .select("domain, name")
+      .select("domain, name, is_catch_all")
       .eq("id", person.organization_id)
       .single();
     domain = org?.domain ?? null;
+    orgIsCatchAll = org?.is_catch_all ?? null;
   }
 
   const { first, last } = splitName(person.name);
+  const provider = getEmailProvider();
+  const candidates: EmailCandidate[] = [];
 
-  // ── 1) Pattern-first: if the org has a confident pattern, derive + MX-check.
-  if (domain && person.organization_id && first) {
+  // The domain has to be able to receive mail at all before any address at it
+  // is worth proposing — one DNS lookup gates every domain-derived candidate.
+  const domainAcceptsMail = domain ? await mxCheck(domain) : false;
+
+  // ── 1) Org pattern, if we've learned a confident one from verified emails.
+  if (domainAcceptsMail && domain && person.organization_id && first) {
     const orgPattern = await getOrgPattern(supabase, person.organization_id);
     if (
       orgPattern?.pattern &&
       orgPattern.confidence >= PATTERN_CONFIDENCE_THRESHOLD
     ) {
-      const derived = applyPattern(orgPattern.pattern, first, last, domain);
-      if (
-        derived &&
-        !isRolePrefix(derived.split("@")[0]) &&
-        emailMatchesName(derived, first, last)
-      ) {
-        const mxOk = await mxCheck(domain);
-        if (mxOk) {
-          const confidence =
-            orgPattern.confidence * PATTERN_DERIVED_CONFIDENCE_FACTOR;
-          await supabase
-            .from("people")
-            .update({
-              work_email: derived,
-              work_email_source: "pattern_derived",
-              work_email_confidence: confidence,
-            })
-            .eq("id", personId);
-          return {
-            email: derived,
-            source: "pattern_derived",
-            confidence,
-            personId,
-          };
-        }
-      }
+      pushCandidate(
+        candidates,
+        toCandidate(
+          applyPattern(orgPattern.pattern, first, last, domain),
+          "pattern_derived",
+          orgPattern.confidence * PATTERN_DERIVED_CONFIDENCE_FACTOR,
+        ),
+        first,
+        last,
+      );
     }
   }
 
-  // ── 2) Exa search — kept as the discovery path when pattern is missing/weak.
-  const searchQuery = domain
-    ? `"${person.name}" "${domain}" email`
-    : `"${person.name}" email contact`;
+  // ── 2) Paid finder. Placed above Exa because it returns a targeted answer
+  //       rather than whatever address happened to sit near the name on a page.
+  if (provider?.canFind && domainAcceptsMail && domain && first && last) {
+    const hit = await provider.findEmail({
+      firstName: first,
+      lastName: last,
+      domain,
+      linkedinUrl: null,
+    });
+    pushCandidate(
+      candidates,
+      toCandidate(hit?.email ?? null, "provider_found", hit?.confidence ?? 0.7),
+      first,
+      last,
+    );
+  }
 
-  let foundEmail: string | null = null;
-  let foundDomainMatched = false;
+  // ── 3) Exa scrape of pages mentioning the person.
+  for (const email of await searchEmailsViaExa(
+    person.name,
+    domain,
+    first,
+    last,
+    personId,
+  )) {
+    pushCandidate(
+      candidates,
+      toCandidate(email, "exa_search", SOURCE_WEIGHT.exa_search),
+      first,
+      last,
+    );
+  }
+
+  // ── 4) On-the-fly inference from any verified emails already on the org.
+  //       Covers the case where the org has evidence but the cached pattern
+  //       hasn't been recomputed or sits below the threshold.
+  if (domainAcceptsMail && domain && person.organization_id && first && last) {
+    const inferred = await inferPatternFromOrg(
+      supabase,
+      person.organization_id,
+    );
+    if (inferred?.pattern) {
+      pushCandidate(
+        candidates,
+        toCandidate(
+          applyPattern(inferred.pattern, first, last, domain),
+          "pattern_derived",
+          inferred.confidence * PATTERN_DERIVED_CONFIDENCE_FACTOR,
+        ),
+        first,
+        last,
+      );
+    }
+  }
+
+  // ── 5) Blind {first}.{last}. Last because it is a guess with no evidence
+  //       behind it — but a guess a verifier can now confirm or kill.
+  if (domainAcceptsMail && domain && first && last) {
+    pushCandidate(
+      candidates,
+      toCandidate(
+        applyPattern("{first}.{last}", first, last, domain),
+        "pattern_derived",
+        0.2,
+      ),
+      first,
+      last,
+    );
+  }
+
+  if (candidates.length === 0) {
+    return {
+      email: null,
+      reason: "Could not find an email address.",
+      personId,
+    };
+  }
+
+  // ── Verification. Without a provider we cannot check anything, so take the
+  //    best candidate as-is and mark it unchecked.
+  if (!provider?.canVerify) {
+    const best = candidates[0];
+    await writeEmailResult(supabase, personId, best, {
+      confidence: best.discoveryConfidence,
+      verification: "unchecked",
+      verifiedBy: null,
+    });
+    return {
+      email: best.email,
+      source: best.source,
+      confidence: best.discoveryConfidence,
+      verification: "unchecked",
+      personId,
+    };
+  }
+
+  const rejected: string[] = [];
+  let fallback: { candidate: EmailCandidate; result: VerifyResult } | null =
+    null;
+
+  for (const candidate of candidates.slice(0, MAX_VERIFICATIONS_PER_PERSON)) {
+    const result = await provider.verifyEmail(candidate.email);
+
+    // Cache the domain's catch-all status the first time we learn it — it is a
+    // property of the MX config, not of this address, and re-probing it per
+    // contact bills once per person at the same company.
+    if (orgIsCatchAll === null && person.organization_id && result.catchAll) {
+      orgIsCatchAll = true;
+      await supabase
+        .from("organizations")
+        .update({
+          is_catch_all: true,
+          catch_all_checked_at: new Date().toISOString(),
+        })
+        .eq("id", person.organization_id);
+    }
+
+    if (result.status === "undeliverable") {
+      rejected.push(candidate.email);
+      continue;
+    }
+
+    const catchAll = result.catchAll || orgIsCatchAll === true;
+
+    if (result.status === "deliverable" && !catchAll) {
+      await writeEmailResult(supabase, personId, candidate, {
+        confidence: VERIFIED_CONFIDENCE,
+        verification: "deliverable",
+        verifiedBy: provider.id,
+      });
+      await recordNegatives(
+        supabase,
+        personId,
+        person.enrichment_data,
+        rejected,
+      );
+      // A confirmed address is also pattern evidence for everyone else at the
+      // org — this is what finally bootstraps the pattern flywheel, which
+      // cannot start from guesses alone.
+      if (person.organization_id) {
+        await recomputeOrgPattern(supabase, person.organization_id);
+      }
+      return {
+        email: candidate.email,
+        source: candidate.source,
+        confidence: VERIFIED_CONFIDENCE,
+        verification: "deliverable",
+        personId,
+      };
+    }
+
+    // Deliverable-but-catch-all, risky, or unknown. Keep the first one as a
+    // fallback and carry on looking for something provable.
+    if (!fallback) fallback = { candidate, result };
+  }
+
+  await recordNegatives(supabase, personId, person.enrichment_data, rejected);
+
+  if (!fallback) {
+    return {
+      email: null,
+      reason:
+        rejected.length > 0
+          ? `Found ${rejected.length} candidate address(es) but the verifier rejected every one.`
+          : "Could not find an email address.",
+      personId,
+    };
+  }
+
+  // Nothing proved deliverable. Write the best unproven candidate, capped well
+  // below the verified threshold so the UI and the send gate both treat it as
+  // what it is.
+  const catchAll = fallback.result.catchAll || orgIsCatchAll === true;
+  const verification: EmailVerification = catchAll
+    ? "risky"
+    : fallback.result.status;
+  const confidence = Math.min(
+    fallback.candidate.discoveryConfidence,
+    catchAll ? CATCH_ALL_CONFIDENCE_CAP : UNRESOLVED_CONFIDENCE_CAP,
+  );
+
+  await writeEmailResult(supabase, personId, fallback.candidate, {
+    confidence,
+    verification,
+    verifiedBy: provider.id,
+  });
+
+  return {
+    email: fallback.candidate.email,
+    source: fallback.candidate.source,
+    confidence,
+    verification,
+    personId,
+  };
+}
+
+/** Null-safe candidate constructor — applyPattern returns null when unfillable. */
+function toCandidate(
+  email: string | null,
+  source: EmailCandidate["source"],
+  discoveryConfidence: number,
+): EmailCandidate | null {
+  return email ? { email, source, discoveryConfidence } : null;
+}
+
+/** Persists a settled address plus everything we know about how sure we are. */
+async function writeEmailResult(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  personId: string,
+  candidate: EmailCandidate,
+  meta: {
+    confidence: number;
+    verification: EmailVerification | "unchecked";
+    verifiedBy: string | null;
+  },
+): Promise<void> {
+  await supabase
+    .from("people")
+    .update({
+      work_email: candidate.email,
+      work_email_source: candidate.source,
+      work_email_confidence: meta.confidence,
+      work_email_verification: meta.verification,
+      work_email_verified_by: meta.verifiedBy,
+      work_email_verified_at: hasPositiveEvidence(
+        candidate.source,
+        meta.verification,
+      )
+        ? new Date().toISOString()
+        : null,
+    })
+    .eq("id", personId);
+}
+
+/**
+ * Whether we hold independent evidence that this address is real — the question
+ * `work_email_verified_at` actually answers, and what recomputeOrgPattern reads
+ * to decide which addresses may inform an org's pattern.
+ *
+ * Two ways to earn it: a verifier confirmed the mailbox, or the address was
+ * observed somewhere real (a team page, a search result, a provider lookup)
+ * rather than constructed by us. `pattern_derived` is the one source that is
+ * pure inference, so it never qualifies on its own — otherwise a guess would
+ * become evidence for the very pattern that produced it, and the pattern would
+ * confirm itself out of nothing.
+ */
+function hasPositiveEvidence(
+  source: EmailCandidate["source"],
+  verification: EmailVerification | "unchecked",
+): boolean {
+  if (verification === "deliverable") return true;
+  return source !== "pattern_derived";
+}
+
+/**
+ * Remembers addresses a verifier rejected, so a re-run doesn't pay to be told
+ * the same thing twice. Written straight to enrichment_data rather than via
+ * mergeEnrichmentData because that helper also flips enrichment_status to
+ * "enriched", which a failed email lookup has not earned.
+ */
+async function recordNegatives(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  personId: string,
+  existing: unknown,
+  rejected: string[],
+): Promise<void> {
+  if (rejected.length === 0) return;
+  const base = (existing as Record<string, unknown>) ?? {};
+  const priorRaw = base.rejectedEmails;
+  const prior = Array.isArray(priorRaw) ? (priorRaw as string[]) : [];
+  await supabase
+    .from("people")
+    .update({
+      enrichment_data: {
+        ...base,
+        rejectedEmails: [...new Set([...prior, ...rejected])],
+      },
+    })
+    .eq("id", personId);
+}
+
+/** Scrapes candidate addresses for a person out of Exa result text. */
+async function searchEmailsViaExa(
+  name: string,
+  domain: string | null,
+  first: string | null,
+  last: string | null,
+  personId: string,
+): Promise<string[]> {
+  const searchQuery = domain
+    ? `"${name}" "${domain}" email`
+    : `"${name}" email contact`;
+  const onDomain: string[] = [];
+  const offDomain: string[] = [];
 
   try {
     const exa = new ExaService();
@@ -129,23 +475,15 @@ export async function findEmailForPerson(personId: string): Promise<{
 
     for (const result of results.results) {
       if (!result.text) continue;
-      const emails = result.text.match(EMAIL_REGEX) ?? [];
-      for (const candidate of emails) {
-        const lower = candidate.toLowerCase();
-        const atIndex = lower.lastIndexOf("@");
-        const candidateDomain = atIndex >= 0 ? lower.slice(atIndex + 1) : "";
+      for (const match of result.text.match(EMAIL_REGEX) ?? []) {
+        const lower = match.toLowerCase();
+        const candidateDomain = lower.slice(lower.lastIndexOf("@") + 1);
         if (candidateDomain === "example.com") continue;
-        const local = lower.split("@")[0];
-        if (isRolePrefix(local)) continue;
+        if (isRolePrefix(lower.split("@")[0])) continue;
         if (!emailMatchesName(lower, first, last)) continue;
-        if (domain && lower.endsWith(`@${domain}`)) {
-          foundEmail = lower;
-          foundDomainMatched = true;
-          break;
-        }
-        if (!foundEmail) foundEmail = lower;
+        if (domain && lower.endsWith(`@${domain}`)) onDomain.push(lower);
+        else offDomain.push(lower);
       }
-      if (foundEmail && foundDomainMatched) break;
     }
 
     trackUsage({
@@ -155,117 +493,48 @@ export async function findEmailForPerson(personId: string): Promise<{
       metadata: { personId, query: searchQuery },
     });
   } catch {
-    // Exa search failed, fall through to on-the-fly pattern inference.
+    // Exa unavailable — the other strategies still have their say.
   }
 
-  // ── 3) On-the-fly inference: if Exa whiffed, try inferring the pattern from
-  //       any verified emails on the org RIGHT NOW (covers the case where the
-  //       org has verified emails but the cached pattern hasn't been recomputed
-  //       or sits below the confidence threshold).
-  if (!foundEmail && domain && person.organization_id && first && last) {
-    const { data: orgPeople } = await supabase
-      .from("people")
-      .select("name, work_email, work_email_source, work_email_verified_at")
-      .eq("organization_id", person.organization_id)
-      .not("work_email", "is", null)
-      .not("work_email_verified_at", "is", null);
+  // Company-domain hits first: an address at the employer's own domain is
+  // better evidence than a personal one found on the same page.
+  return [...onDomain, ...offDomain];
+}
 
-    const evidence: VerifiedEmail[] = [];
-    for (const p of orgPeople ?? []) {
-      if (!p.work_email || !p.work_email_source) continue;
-      if (p.work_email_source === "pattern_derived") continue;
-      const split = splitName(p.name);
-      if (!split.first || !split.last) continue;
-      evidence.push({
-        email: p.work_email,
-        firstName: split.first,
-        lastName: split.last,
-        source: p.work_email_source,
-      });
-    }
+/**
+ * Infers an email pattern from the org's already-verified emails, right now,
+ * rather than trusting the cached column.
+ */
+async function inferPatternFromOrg(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
+): Promise<{ pattern: string | null; confidence: number } | null> {
+  const { data: orgPeople } = await supabase
+    .from("people")
+    .select("name, work_email, work_email_source, work_email_verified_at")
+    .eq("organization_id", organizationId)
+    .not("work_email", "is", null)
+    .not("work_email_verified_at", "is", null);
 
-    if (evidence.length > 0) {
-      const inferred = inferPattern(evidence);
-      if (inferred.pattern) {
-        const derived = applyPattern(inferred.pattern, first, last, domain);
-        if (
-          derived &&
-          !isRolePrefix(derived.split("@")[0]) &&
-          emailMatchesName(derived, first, last) &&
-          (await mxCheck(domain))
-        ) {
-          const confidence =
-            inferred.confidence * PATTERN_DERIVED_CONFIDENCE_FACTOR;
-          await supabase
-            .from("people")
-            .update({
-              work_email: derived,
-              work_email_source: "pattern_derived",
-              work_email_confidence: confidence,
-            })
-            .eq("id", personId);
-          // Refresh the org's cached pattern so subsequent lookups in a bulk
-          // run hit step 1 instead of re-doing this query + Exa search.
-          await recomputeOrgPattern(supabase, person.organization_id);
-          return {
-            email: derived,
-            source: "pattern_derived",
-            confidence,
-            personId,
-          };
-        }
-      }
-    }
+  const evidence: VerifiedEmail[] = [];
+  for (const p of orgPeople ?? []) {
+    if (!p.work_email || !p.work_email_source) continue;
+    if (p.work_email_source === "pattern_derived") continue;
+    const split = splitName(p.name);
+    if (!split.first || !split.last) continue;
+    evidence.push({
+      email: p.work_email,
+      firstName: split.first,
+      lastName: split.last,
+      source: p.work_email_source,
+    });
   }
 
-  // ── 4) Final fallback: blind {first}.{last}@domain when nothing else worked.
-  // Goes through applyPattern (not raw interpolation) so the alphanumeric
-  // stripping + edge-case handling matches the rest of the file.
-  if (!foundEmail && domain && first && last) {
-    const blind = applyPattern("{first}.{last}", first, last, domain);
-    if (
-      blind &&
-      !isRolePrefix(blind.split("@")[0]) &&
-      emailMatchesName(blind, first, last) &&
-      (await mxCheck(domain))
-    ) {
-      await supabase
-        .from("people")
-        .update({
-          work_email: blind,
-          work_email_source: "pattern_derived",
-          work_email_confidence: 0.2,
-        })
-        .eq("id", personId);
-      return {
-        email: blind,
-        source: "pattern_derived",
-        confidence: 0.2,
-        personId,
-      };
-    }
-  }
-
-  if (!foundEmail) {
-    return {
-      email: null,
-      reason: "Could not find an email address.",
-      personId,
-    };
-  }
-
-  // Exa hit — record as verified-source with the right weight.
-  await recordVerifiedEmail(supabase, {
-    personId,
-    email: foundEmail,
-    source: "exa_search",
-  });
-  return {
-    email: foundEmail,
-    source: "exa_search",
-    confidence: SOURCE_WEIGHT.exa_search,
-    personId,
-  };
+  if (evidence.length === 0) return null;
+  const inferred = inferPattern(evidence);
+  return inferred.pattern
+    ? { pattern: inferred.pattern, confidence: inferred.confidence }
+    : null;
 }
 
 // ── findEmail ──────────────────────────────────────────────────────────────

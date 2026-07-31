@@ -31,6 +31,13 @@ export const PRICING = {
   browserbase_session_per_hr: 0.1,
   // Google Places API (New) -- Text Search with reviews field mask
   google_places_search: 0.032,
+  // Email finder/verifier (Hunter.io by default). Last verified 2026-08-01.
+  // Hunter bills in credits, not per call, and the per-credit rate depends on
+  // the plan -- a finder call costs 1 credit, a verification 1 credit. These
+  // are mid-tier estimates; adjust to your plan's actual rate. Set to 0 if you
+  // are on the free tier and want them excluded from the cost report.
+  email_provider_find: 0.008,
+  email_provider_verify: 0.004,
 } as const;
 
 // ── Action context (AsyncLocalStorage) ───────────────────────────────────
@@ -65,7 +72,8 @@ export type ServiceName =
   | "apify"
   | "browserbase"
   | "google"
-  | "gmail";
+  | "gmail"
+  | "email_provider";
 
 interface UsageEntry {
   service: ServiceName;

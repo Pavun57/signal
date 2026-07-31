@@ -179,6 +179,21 @@ export const INTEGRATIONS: Integration[] = [
     fixHint: "Add `EXA_API_KEY=...` to .env.local",
   },
   {
+    id: "email_provider",
+    name: "Email finder & verifier",
+    category: "enrichment",
+    severity: "optional",
+    feature:
+      "Mailbox verification before sending, and email lookup when the free path finds nothing",
+    consequence:
+      "Emails fall back to free discovery only — team-page scraping, Exa, and pattern guessing — and no address is ever confirmed to exist. Unverified addresses are blocked from outreach, so most contacts will not be sendable.",
+    envVars: ["EMAIL_PROVIDER", "HUNTER_API_KEY"],
+    signupUrl: "https://hunter.io",
+    keysUrl: "https://hunter.io/api-keys",
+    fixHint:
+      "Add `EMAIL_PROVIDER=hunter` and `HUNTER_API_KEY=...` to .env.local",
+  },
+  {
     id: "google_places",
     name: "Google Places",
     category: "enrichment",
