@@ -42,6 +42,9 @@ export interface DiscoveredContact {
   affiliationEvidence: string;
 }
 
+/** Per-call ceiling on Exa searches. One search per title, so this bounds spend. */
+export const MAX_TITLES = 5;
+
 export interface ContactDiscoveryResult {
   organizationId: string;
   companyName: string;
@@ -72,7 +75,11 @@ export async function findContactsForOrganization(
     numResults?: number;
   },
 ): Promise<ContactDiscoveryResult> {
-  const { organizationId, campaignId, titles, numResults = 5 } = args;
+  const { organizationId, campaignId, numResults = 5 } = args;
+  // Bounded here rather than in the callers. Two of the three original copies
+  // sliced to 5; the consolidation moved the logic but left the cost cap
+  // behind, so find-more-people quietly went from 4 searches to 6 unbounded.
+  const titles = args.titles.slice(0, MAX_TITLES);
 
   const { data: org, error: orgError } = await supabase
     .from("organizations")
@@ -227,21 +234,37 @@ export async function findContactsForOrganization(
 
   for (const search of searchResults) {
     for (const result of search.results) {
-      if (seenUrls.has(result.url)) {
+      // Only individual profiles. A bare `linkedin.com` test also matches
+      // /company/ and /school/ pages, which parse into a "person" named after
+      // the company — whose headline then obviously mentions the target
+      // company, so the judge confirms it and the fake contact clears the
+      // affiliation half of the send gate.
+      const isProfile = /linkedin\.com\/in\//i.test(result.url);
+      const linkedinUrl = isProfile ? normalizeLinkedInUrl(result.url) : null;
+
+      // Dedup on the canonical form. Keying on the raw URL let the same profile
+      // through twice in different host/trailing-slash forms — the one place
+      // the two forms still diverged after the canonicalisation migration.
+      const dedupKey = linkedinUrl ?? result.url;
+      if (seenUrls.has(dedupKey)) {
         duplicatesSkipped++;
         continue;
       }
-      seenUrls.add(result.url);
+      seenUrls.add(dedupKey);
 
-      const linkedinUrl = result.url.includes("linkedin.com")
-        ? normalizeLinkedInUrl(result.url)
-        : null;
       if (linkedinUrl && existingUrls.has(linkedinUrl)) {
         duplicatesSkipped++;
         continue;
       }
 
       const parsed = parseLinkedInTitle(result.title);
+      // parseLinkedInTitle yields "Unknown" for anything it cannot split.
+      // Storing those creates contacts named "Unknown".
+      if (!parsed.name || parsed.name === "Unknown") {
+        duplicatesSkipped++;
+        continue;
+      }
+
       candidates.push({
         name: parsed.name,
         title: parsed.title || search.title,
@@ -258,8 +281,17 @@ export async function findContactsForOrganization(
       if (!candidate) continue;
 
       // Rejected means the evidence positively placed them somewhere else.
-      // Still a real person worth keeping — just not this company's — so store
-      // them unattached rather than pretending they are an employee.
+      // Keep them, unattached, rather than pretending they are an employee —
+      // but only when we can actually identify them. findOrCreatePerson dedups
+      // by LinkedIn URL, or by name within an organization; a rejected
+      // candidate has no organization, so one with no profile URL matches
+      // neither path and would be INSERTED fresh on every run, leaving the
+      // mis-filed original untouched and adding an orphan each time.
+      if (judged.verdict === "rejected" && !candidate.linkedinUrl) {
+        rejectedAsWrongCompany++;
+        continue;
+      }
+
       const attachTo = judged.verdict === "rejected" ? null : organizationId;
       const source: AffiliationSource =
         judged.verdict === "verified" ? "llm_verified" : "search_stamp";

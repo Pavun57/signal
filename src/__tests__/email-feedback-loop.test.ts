@@ -129,7 +129,9 @@ function gatePasses() {
   };
 }
 
-function sendResponses(personId: string | null) {
+type FakeResponse = { data?: unknown; error?: unknown; count?: number };
+
+function sendResponses(personId: string | null): FakeResponse[] {
   return [
     { data: { id: "step_1" } }, // step select
     { data: draftWith(personId) }, // draft select
@@ -197,6 +199,42 @@ describe("send_confirmed", () => {
     );
 
     expect(recordVerifiedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to send to a contact the data-quality gate blocks", async () => {
+    // Nothing tested this. Every other send test supplies a gate-passing
+    // fixture, so the suite proved the gate lets good contacts through and
+    // never that it stops bad ones — the entire reason the gate exists.
+    const blocked = {
+      data: {
+        work_email: "guess@acme.com",
+        work_email_source: "pattern_derived",
+        work_email_verification: "unchecked",
+        affiliation_confidence: 0.2,
+        affiliation_source: "search_stamp",
+      },
+    };
+    const responses = sendResponses("per_1");
+    responses[3] = blocked; // the send-gate person read
+
+    const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/never been verified/i);
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to send when the contact cannot be loaded", async () => {
+    // Fail closed: maybeSingle() returns data:null for a query error as well as
+    // for no rows, so treating null as "carry on" let a DB hiccup disable the
+    // one gate that cannot otherwise be bypassed.
+    const responses = sendResponses("per_1");
+    responses[3] = { data: null, error: { message: "connection reset" } };
+
+    const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
+
+    expect(result.ok).toBe(false);
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("does not fail the send when the bookkeeping write throws", async () => {

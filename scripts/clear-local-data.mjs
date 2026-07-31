@@ -105,11 +105,11 @@ function ensurePsqlAvailable() {
   }
 }
 
-async function confirm() {
+async function confirm(tableCount) {
   if (SKIP_PROMPT) return true;
   const rl = createInterface({ input, output });
   const answer = await rl.question(
-    `${colors.yellow}Truncate ${TABLES.length} tables on ${DB_URL}? [y/N] ${colors.reset}`,
+    `${colors.yellow}Truncate ${tableCount} tables on ${DB_URL}? [y/N] ${colors.reset}`,
   );
   rl.close();
   return answer.trim().toLowerCase() === "y";
@@ -233,7 +233,7 @@ async function main() {
     }
   }
 
-  const proceed = await confirm();
+  const proceed = await confirm(present.length);
   if (!proceed) {
     log.warn("Aborted.");
     exit(0);

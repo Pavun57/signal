@@ -674,9 +674,22 @@ function ReviewPageInner() {
 
       // Also persist on the person so future drafts/sequences use the
       // corrected address. Update work_email since saveDraft reads it first.
+      //
+      // The verification columns are cleared in the same write because they
+      // describe the address being replaced. Leaving a stale `risky` or
+      // `undeliverable` verdict behind would make the send gate refuse the
+      // corrected address — turning a manual fix into a permanent block. It has
+      // to happen here rather than in record-verified below, because this write
+      // lands first and that endpoint would then see the new address already in
+      // place and treat the old verdict as still applicable.
       const { error: personErr } = await supabase
         .from("people")
-        .update({ work_email: next, updated_at: now })
+        .update({
+          work_email: next,
+          work_email_verification: null,
+          work_email_verified_by: null,
+          updated_at: now,
+        })
         .eq("id", personId);
       if (personErr) throw new Error(personErr.message);
 

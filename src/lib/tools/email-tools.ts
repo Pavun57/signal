@@ -148,7 +148,10 @@ export async function findEmailForPerson(
           : "Stored but unverified. Call findEmail with revalidate: true to check it.",
     };
   }
-  if (person.personal_email) {
+  // Same revalidate carve-out as above: without it, a person who happens to
+  // have a personal address short-circuits here and their unverified work email
+  // is never checked, while the tool reports success.
+  if (person.personal_email && !opts.revalidate) {
     return { email: person.personal_email, source: "existing", personId };
   }
 
@@ -397,6 +400,24 @@ export async function findEmailForPerson(
   await recordNegatives(supabase, personId, person.enrichment_data, rejected);
 
   if (!fallback) {
+    // If the address we already held is among the rejected, do not leave it
+    // sitting in the row looking usable. Revalidating an address specifically
+    // to learn it is dead, and then keeping it, means the UI still shows it and
+    // every later revalidate pays to be told the same thing again.
+    if (
+      person.work_email &&
+      rejected.includes(person.work_email.toLowerCase())
+    ) {
+      await supabase
+        .from("people")
+        .update({
+          work_email_verification: "undeliverable",
+          work_email_confidence: 0,
+          work_email_verified_at: null,
+        })
+        .eq("id", personId);
+    }
+
     return {
       email: null,
       reason:
@@ -410,7 +431,14 @@ export async function findEmailForPerson(
   // Nothing proved deliverable. Write the best unproven candidate, capped well
   // below the verified threshold so the UI and the send gate both treat it as
   // what it is.
-  const catchAll = fallback.result.catchAll || orgIsCatchAll === true;
+  // Scoped exactly like the deliverable path above: the org's cached flag only
+  // speaks for addresses at the org's own domain. Leaving this unscoped meant a
+  // personal address at a different domain inherited the employer's catch-all
+  // verdict and was capped at 0.5 — which the send gate then refuses.
+  const fallbackAtOrgDomain =
+    !!domain && fallback.candidate.email.endsWith(`@${domain.toLowerCase()}`);
+  const catchAll =
+    fallback.result.catchAll || (fallbackAtOrgDomain && orgIsCatchAll === true);
   const verification: EmailVerification = catchAll
     ? "risky"
     : fallback.result.status;

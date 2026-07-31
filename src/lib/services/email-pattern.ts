@@ -407,6 +407,15 @@ export async function recordVerifiedEmail(
       work_email_source: finalSource,
       work_email_confidence: SOURCE_WEIGHT[finalSource],
       work_email_verified_at: new Date().toISOString(),
+      // A verification verdict describes ONE address. Writing a different
+      // address while leaving the old verdict behind left rows claiming, say,
+      // `risky` or `undeliverable` about a string that is no longer stored —
+      // and since the send gate refuses on those, correcting a bad address by
+      // hand became a permanent block instead of the fix. Same address: keep
+      // the verdict, it still applies.
+      ...(sameEmail
+        ? {}
+        : { work_email_verification: null, work_email_verified_by: null }),
     })
     .eq("id", personId);
 

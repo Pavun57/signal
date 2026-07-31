@@ -34,9 +34,43 @@ export interface DataQualityReport {
     people: number;
     peopleWithOrg: number;
   };
+  /** Set when the row window truncated the scan, so results are partial. */
+  truncated?: string;
 }
 
 const MAX_ROWS = 2000;
+/**
+ * Per-check ceiling on individual findings.
+ *
+ * Checks 3 and 5 emit one finding per person. Unbounded, a mature instance
+ * returns thousands of prose findings straight into the agent's context — the
+ * report becomes the thing that breaks the request. Above the cap the findings
+ * are summarised and the ids are still returned so nothing is hidden.
+ */
+const MAX_FINDINGS_PER_CHECK = 25;
+
+/** Collapse an over-long run of per-row findings into one summary finding. */
+function capFindings(
+  findings: DataQualityFinding[],
+  kind: DataQualityFinding["kind"],
+  describe: (count: number) => string,
+): DataQualityFinding[] {
+  const of = findings.filter((f) => f.kind === kind);
+  if (of.length <= MAX_FINDINGS_PER_CHECK) return findings;
+  const rest = findings.filter((f) => f.kind !== kind);
+  const kept = of.slice(0, MAX_FINDINGS_PER_CHECK);
+  const dropped = of.slice(MAX_FINDINGS_PER_CHECK);
+  return [
+    ...rest,
+    ...kept,
+    {
+      kind,
+      severity: of[0].severity,
+      summary: `…and ${dropped.length} more. ${describe(of.length)}`,
+      ids: dropped.flatMap((f) => f.ids),
+    },
+  ];
+}
 
 export async function runDataQualityAudit(
   supabase: SupabaseClient,
@@ -182,15 +216,46 @@ export async function runDataQualityAudit(
     });
   }
 
+  let capped = findings;
+  capped = capFindings(
+    capped,
+    "email_domain_mismatch",
+    (n) => `${n} contacts have an email domain that is not their employer's.`,
+  );
+  capped = capFindings(
+    capped,
+    "unverified_affiliation",
+    (n) =>
+      `${n} contacts have a title naming a company other than their employer.`,
+  );
+  capped = capFindings(
+    capped,
+    "duplicate_person",
+    (n) => `${n} LinkedIn profiles are held by more than one row.`,
+  );
+  capped = capFindings(
+    capped,
+    "duplicate_company",
+    (n) => `${n} company names are held by more than one organization.`,
+  );
+
   const severityRank = { high: 0, medium: 1, low: 2 } as const;
-  findings.sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
+  capped.sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
 
   return {
-    findings,
+    findings: capped,
     counts: {
       organizations: orgList.length,
       people: peopleList.length,
       peopleWithOrg: peopleList.filter((p) => p.organization_id).length,
     },
+    // The scan is windowed, so on a large instance these counts describe the
+    // window and not the database. Saying so matters: checks that resolve a
+    // person's org through the loaded set produce false negatives outside it,
+    // and a silent "no problems found" would be read as a clean bill of health.
+    truncated:
+      orgList.length >= MAX_ROWS || peopleList.length >= MAX_ROWS
+        ? `Scanned the first ${MAX_ROWS} rows only — findings are not exhaustive.`
+        : undefined,
   };
 }

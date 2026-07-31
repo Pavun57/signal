@@ -109,11 +109,20 @@ export async function recordAffiliation(
   // on an instance, so one person's search could empty someone else's contact
   // list. Two equal-confidence LLM calls would also ping-pong the same contact
   // between two companies on alternate runs.
-  if (sameOrg) {
-    if (incoming < existingWeight) return;
-    if (incoming === existingWeight && existingSource) return;
-  } else if (incoming <= existingWeight) {
-    return;
+  // A person explicitly assigned by a human always moves. Requiring strictly
+  // more than the existing weight would make someone already at `user_entered`
+  // (1.0) unmovable — nothing outranks 1.0 — so reassigning a contact you had
+  // previously assigned by hand would silently no-op while the endpoint
+  // returned success.
+  const humanOverride = source === "user_entered";
+
+  if (!humanOverride) {
+    if (sameOrg) {
+      if (incoming < existingWeight) return;
+      if (incoming === existingWeight && existingSource) return;
+    } else if (incoming <= existingWeight) {
+      return;
+    }
   }
 
   await supabase
@@ -159,14 +168,22 @@ export function canSendTo(person: SendCandidate): SendCheck {
     return { ok: false, reason: "no email address on file" };
   }
 
-  // A negative verdict disqualifies the address no matter how it was found.
-  // This has to be checked BEFORE the source shortcuts below: recordBounce
-  // marks a bounced address `undeliverable`, but every address that has ever
-  // been sent carries `send_confirmed` by definition — so trusting the source
-  // first meant a hard-bounced mailbox stayed sendable for the next campaign.
+  // A human typing the address outranks any machine verdict, including a
+  // catch-all "risky". Without this exemption, correcting a bad address by hand
+  // could not unblock a contact — and on a catch-all domain, where every
+  // address verifies `risky`, nothing could ever be sent at all.
+  const humanEntered = person.work_email_source === "user_entered";
+
+  // A negative verdict otherwise disqualifies the address no matter how it was
+  // found. This has to be checked BEFORE the source shortcuts below:
+  // recordBounce marks a bounced address `undeliverable`, but every address
+  // that has ever been sent carries `send_confirmed` by definition — so
+  // trusting the source first meant a hard-bounced mailbox stayed sendable for
+  // the next campaign.
   if (
-    person.work_email_verification === "undeliverable" ||
-    person.work_email_verification === "risky"
+    !humanEntered &&
+    (person.work_email_verification === "undeliverable" ||
+      person.work_email_verification === "risky")
   ) {
     return {
       ok: false,
