@@ -105,6 +105,8 @@ export interface InboundSummary {
   inReplyTo: string | null;
   references: string[];
   bodyText: string;
+  subject: string;
+  date: Date | null;
 }
 
 /**
@@ -138,6 +140,8 @@ export async function fetchInboundSince(
           inReplyTo: msg.envelope?.inReplyTo?.trim() || null,
           references: msg.headers?.toString().match(/<[^<>\s]+>/g) ?? [],
           bodyText: "",
+          subject: msg.envelope?.subject ?? "",
+          date: msg.envelope?.date ?? null,
         });
         if (isDaemon && msg.uid) {
           daemonDownloads.push({ uid: msg.uid, index: results.length - 1 });
