@@ -28,6 +28,7 @@ import {
   type EmailVerification,
   type VerifyResult,
 } from "@/lib/services/email-provider";
+import { recordAffiliation } from "@/lib/services/affiliation";
 
 // ── Shared findEmail logic ─────────────────────────────────────────────────
 
@@ -312,6 +313,20 @@ export async function findEmailForPerson(personId: string): Promise<{
       // cannot start from guesses alone.
       if (person.organization_id) {
         await recomputeOrgPattern(supabase, person.organization_id);
+
+        // …and it is proof of employment. Someone who answers mail at acme.com
+        // works at Acme, which makes this the strongest machine signal we have
+        // for affiliation. Only when the address is actually at the employer's
+        // own domain, and only off a catch-all domain — this branch has already
+        // excluded catch-alls, which accept anything and prove nothing.
+        if (domain && candidate.email.endsWith(`@${domain.toLowerCase()}`)) {
+          await recordAffiliation(supabase, {
+            personId,
+            organizationId: person.organization_id,
+            source: "email_domain",
+            evidence: `${candidate.email} verified deliverable at ${domain}`,
+          });
+        }
       }
       return {
         email: candidate.email,

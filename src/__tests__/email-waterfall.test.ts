@@ -111,6 +111,10 @@ vi.mock("@/lib/services/exa-service", () => ({
   },
 }));
 
+vi.mock("@/lib/services/affiliation", () => ({
+  recordAffiliation: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
   PRICING: { email_provider_find: 0, email_provider_verify: 0 },
@@ -138,6 +142,9 @@ vi.mock("@/lib/services/email-provider", async () => {
 
 import { findEmailForPerson } from "@/lib/tools/email-tools";
 import { MAX_VERIFICATIONS_PER_PERSON } from "@/lib/services/email-provider";
+import { recordAffiliation } from "@/lib/services/affiliation";
+
+const recordAffiliationMock = vi.mocked(recordAffiliation);
 
 const ORG_ID = "org-1";
 
@@ -176,6 +183,7 @@ const row = () => state.people[0];
 beforeEach(() => {
   providerEnabled = true;
   exaResults.results = [];
+  recordAffiliationMock.mockClear();
   provider.findEmail.mockReset().mockResolvedValue(null);
   provider.verifyEmail
     .mockReset()
@@ -245,6 +253,54 @@ describe("findEmailForPerson verification", () => {
     expect(result.confidence).toBeLessThanOrEqual(0.5);
     // not counted as verified, so it can't feed the org's pattern evidence
     expect(row().work_email_verified_at).toBeNull();
+  });
+
+  it("treats a verified mailbox at the org domain as proof of employment", async () => {
+    // The point where the two problems solve each other: someone who answers
+    // mail at acme.com works at Acme.
+    provider.verifyEmail.mockResolvedValue({
+      status: "deliverable",
+      catchAll: false,
+    });
+
+    await findEmailForPerson("p1");
+
+    expect(recordAffiliationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        personId: "p1",
+        organizationId: ORG_ID,
+        source: "email_domain",
+      }),
+    );
+  });
+
+  it("grants no affiliation credit on a catch-all domain", async () => {
+    // A catch-all accepts every address, so delivery says nothing about whether
+    // this person exists, let alone where they work.
+    provider.verifyEmail.mockResolvedValue({
+      status: "deliverable",
+      catchAll: true,
+    });
+
+    await findEmailForPerson("p1");
+
+    expect(recordAffiliationMock).not.toHaveBeenCalled();
+  });
+
+  it("grants no affiliation credit for an address off the org's domain", async () => {
+    provider.findEmail.mockResolvedValue({
+      email: "jane.doe@gmail.com",
+      confidence: 0.9,
+    });
+    provider.verifyEmail.mockImplementation(async (email: string) => ({
+      status: email.endsWith("@gmail.com") ? "deliverable" : "undeliverable",
+      catchAll: false,
+    }));
+
+    await findEmailForPerson("p1");
+
+    expect(recordAffiliationMock).not.toHaveBeenCalled();
   });
 
   it("caches catch-all on the organization rather than re-probing per contact", async () => {

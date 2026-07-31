@@ -1,0 +1,211 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { normalizeLinkedInUrl } from "@/lib/services/knowledge-base";
+import { WebExtractionService } from "@/lib/services/web-extraction-service";
+
+/**
+ * How sure are we that this person works at this company?
+ *
+ * `people.organization_id` was a bare FK: set once, never revisited, with no
+ * record of what convinced us. That made a wrong link invisible (nothing
+ * distinguishes a scraped guess from a confirmed employee) and permanent
+ * (findOrCreatePerson only ever filled it when null, so even a real job change
+ * could not correct it).
+ *
+ * Deliberately shaped like email-pattern.ts — a weight per source, a monotonic
+ * writer that never downgrades — so affiliation and email provenance read as
+ * one system rather than two competing conventions.
+ */
+
+export type AffiliationSource =
+  | "user_entered"
+  | "email_domain"
+  | "team_page"
+  | "linkedin_profile"
+  | "llm_verified"
+  | "search_stamp";
+
+export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
+  /** A human said so. Nothing outranks it. */
+  user_entered: 1.0,
+  /**
+   * A verifier confirmed a deliverable mailbox at the company's own domain.
+   * The strongest machine signal available: someone who answers mail at
+   * acme.com works at Acme. Only granted when the domain is NOT catch-all —
+   * a catch-all accepts anything and proves nothing.
+   */
+  email_domain: 0.95,
+  /** Listed on the company's own website. They published it about themselves. */
+  team_page: 0.9,
+  /** Their LinkedIn profile names this employer. */
+  linkedin_profile: 0.8,
+  /** An LLM read the evidence and judged them an employee. */
+  llm_verified: 0.6,
+  /**
+   * They came back from a search we ran for this company. This is the weakest
+   * possible claim and, before this work, was the *only* thing behind most
+   * affiliations — searchPeople stamped every result with the target org.
+   */
+  search_stamp: 0.2,
+};
+
+/**
+ * Minimum confidence to be contacted. Sits just below llm_verified, so a
+ * positive LLM judgement is enough to email someone but a bare search hit is
+ * not.
+ */
+export const AFFILIATION_SEND_THRESHOLD = 0.6;
+
+/**
+ * Records why we believe someone works somewhere. Monotonic in the same sense
+ * as recordVerifiedEmail: a weaker signal never overwrites a stronger one.
+ *
+ * The cross-org case is the interesting one. Stronger evidence for a
+ * *different* employer does move the person — that is a job change, or a
+ * correction of a bad stamp — while equal-or-weaker evidence is ignored. That
+ * is what makes affiliation revisable at all.
+ */
+export async function recordAffiliation(
+  supabase: SupabaseClient,
+  args: {
+    personId: string;
+    organizationId: string | null;
+    source: AffiliationSource;
+    evidence: string;
+  },
+): Promise<void> {
+  const { personId, organizationId, source, evidence } = args;
+  const incoming = AFFILIATION_WEIGHT[source];
+
+  const { data: person } = await supabase
+    .from("people")
+    .select("organization_id, affiliation_source, affiliation_confidence")
+    .eq("id", personId)
+    .maybeSingle();
+
+  if (!person) return;
+
+  const existingSource = person.affiliation_source as AffiliationSource | null;
+  // A pre-existing link with no recorded source is legacy data, and we know
+  // nothing about how it got there — treat it as the weakest possible claim
+  // rather than as unassailable.
+  const existingWeight = existingSource
+    ? AFFILIATION_WEIGHT[existingSource]
+    : person.organization_id
+      ? AFFILIATION_WEIGHT.search_stamp
+      : -1;
+
+  const sameOrg = person.organization_id === organizationId;
+  if (incoming < existingWeight) return;
+  if (sameOrg && incoming === existingWeight && existingSource) return;
+
+  await supabase
+    .from("people")
+    .update({
+      organization_id: organizationId,
+      affiliation_source: source,
+      affiliation_confidence: incoming,
+      affiliation_evidence: evidence.slice(0, 500),
+      affiliation_verified_at: new Date().toISOString(),
+    })
+    .eq("id", personId);
+}
+
+// ─── LinkedIn employer check ──────────────────────────────────────────────
+
+export type EmployerCheck =
+  | { status: "match"; employer: string }
+  | { status: "mismatch"; employer: string }
+  /** Rate-limited, blocked, or unparseable — tells us nothing either way. */
+  | { status: "unknown"; reason: string };
+
+/**
+ * Normalize a company name for comparison: lowercase, strip common legal
+ * suffixes, collapse punctuation and whitespace.
+ *
+ * Duplicated deliberately rather than imported from contact-filter, which owns
+ * the LLM path — this is a small pure helper and importing that module would
+ * drag an Anthropic client into every affiliation check.
+ */
+export function normalizeCompanyName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(
+      /\b(ltd|limited|inc|incorporated|llc|plc|corp|corporation|co|company|group|holdings)\b\.?/g,
+      "",
+    )
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Pulls the employer out of a LinkedIn profile.
+ *
+ * The page title is reliably "Name - Employer | LinkedIn", and og:description
+ * carries "· Experience: <Employer> ·" as a fallback. Both survive the
+ * logged-out view, which is the only view we get without authenticating.
+ */
+export function parseLinkedInEmployer(
+  title: string | null | undefined,
+  ogDescription?: string | null,
+): string | null {
+  const fromTitle = title
+    ?.replace(/\s+/g, " ")
+    .trim()
+    .match(/^(.+?)\s+-\s+(.+?)\s*\|\s*LinkedIn/)?.[2];
+  if (fromTitle) return fromTitle.trim();
+
+  const fromDesc = ogDescription?.match(/Experience:\s*([^·]+)/i)?.[1];
+  return fromDesc ? fromDesc.trim() : null;
+}
+
+/**
+ * Checks a person's LinkedIn profile against the employer we have on file.
+ *
+ * Best-effort by design. LinkedIn rate-limits aggressively (HTTP 999) and
+ * roughly half of attempts come back empty; an `unknown` result must leave the
+ * existing affiliation exactly as it was. Treating a block as a mismatch would
+ * unlink real employees at random.
+ */
+export async function checkLinkedInEmployer(
+  linkedinUrl: string,
+  expectedCompany: string,
+): Promise<EmployerCheck> {
+  // Must be the www host — the apex form redirects and our scrapers return an
+  // empty body for it. Every URL stored before this fix is apex.
+  const url = normalizeLinkedInUrl(linkedinUrl);
+
+  const extractor = new WebExtractionService();
+  const result = await extractor.extract(url, {
+    includeMetadata: true,
+    includeLinks: false,
+    timeout: 10_000,
+  });
+
+  if (!result.success) {
+    return { status: "unknown", reason: result.error ?? "fetch failed" };
+  }
+
+  const employer = parseLinkedInEmployer(
+    result.data.title,
+    result.data.openGraph?.description ?? result.data.description,
+  );
+
+  if (!employer) {
+    return { status: "unknown", reason: "no employer in profile" };
+  }
+
+  const seen = normalizeCompanyName(employer);
+  const expected = normalizeCompanyName(expectedCompany);
+  if (!seen || !expected) {
+    return { status: "unknown", reason: "unusable company name" };
+  }
+
+  // Substring either way: "Browserbase" vs "Browserbase Inc", or a headline
+  // that reads "Acme (YC W24)".
+  const match = seen.includes(expected) || expected.includes(seen);
+  return match
+    ? { status: "match", employer }
+    : { status: "mismatch", employer };
+}
