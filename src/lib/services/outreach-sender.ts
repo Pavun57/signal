@@ -9,6 +9,7 @@ import {
   type SenderConfig,
 } from "@/lib/services/email-transport";
 import { trackUsage } from "@/lib/services/cost-tracker";
+import { recordVerifiedEmail } from "@/lib/services/email-pattern";
 
 export interface EnrollmentForSend {
   id: string;
@@ -158,6 +159,29 @@ export async function claimAndSendDraft(
     console.error(
       `[outreach-sender] sent_emails insert failed for draft ${draft.id} (message ${messageId}): ${insertError.message}`,
     );
+  }
+
+  // A mailbox that accepted an SMTP handover is the strongest evidence we get
+  // short of a reply, and it is free. Recording it here is what finally writes
+  // `send_confirmed` — the highest-weighted machine source in SOURCE_WEIGHT,
+  // which nothing in the codebase had ever set — so a company's email pattern
+  // learns from addresses that actually worked. A later bounce reverses it via
+  // recordBounce in the tracking cron; together those two are the feedback loop.
+  //
+  // Deliberately here rather than in sendGmailMessage: the Settings test send
+  // calls that directly, has no person_id, and must stay invisible to this
+  // bookkeeping.
+  if (draft.person_id) {
+    try {
+      await recordVerifiedEmail(supabase, {
+        personId: draft.person_id,
+        email: draft.to_email,
+        source: "send_confirmed",
+      });
+    } catch (err) {
+      // The email has already left; bookkeeping must never surface as a failure.
+      console.error("[outreach-sender] recordVerifiedEmail failed:", err);
+    }
   }
 
   await supabase

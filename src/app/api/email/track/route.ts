@@ -5,17 +5,15 @@ import {
   classifyInboundMessage,
   fetchInboundSince,
 } from "@/lib/services/gmail-service";
-import { getPostHogClient } from "@/lib/posthog-server";
 import { verifyQStashSignature } from "@/lib/services/qstash";
+import {
+  applyInboundStatus,
+  type TrackedEmail,
+} from "@/lib/services/email-tracking";
 
 // One IMAP connect + TLS handshake + fetch per user per run — slower than
 // REST polling, so give the route real headroom.
 export const maxDuration = 120;
-
-const STATUS_EVENT: Record<string, string> = {
-  replied: "email_replied",
-  bounced: "email_bounced",
-};
 
 /**
  * Reply/bounce tracking. Call via a QStash schedule (the route is public, so
@@ -27,29 +25,10 @@ const STATUS_EVENT: Record<string, string> = {
  * delivered/opened/clicked signal because Signal deliberately sends no
  * tracking pixel (pixels hurt cold-email deliverability and the data is
  * mostly fiction post-Apple-MPP).
+ *
+ * The status application itself lives in services/email-tracking so it can be
+ * tested without a QStash signature and a live mailbox.
  */
-
-// Status priority -- only move forward, never regress
-const STATUS_PRIORITY: Record<string, number> = {
-  not_contacted: 0,
-  queued: 1,
-  sent: 2,
-  delivered: 3,
-  opened: 4,
-  clicked: 5,
-  replied: 6,
-  bounced: 6,
-  complained: 6,
-};
-
-interface PendingEmail {
-  id: string;
-  message_id: string | null;
-  campaign_people_id: string;
-  user_id: string;
-  status: string;
-  sent_at: string;
-}
 
 export async function POST(request: Request) {
   try {
@@ -67,7 +46,9 @@ export async function POST(request: Request) {
   const windowStart = new Date(Date.now() - 14 * 86400_000).toISOString();
   const { data: emails, error } = await supabase
     .from("sent_emails")
-    .select("id, message_id, campaign_people_id, user_id, status, sent_at")
+    .select(
+      "id, message_id, campaign_people_id, user_id, status, sent_at, person_id, to_email",
+    )
     .in("status", ["sent", "delivered", "opened"])
     .gte("sent_at", windowStart)
     .order("sent_at", { ascending: false })
@@ -102,46 +83,14 @@ export async function POST(request: Request) {
     }
   }
 
-  const emailsByUser = new Map<string, PendingEmail[]>();
-  for (const email of emails as PendingEmail[]) {
+  const emailsByUser = new Map<string, TrackedEmail[]>();
+  for (const email of emails as TrackedEmail[]) {
     const list = emailsByUser.get(email.user_id) ?? [];
     list.push(email);
     emailsByUser.set(email.user_id, list);
   }
 
   let updated = 0;
-
-  async function applyStatus(email: PendingEmail, newStatus: string) {
-    // Only move forward in the pipeline
-    const currentPriority = STATUS_PRIORITY[email.status] ?? 0;
-    const newPriority = STATUS_PRIORITY[newStatus] ?? 0;
-    if (newPriority <= currentPriority) return;
-
-    await supabase
-      .from("sent_emails")
-      .update({ status: newStatus })
-      .eq("id", email.id);
-
-    await supabase
-      .from("campaign_people")
-      .update({ outreach_status: newStatus })
-      .eq("id", email.campaign_people_id);
-
-    const eventName = STATUS_EVENT[newStatus];
-    if (eventName) {
-      getPostHogClient().capture({
-        distinctId: email.user_id,
-        event: eventName,
-        properties: {
-          sent_email_id: email.id,
-          campaign_people_id: email.campaign_people_id,
-          previous_status: email.status,
-        },
-      });
-    }
-
-    updated++;
-  }
 
   for (const [userId, userEmails] of emailsByUser) {
     const creds = credsByUser.get(userId);
@@ -167,7 +116,7 @@ export async function POST(request: Request) {
         if (!hit) continue;
         const email = userEmails.find((e) => e.id === hit.sentEmailId);
         if (!email) continue;
-        await applyStatus(email, hit.status);
+        if (await applyInboundStatus(supabase, email, hit.status)) updated++;
       }
     } catch {
       // One user's IMAP failure must not break the whole run
