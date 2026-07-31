@@ -8,6 +8,26 @@ import { Input } from "@/components/ui/input";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { apiFetch } from "@/lib/api-fetch";
 
+// 20s x 15 attempts is five minutes of watching, then we stop and hand the
+// user a manual "Check now" — an unbounded poll would hammer IMAP forever.
+const POLL_MS = 20_000;
+const MAX_POLLS = 15;
+
+type TestStatus = "idle" | "waiting" | "replied" | "bounced";
+
+// `from`/`subject` are only known when this tab was the one that detected the
+// reply; a page load only recovers the stored timestamp.
+type TestReply = {
+  from?: string | null;
+  subject?: string | null;
+  at: string;
+};
+
+function formatLocalTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
 export function EmailSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -25,7 +45,17 @@ export function EmailSettings() {
   const [replyTo, setReplyTo] = useState("");
   const [dailyLimit, setDailyLimit] = useState("30");
 
+  const [testTo, setTestTo] = useState("");
+  const [testSending, setTestSending] = useState(false);
+  const [testChecking, setTestChecking] = useState(false);
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
+  const [testReply, setTestReply] = useState<TestReply | null>(null);
+  const [testWarning, setTestWarning] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
+
   const mountedRef = useRef(true);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const attemptsRef = useRef(0);
 
   const load = async () => {
     try {
@@ -51,6 +81,36 @@ export function EmailSettings() {
       setFromName(data.settings.from_name ?? "");
       setReplyTo(data.settings.reply_to_email ?? "");
       setDailyLimit(String(configured));
+
+      const testRes = await apiFetch("/api/settings/email/test");
+      if (!testRes.ok || !mountedRef.current) return;
+      const testData = await testRes.json();
+      if (!mountedRef.current) return;
+
+      // Keep whatever the user has already typed — load() also runs after a
+      // save, and clobbering a half-typed address there would be maddening.
+      setTestTo((prev) => prev || testData.suggested_to || "");
+
+      // A finished test is terminal: show the stored verdict rather than
+      // "waiting", which would imply we are still watching for a reply.
+      const settled = testData.test?.status;
+      if (settled === "replied" || settled === "bounced") {
+        setTestStatus(settled);
+        setTestReply(
+          testData.test.replied_at ? { at: testData.test.replied_at } : null,
+        );
+        setTestWarning(null);
+      } else if (testData.test?.sent_at) {
+        // An unsettled test survives a reload — which is the whole point of
+        // persisting it, since the natural flow is send here, reply on your
+        // phone, come back. Restore the waiting state with a manual "Check
+        // now" rather than auto-polling: this test could be days old, and
+        // resuming a 5-minute IMAP poll on every settings visit would burn
+        // connections watching for a reply that is never coming.
+        setTestStatus("waiting");
+        setTestReply(null);
+        setTestWarning(null);
+      }
     } catch {
       // silently fail
     } finally {
@@ -66,8 +126,93 @@ export function EmailSettings() {
     void load();
     return () => {
       mountedRef.current = false;
+      // A leaked interval keeps hitting IMAP long after this page is gone.
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
     };
   }, []);
+
+  const stopPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    attemptsRef.current = 0;
+    setPolling(false);
+  };
+
+  const checkTest = async () => {
+    setTestChecking(true);
+    try {
+      const res = await apiFetch("/api/settings/email/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "check" }),
+      });
+      const data = await res.json();
+      if (!mountedRef.current) return;
+
+      if (!res.ok) {
+        // Stop first, so a broken check surfaces one toast and not fifteen.
+        stopPolling();
+        toast.error(data.error ?? "Failed to check for a reply");
+        return;
+      }
+
+      if (data.status === "replied" || data.status === "bounced") {
+        setTestStatus(data.status);
+        setTestReply(data.reply ?? null);
+        setTestWarning(null);
+        stopPolling();
+        return;
+      }
+
+      // Still waiting. A `warning` means one IMAP attempt blipped, not that
+      // the test failed — mention it, keep watching.
+      setTestWarning(data.warning ?? null);
+    } catch {
+      // Soft — a dropped request should not end the watch.
+    } finally {
+      if (mountedRef.current) setTestChecking(false);
+    }
+  };
+
+  const startPolling = () => {
+    stopPolling();
+    setPolling(true);
+    attemptsRef.current = 0;
+    pollRef.current = setInterval(() => {
+      attemptsRef.current += 1;
+      if (attemptsRef.current > MAX_POLLS) {
+        stopPolling();
+        return;
+      }
+      void checkTest();
+    }, POLL_MS);
+  };
+
+  const handleSendTest = async () => {
+    setTestSending(true);
+    try {
+      const res = await apiFetch("/api/settings/email/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send", to: testTo.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Failed to send test");
+        return;
+      }
+      toast.success(`Test sent to ${data.test.to_email}`);
+      setTestStatus("waiting");
+      setTestReply(null);
+      setTestWarning(null);
+      startPolling();
+    } catch {
+      toast.error("Failed to send test");
+    } finally {
+      if (mountedRef.current) setTestSending(false);
+    }
+  };
 
   const handleConnect = async () => {
     setConnecting(true);
@@ -195,6 +340,78 @@ export function EmailSettings() {
             >
               {disconnecting ? "Disconnecting..." : "Disconnect"}
             </Button>
+
+            {/* Test send */}
+            <div className="border-border mt-4 space-y-2 rounded-md border p-3">
+              <p className="text-sm font-medium">Send a test</p>
+              <div className="space-y-1.5">
+                <div className="flex gap-2">
+                  <Input
+                    id="test-to"
+                    type="email"
+                    placeholder="you@somewhere-else.com"
+                    value={testTo}
+                    onChange={(e) => setTestTo(e.target.value)}
+                    disabled={testSending}
+                    onKeyDown={(e) => e.key === "Enter" && handleSendTest()}
+                  />
+                  <Button
+                    onClick={handleSendTest}
+                    disabled={testSending || !testTo.trim()}
+                  >
+                    {testSending ? "Sending..." : "Send test"}
+                  </Button>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  Send this to a different mailbox you own — Signal ignores
+                  replies from {gmailAddress}, so a test to yourself can never
+                  show a reply. Test sends don&apos;t count against your daily
+                  limit.
+                </p>
+              </div>
+
+              {testStatus === "waiting" && (
+                <div className="text-muted-foreground space-y-1.5 text-xs">
+                  <p>
+                    {polling
+                      ? "Sent — waiting for your reply. Reply to it and this updates within ~20s."
+                      : "No reply detected yet. Reply to the test, then check again."}
+                  </p>
+                  {testWarning && <p>{testWarning}</p>}
+                  {!polling && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void checkTest()}
+                      disabled={testChecking}
+                    >
+                      {testChecking ? "Checking..." : "Check now"}
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {testStatus === "replied" && (
+                <p className="text-success text-xs">
+                  {[
+                    "Reply received",
+                    testReply?.from ? ` from ${testReply.from}` : "",
+                    testReply?.subject ? ` — “${testReply.subject}”` : "",
+                    testReply ? ` at ${formatLocalTime(testReply.at)}` : "",
+                    ". Reply tracking is confirmed working.",
+                  ].join("")}
+                </p>
+              )}
+
+              {testStatus === "bounced" && (
+                <p className="text-destructive text-xs">
+                  That address bounced. Sending works — your mailbox delivered
+                  the message and the recipient rejected it. This does not
+                  confirm reply tracking; try again with a mailbox you can reply
+                  from.
+                </p>
+              )}
+            </div>
           </div>
         ) : (
           <div className="space-y-3">

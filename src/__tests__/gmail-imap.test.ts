@@ -26,6 +26,8 @@ vi.mock("imapflow", () => {
         envelope: {
           from: [{ address: "mailer-daemon@googlemail.com" }],
           inReplyTo: "",
+          subject: "Delivery Status Notification (Failure)",
+          date: new Date("2026-07-30T14:30:00Z"),
         },
         headers: Buffer.from(""),
       };
@@ -34,6 +36,8 @@ vi.mock("imapflow", () => {
         envelope: {
           from: [{ address: "prospect@example.com" }],
           inReplyTo: "<sent-1@sahnan.co>",
+          subject: "Re: Signal test",
+          date: new Date("2026-07-30T14:32:00Z"),
         },
         headers: Buffer.from("References: <sent-1@sahnan.co>"),
       };
@@ -89,5 +93,15 @@ describe("fetchInboundSince", () => {
     expect(inbound[1].inReplyTo).toBe("<sent-1@sahnan.co>");
     expect(state.order).toContain("release");
     expect(state.order).toContain("logout");
+  });
+
+  it("carries envelope subject and date through to the summary", async () => {
+    const inbound = await fetchInboundSince(
+      { address: "jay@sahnan.co", appPassword: "pw" },
+      new Date(),
+    );
+
+    expect(inbound[1].subject).toBe("Re: Signal test");
+    expect(inbound[1].date).toEqual(new Date("2026-07-30T14:32:00Z"));
   });
 });
