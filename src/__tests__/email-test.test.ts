@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  REPLY_SNIPPET_MAX,
+  extractReplyText,
   TEST_COOLDOWN_MS,
   checkTestCooldown,
   matchTestReply,
@@ -66,6 +68,7 @@ describe("matchTestReply", () => {
     bodyText: "",
     subject: "",
     date: null,
+    uid: null,
   };
 
   it("matches a threaded reply and returns envelope details", () => {
@@ -76,6 +79,7 @@ describe("matchTestReply", () => {
         inReplyTo: MSG_ID,
         subject: "Re: Signal test",
         date: new Date("2026-07-30T14:32:00Z"),
+        uid: null,
       },
     ];
 
@@ -84,6 +88,7 @@ describe("matchTestReply", () => {
       fromAddress: "jaysahnan31@gmail.com",
       subject: "Re: Signal test",
       date: new Date("2026-07-30T14:32:00Z"),
+      uid: null,
     });
   });
 
@@ -114,5 +119,46 @@ describe("matchTestReply", () => {
       { ...base, fromAddress: "jay@sahnan.co", inReplyTo: MSG_ID },
     ];
     expect(matchTestReply(inbound, MSG_ID, "jay@sahnan.co")).toBeNull();
+  });
+});
+
+describe("extractReplyText", () => {
+  // Exactly what Gmail returned for a real reply during live debugging.
+  const REAL = `omg it works so cool
+
+On Thu, 30 Jul 2026 at 22:48, <jay@sahnan.co> wrote:
+
+> This is a test send from Signal. Reply to this email and Signal should
+> detect your reply within a minute.
+>
+`;
+
+  it("keeps only what the person typed", () => {
+    expect(extractReplyText(REAL)).toBe("omg it works so cool");
+  });
+
+  it("drops quoted lines even without an attribution line", () => {
+    expect(extractReplyText("thanks!\n> old thing\n> more old")).toBe(
+      "thanks!",
+    );
+  });
+
+  it("handles Outlook-style original message separators", () => {
+    const raw = "sounds good\n\n-----Original Message-----\nFrom: someone";
+    expect(extractReplyText(raw)).toBe("sounds good");
+  });
+
+  it("normalises CRLF and collapses blank runs", () => {
+    expect(extractReplyText("a\r\n\r\n\r\n\r\nb")).toBe("a\n\nb");
+  });
+
+  it("truncates long replies with an ellipsis", () => {
+    const result = extractReplyText("x".repeat(REPLY_SNIPPET_MAX + 50));
+    expect(result).toHaveLength(REPLY_SNIPPET_MAX + 1);
+    expect(result.endsWith("…")).toBe(true);
+  });
+
+  it("returns empty string for a body that is entirely quoted", () => {
+    expect(extractReplyText("> only quoted\n> lines here")).toBe("");
   });
 });
