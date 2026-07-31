@@ -111,6 +111,72 @@ export async function recordAffiliation(
     .eq("id", personId);
 }
 
+// ─── Send gate ────────────────────────────────────────────────────────────
+
+/** The fields the send gate reads. */
+export interface SendCandidate {
+  work_email: string | null;
+  work_email_source: string | null;
+  work_email_verification: string | null;
+  affiliation_confidence: number | null;
+  affiliation_source: string | null;
+}
+
+export type SendCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Whether we know enough about a contact to email them.
+ *
+ * Nothing checked this before: the send path only asked whether the address
+ * field was non-empty, so a blind {first}.{last}@domain guess written at
+ * confidence 0.2 was treated exactly like an address the user typed in
+ * themselves. Both halves of the check matter and they fail differently — a bad
+ * address bounces and costs sender reputation, a bad affiliation sends a
+ * personalised pitch about the wrong company to a real person.
+ *
+ * Returns a reason rather than a bare false so the agent can explain the
+ * blockage and offer the fix, instead of silently skipping the contact.
+ */
+export function canSendTo(person: SendCandidate): SendCheck {
+  if (!person.work_email) {
+    return { ok: false, reason: "no email address on file" };
+  }
+
+  // A human typing the address, or a previous send it accepted, is proof enough
+  // — neither needs a verifier to confirm it.
+  const emailTrusted =
+    person.work_email_source === "user_entered" ||
+    person.work_email_source === "send_confirmed" ||
+    person.work_email_verification === "deliverable";
+
+  if (!emailTrusted) {
+    const state = person.work_email_verification ?? "unchecked";
+    return {
+      ok: false,
+      reason:
+        state === "unchecked"
+          ? "email has never been verified — run findEmail with an email provider configured, or enter the address manually"
+          : `email verification came back "${state}" — it is not confirmed deliverable`,
+    };
+  }
+
+  const confidence = person.affiliation_confidence ?? 0;
+  if (confidence < AFFILIATION_SEND_THRESHOLD) {
+    return {
+      ok: false,
+      reason: person.affiliation_source
+        ? `not confirmed to work at this company (evidence: ${person.affiliation_source}, confidence ${confidence.toFixed(2)})`
+        : "no evidence on file that this person works at this company",
+    };
+  }
+
+  return { ok: true };
+}
+
+/** Columns canSendTo needs — keep SELECTs and the predicate in step. */
+export const SEND_GATE_COLUMNS =
+  "work_email, work_email_source, work_email_verification, affiliation_confidence, affiliation_source";
+
 // ─── LinkedIn employer check ──────────────────────────────────────────────
 
 export type EmployerCheck =

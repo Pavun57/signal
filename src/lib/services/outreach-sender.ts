@@ -10,6 +10,11 @@ import {
 } from "@/lib/services/email-transport";
 import { trackUsage } from "@/lib/services/cost-tracker";
 import { recordVerifiedEmail } from "@/lib/services/email-pattern";
+import {
+  canSendTo,
+  SEND_GATE_COLUMNS,
+  type SendCandidate,
+} from "@/lib/services/affiliation";
 
 export interface EnrollmentForSend {
   id: string;
@@ -54,6 +59,31 @@ export async function claimAndSendDraft(
   trackMetadata?: Record<string, unknown>,
 ): Promise<SendResult> {
   const now = new Date().toISOString();
+
+  // Data-quality gate, before the claim so a blocked draft stays sendable once
+  // the contact is fixed rather than being parked in "queued".
+  //
+  // This is the last line of defence and the only one that cannot be bypassed:
+  // every sender — the followups cron, send-now, and the agent's sendEmail and
+  // sendBulkEmails tools — funnels through here. A check placed only in
+  // pickAndDraft would be skipped by three of those four.
+  if (draft.person_id) {
+    const { data: person } = await supabase
+      .from("people")
+      .select(SEND_GATE_COLUMNS)
+      .eq("id", draft.person_id)
+      .maybeSingle();
+
+    if (person) {
+      const check = canSendTo(person as unknown as SendCandidate);
+      if (!check.ok) {
+        return {
+          ok: false,
+          reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
+        };
+      }
+    }
+  }
 
   // Atomically claim the draft before sending. Overlapping callers — the
   // followups cron racing a send-now click, agent retries, or two process

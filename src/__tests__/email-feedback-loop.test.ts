@@ -116,11 +116,25 @@ function settings() {
   };
 }
 
+/** A contact the data-quality gate lets through. */
+function gatePasses() {
+  return {
+    data: {
+      work_email: "prospect@example.com",
+      work_email_source: "user_entered",
+      work_email_verification: "deliverable",
+      affiliation_confidence: 0.9,
+      affiliation_source: "team_page",
+    },
+  };
+}
+
 function sendResponses(personId: string | null) {
   return [
     { data: { id: "step_1" } }, // step select
     { data: draftWith(personId) }, // draft select
     { data: settings() }, // sender config
+    gatePasses(), // send-gate person read
     { data: { id: "draft_1" } }, // claim won
     { count: 0 }, // daily cap
     {}, // sent_emails insert

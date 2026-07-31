@@ -20,6 +20,7 @@ import {
 import { findContactsForOrganization } from "@/lib/services/contact-discovery";
 import { filterContactsByCompany } from "@/lib/services/contact-filter";
 import { recordAffiliation } from "@/lib/services/affiliation";
+import { runDataQualityAudit } from "@/lib/services/data-quality";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
 import { withTimeout } from "@/lib/utils/timeout";
 
@@ -1808,5 +1809,19 @@ export const getGoogleReviews = tool({
     }
 
     return result;
+  },
+});
+
+export const getDataQualityReport = tool({
+  description:
+    "Audit the contact and company data for quality problems: duplicate companies, companies with no domain holding contacts, people whose email domain or job title contradicts the company they are filed under, duplicate people, and unverified pattern-guessed emails. READ-ONLY — it proposes fixes and applies none. Use it when the user asks about data quality, suspects contacts are attached to the wrong company, or before a large outreach push.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    const supabase = await createClient();
+    const report = await runDataQualityAudit(supabase);
+    return {
+      ...report,
+      note: "Read-only audit. Nothing has been changed. To act on a finding, confirm with the user first, then use the person/company reassignment endpoints.",
+    };
   },
 });

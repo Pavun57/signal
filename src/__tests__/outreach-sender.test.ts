@@ -98,10 +98,29 @@ function settingsRow(overrides: Record<string, unknown> = {}) {
 
 // Await order inside sendApprovedDraft:
 // 0 step select · 1 draft select · 2 settings select (resolveSenderConfig) ·
-// 3 claim update · 4 daily-cap count (after the claim, latest snapshot)
+// 3 send-gate person select · 4 claim update · 5 daily-cap count
 // then send, then bookkeeping (insert, updates, next-step select, enrollment)
+/** A contact the data-quality gate lets through: verified email, known employer. */
+function gatePasses() {
+  return {
+    data: {
+      work_email: "prospect@example.com",
+      work_email_source: "user_entered",
+      work_email_verification: "deliverable",
+      affiliation_confidence: 0.9,
+      affiliation_source: "team_page",
+    },
+  };
+}
+
 function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
-  return [{ data: { id: "step_1" } }, { data: draft }, { data: settings }];
+  return [
+    { data: { id: "step_1" } },
+    { data: draft },
+    { data: settings },
+    // The send gate reads the contact before claiming the draft.
+    gatePasses(),
+  ];
 }
 
 let savedKey: string | undefined;
@@ -143,7 +162,7 @@ describe("sendApprovedDraft claim semantics", () => {
       }),
     );
 
-    const claim = calls[3];
+    const claim = calls[4]; // 3 is the send-gate person read
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -156,7 +175,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
 
     // The sent_emails row records the RFC Message-ID and the real address.
-    const insert = calls[5]; // 4 is the cap count (also sent_emails)
+    const insert = calls[6]; // 3 gate read, 5 cap count (also sent_emails)
     expect(insert.table).toBe("sent_emails");
     expect(insert.ops).toContainEqual({
       name: "insert",
@@ -199,6 +218,7 @@ describe("sendApprovedDraft claim semantics", () => {
           gmail_connected_at: new Date().toISOString(), // day 0 → ramp cap 5
         }),
       },
+      gatePasses(), // send-gate person read
       { data: { id: draft.id } }, // claim won
       { count: 5 }, // already sent 5 today
       {}, // claim release
@@ -212,7 +232,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
     expect(sendGmailMock).not.toHaveBeenCalled();
     // The capped draft must go back to "draft" so tomorrow's cron sends it.
-    const release = calls[5];
+    const release = calls[6];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",
@@ -281,7 +301,7 @@ describe("sendApprovedDraft claim semantics", () => {
       ok: false,
       reason: "SMTP 421 try again later",
     });
-    const release = calls[5];
+    const release = calls[6];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",
