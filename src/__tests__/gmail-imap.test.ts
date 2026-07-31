@@ -9,7 +9,10 @@ import { Readable } from "node:stream";
  * bounce bodies only after the fetch loop has fully drained.
  */
 
-const state = vi.hoisted(() => ({ order: [] as string[] }));
+const state = vi.hoisted(() => ({
+  order: [] as string[],
+  searchQuery: null as { since?: Date } | null,
+}));
 
 vi.mock("imapflow", () => {
   class FakeImapFlow {
@@ -19,7 +22,8 @@ vi.mock("imapflow", () => {
     async getMailboxLock() {
       return { release: () => state.order.push("release") };
     }
-    async *fetch() {
+    async *fetch(query: { since?: Date }) {
+      state.searchQuery = query;
       state.order.push("fetch-start");
       yield {
         uid: 11,
@@ -103,5 +107,29 @@ describe("fetchInboundSince", () => {
 
     expect(inbound[1].subject).toBe("Re: Signal test");
     expect(inbound[1].date).toEqual(new Date("2026-07-30T14:32:00Z"));
+  });
+
+  /**
+   * Regression: IMAP SINCE is DATE-granular and the server compares it against
+   * each message's internal date in the ACCOUNT's timezone, not UTC. Passing
+   * the raw UTC timestamp means that for a US/Pacific account, every send
+   * between 17:00 local and midnight searches a calendar day AHEAD of the
+   * server's view and returns zero rows — replies sitting correctly threaded
+   * in the INBOX are silently invisible. Verified live: a reply to a 05:48Z
+   * send was unfindable until the window was widened.
+   */
+  it("widens the IMAP search window by a day to survive timezone skew", async () => {
+    const sentAt = new Date("2026-07-31T05:48:26.000Z");
+    await fetchInboundSince(
+      { address: "jay@sahnan.co", appPassword: "pw" },
+      sentAt,
+    );
+
+    const searched = state.searchQuery?.since;
+    expect(searched).toBeInstanceOf(Date);
+    expect(sentAt.getTime() - searched!.getTime()).toBe(86400_000);
+    // The UTC calendar date must land strictly before the caller's, or the
+    // date-granular SINCE can still exclude the very message we want.
+    expect(searched!.getUTCDate()).toBeLessThan(sentAt.getUTCDate());
   });
 });
