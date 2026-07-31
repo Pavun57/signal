@@ -57,6 +57,7 @@ const KNOWN_TABLES = [
   "signal_results",
   "campaign_signals",
   "signals",
+  "email_voice_profiles",
   // email skills
   "email_skill_attachments",
   "email_skills",
@@ -138,11 +139,47 @@ function discoverTables() {
   return { present, missing, unknown };
 }
 
+// The 11 built-in signals are seeded ONLY by the initial migration, so nothing
+// puts them back: `supabase start` won't, and re-running migrations won't either
+// because the migration is already recorded as applied. Wiping them leaves the
+// app with an empty signal catalogue, recoverable only by hand-replaying the
+// INSERTs out of the initial migration.
+//
+// A `delete from signals where not is_builtin` is NOT enough. signals.created_by
+// references user_profile, so `truncate user_profile ... cascade` truncates the
+// whole signals table on its way through — CASCADE ignores row values. So
+// snapshot the built-ins, let the truncate happen, and put them back.
+// created_by is nulled on restore because the user_profile row it pointed at is
+// gone (the FK is ON DELETE SET NULL, so null is the value it would have taken).
+const PRESERVE_BUILTIN = "signals";
+
 function buildTruncateSql(tables) {
+  const preserving = tables.includes(PRESERVE_BUILTIN);
+  const statements = [];
+
+  if (preserving) {
+    statements.push(
+      `create temp table _preserved_signals on commit drop as select * from ${PRESERVE_BUILTIN} where is_builtin;`,
+    );
+  }
+
   // RESTART IDENTITY resets any sequence-backed columns; CASCADE handles
   // the foreign-key web (campaign_people -> people, etc.) without us
   // needing to enumerate dependency order.
-  return `truncate table ${tables.join(", ")} restart identity cascade;`;
+  statements.push(
+    `truncate table ${tables.join(", ")} restart identity cascade;`,
+  );
+
+  if (preserving) {
+    statements.push(
+      `update _preserved_signals set created_by = null;`,
+      `insert into ${PRESERVE_BUILTIN} select * from _preserved_signals;`,
+    );
+  }
+
+  // One transaction so the snapshot, the wipe and the restore cannot be
+  // interrupted halfway — and so the ON COMMIT DROP temp table is cleaned up.
+  return `begin; ${statements.join(" ")} commit;`;
 }
 
 function rowCounts(tables) {
