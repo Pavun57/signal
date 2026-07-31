@@ -1,19 +1,8 @@
 import { withAction } from "@/lib/services/cost-tracker";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
-import { ExaService } from "@/lib/services/exa-service";
-import {
-  findOrCreatePerson,
-  normalizeLinkedInUrl,
-} from "@/lib/services/knowledge-base";
-import { parseLinkedInTitle } from "@/lib/utils";
+import { findContactsForOrganization } from "@/lib/services/contact-discovery";
 
 export const maxDuration = 120;
-
-interface ExaPeopleResult {
-  url: string;
-  title: string;
-  text: string | null;
-}
 
 export async function POST(
   _request: Request,
@@ -53,69 +42,37 @@ export async function POST(
     return Response.json({ error: "Company not found" }, { status: 404 });
   }
 
-  const { data: existing } = await supabase
-    .from("people")
-    .select("linkedin_url")
-    .eq("organization_id", companyId);
-
-  const existingUrls = new Set(
-    (existing ?? [])
-      .map((p) => p.linkedin_url)
-      .filter((u): u is string => Boolean(u))
-      .map((u) => normalizeLinkedInUrl(u)),
-  );
-
-  const exa = new ExaService();
-  const queries = [
-    `${org.name} site:linkedin.com/in`,
-    `engineer at ${org.name} site:linkedin.com/in`,
-    `designer at ${org.name} site:linkedin.com/in`,
-    `sales OR marketing at ${org.name} site:linkedin.com/in`,
+  // Broad net across the common functions, then judged like any other
+  // discovery. This route previously ran four bare `${org.name}
+  // site:linkedin.com/in` searches — the company name unquoted, so it matched
+  // any of the words in it — took ten results each, and wrote every hit
+  // straight to organization_id with no verification whatsoever. For a company
+  // called "Signal", "Atlas" or "Ramp" that filled the org chart with
+  // employees of entirely unrelated businesses.
+  const titles = [
+    "engineer",
+    "designer",
+    "sales",
+    "marketing",
+    "operations",
+    "leadership",
   ];
 
-  const found: ExaPeopleResult[] = await withAction(
-    `Find more people: ${org.name}`,
-    async () => {
-      const all: ExaPeopleResult[] = [];
-      for (const q of queries) {
-        const res = await exa.search(q, {
-          numResults: 10,
-          category: "people",
-          includeText: true,
-        });
-        for (const r of res.results) {
-          all.push({ url: r.url, title: r.title, text: r.text });
-        }
-      }
-      return all;
-    },
-  );
+  return withAction(`Find more people: ${org.name}`, async () => {
+    const result = await findContactsForOrganization(supabase, {
+      organizationId: companyId,
+      campaignId: null,
+      titles,
+      numResults: 10,
+    });
 
-  let added = 0;
-  const seenInBatch = new Set<string>();
-
-  for (const r of found) {
-    if (!r.url.includes("linkedin.com/in/")) continue;
-    const norm = normalizeLinkedInUrl(r.url);
-    if (existingUrls.has(norm) || seenInBatch.has(norm)) continue;
-    seenInBatch.add(norm);
-
-    const parsed = parseLinkedInTitle(r.title);
-    if (!parsed.name || parsed.name === "Unknown") continue;
-
-    try {
-      await findOrCreatePerson({
-        name: parsed.name,
-        linkedin_url: norm,
-        title: parsed.title,
-        organization_id: companyId,
-        source: "find-more-people",
-      });
-      added += 1;
-    } catch (err) {
-      console.error("[find-more-people] failed to create:", err);
-    }
-  }
-
-  return Response.json({ found: found.length, added });
+    return Response.json({
+      found: result.totalFound + result.rejectedAsWrongCompany,
+      added: result.totalFound,
+      verifiedCount: result.verifiedCount,
+      uncertainCount: result.uncertainCount,
+      rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+      error: result.error,
+    });
+  });
 }

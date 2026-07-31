@@ -9,6 +9,7 @@ import { XService } from "@/lib/services/x-service";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import { GooglePlacesService } from "@/lib/services/google-places-service";
 import {
+  canHoldPeople,
   findOrCreateOrganization,
   findOrCreatePerson,
   linkPersonToCampaign,
@@ -16,12 +17,9 @@ import {
   isRecentlyEnriched,
   normalizeLinkedInUrl,
 } from "@/lib/services/knowledge-base";
-import {
-  findPeopleOnDomain,
-  filterContactsByCompany,
-  type CandidateContact,
-} from "@/lib/services/contact-filter";
-import { recordVerifiedEmail } from "@/lib/services/email-pattern";
+import { findContactsForOrganization } from "@/lib/services/contact-discovery";
+import { filterContactsByCompany } from "@/lib/services/contact-filter";
+import { recordAffiliation } from "@/lib/services/affiliation";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
 import { withTimeout } from "@/lib/utils/timeout";
 
@@ -84,8 +82,17 @@ export const searchPeople = tool({
     //   1. companyId (campaign_organizations link) -- already-scoped campaign work.
     //   2. companyName (+optional companyDomain) -- ad-hoc agent searches like
     //      "find people at Browserbase". findOrCreateOrganization dedups by
-    //      domain or fuzzy name match so we don't pile up duplicate orgs.
+    //      domain only; it no longer merges on name, because two different
+    //      companies sharing one is exactly how contact lists get pooled.
     let organizationId: string | null = null;
+    let orgContext: {
+      name: string;
+      domain: string | null;
+      industry: string | null;
+      location: string | null;
+      description: string | null;
+    } | null = null;
+
     if (input.companyId) {
       const { data: link } = await supabase
         .from("campaign_organizations")
@@ -100,6 +107,25 @@ export const searchPeople = tool({
         source: "searchPeople",
       });
       organizationId = org.id;
+    }
+
+    if (organizationId) {
+      const { data: org } = await supabase
+        .from("organizations")
+        .select("name, domain, industry, location, description")
+        .eq("id", organizationId)
+        .single();
+      orgContext = org ?? null;
+
+      // Same rule as findContacts: a company with no domain cannot be told
+      // apart from any other of the same name, so people must not be attached
+      // to it. Search still runs — the results are just left unattached.
+      if (org && !canHoldPeople(org)) {
+        console.warn(
+          `[searchPeople] "${org.name}" has no domain; storing results unattached.`,
+        );
+        organizationId = null;
+      }
     }
 
     // Fetch existing linkedin_urls already linked to this campaign for dedup
@@ -155,28 +181,73 @@ export const searchPeople = tool({
       });
     }
 
-    // No company-membership verification yet: filterContactsByCompany's
-    // pre-filter required the company name in each candidate's headline,
-    // which over-rejected legit employees whose LinkedIn page title doesn't
-    // include their employer (common at small startups). Phase 2 will replace
-    // this with a confidence score + enrich-on-low pattern.
+    // Stage 2: judge company membership, then store.
+    //
+    // This step used to be absent entirely — every search result was stamped
+    // with the target organization_id and the tool reported
+    // `rejectedAsWrongCompany: 0`, so the agent was told filtering had run and
+    // found nothing wrong. It had not run at all. The earlier attempt was
+    // removed because it hard-required the company name in the headline, which
+    // deletes real employees at small companies; the three-way verdict exists
+    // precisely so we no longer have to choose between those two failures.
+    const judged = organizationId
+      ? await filterContactsByCompany(
+          {
+            name: orgContext?.name ?? input.companyName ?? "",
+            domain: orgContext?.domain ?? input.companyDomain ?? null,
+            industry: orgContext?.industry ?? null,
+            location: orgContext?.location ?? null,
+            description: orgContext?.description ?? null,
+          },
+          candidates.map((c) => ({
+            name: c.name,
+            title: c.title,
+            linkedinUrl: c.linkedin_url,
+            rawHeadline: c.rawTitle,
+          })),
+        )
+      : candidates.map((_, index) => ({
+          index,
+          name: candidates[index].name,
+          title: candidates[index].title,
+          verdict: "uncertain" as const,
+          evidence: "no company specified for this search",
+        }));
 
-    // Stage 2: store every deduped candidate.
     const storedContacts: Array<{
       id: string;
       name: string;
       title: string | null;
       linkedin_url: string | null;
+      verdict: string;
     }> = [];
+    let rejectedAsWrongCompany = 0;
+    let uncertainCount = 0;
 
-    for (const c of candidates) {
+    for (const v of judged) {
+      const c = candidates[v.index];
+      if (!c) continue;
+
+      // A rejected candidate is a real person who works somewhere else. Keep
+      // them, unattached, rather than filing them under this company.
+      const attachTo = v.verdict === "rejected" ? null : organizationId;
+
       const person = await findOrCreatePerson({
-        name: c.name,
-        title: c.title,
+        name: v.name,
+        title: v.title,
         linkedin_url: c.linkedin_url,
-        organization_id: organizationId,
+        organization_id: attachTo,
         source: "exa",
       });
+
+      if (organizationId) {
+        await recordAffiliation(supabase, {
+          personId: person.id,
+          organizationId: attachTo,
+          source: v.verdict === "verified" ? "llm_verified" : "search_stamp",
+          evidence: v.evidence,
+        });
+      }
 
       if (person.enrichment_status === "pending") {
         await supabase
@@ -191,6 +262,12 @@ export const searchPeople = tool({
           .eq("id", person.id);
       }
 
+      if (v.verdict === "rejected") {
+        rejectedAsWrongCompany++;
+        continue;
+      }
+      if (v.verdict === "uncertain") uncertainCount++;
+
       if (input.campaignId) {
         await linkPersonToCampaign(person.id, input.campaignId);
       }
@@ -200,6 +277,7 @@ export const searchPeople = tool({
         name: person.name,
         title: person.title,
         linkedin_url: person.linkedin_url,
+        verdict: v.verdict,
       });
     }
 
@@ -209,13 +287,19 @@ export const searchPeople = tool({
         name: c.name,
         title: c.title,
         linkedinUrl: c.linkedin_url,
+        affiliation: c.verdict,
       })),
       organizationId,
       totalFound: searchResponse.resultCount,
       newContacts: storedContacts.length,
       duplicatesSkipped,
-      rejectedAsWrongCompany: 0,
+      uncertainCount,
+      rejectedAsWrongCompany,
       query: input.query,
+      note:
+        uncertainCount > 0
+          ? `${uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed.`
+          : undefined,
     };
   },
 });
@@ -1281,7 +1365,6 @@ export const findContacts = tool({
     }
 
     const supabase = await createClient();
-    const exa = new ExaService();
 
     // Resolve target titles from campaign ICP or explicit input
     let targetTitles: string[] = input.titles || [];
@@ -1303,22 +1386,12 @@ export const findContacts = tool({
       };
     }
 
-    // Resolve organization — either from campaign link or directly
+    // Resolve the organization — either via the campaign link or directly.
     let orgId: string;
-    let org: {
-      name: string;
-      domain: string | null;
-      industry: string | null;
-      location: string | null;
-      description: string | null;
-    };
-
     if (input.companyId) {
       const { data: link, error: linkError } = await supabase
         .from("campaign_organizations")
-        .select(
-          "organization_id, organization:organizations(name, domain, industry, location, description)",
-        )
+        .select("organization_id")
         .eq("id", input.companyId)
         .single();
       if (linkError || !link) {
@@ -1327,202 +1400,32 @@ export const findContacts = tool({
         );
       }
       orgId = link.organization_id;
-      org = link.organization as unknown as typeof org;
     } else {
-      const { data: orgData, error: orgError } = await supabase
-        .from("organizations")
-        .select("id, name, domain, industry, location, description")
-        .eq("id", input.organizationId!)
-        .single();
-      if (orgError || !orgData) {
-        throw new Error(
-          `Organization not found: ${orgError?.message || "Unknown"}`,
-        );
-      }
-      orgId = orgData.id;
-      org = orgData;
+      orgId = input.organizationId!;
     }
 
-    // Dedup against existing contacts (by LinkedIn URL)
-    const existingUrls = new Set<string>();
-    if (input.campaignId) {
-      const { data: existingLinks } = await supabase
-        .from("campaign_people")
-        .select("person:people(linkedin_url)")
-        .eq("campaign_id", input.campaignId);
-      for (const l of existingLinks || []) {
-        const url = (
-          l.person as unknown as { linkedin_url: string | null } | null
-        )?.linkedin_url;
-        if (url) existingUrls.add(url);
-      }
-    }
-
-    const storedContacts: Array<{
-      id: string;
-      name: string;
-      title: string | null;
-      work_email: string | null;
-      personal_email: string | null;
-      linkedin_url: string | null;
-      source: string;
-    }> = [];
-
-    // ── Phase 1: Search the company's own website ────────────────────
-    if (org.domain) {
-      try {
-        const domainPeople = await findPeopleOnDomain(org.domain, org.name);
-        for (const dp of domainPeople) {
-          if (dp.linkedinUrl && existingUrls.has(dp.linkedinUrl)) continue;
-
-          const person = await findOrCreatePerson({
-            name: dp.name,
-            title: dp.title,
-            linkedin_url: dp.linkedinUrl,
-            work_email: dp.email,
-            organization_id: orgId,
-            source: "website",
-          });
-
-          if (dp.email) {
-            await recordVerifiedEmail(supabase, {
-              personId: person.id,
-              email: dp.email,
-              source: "team_page",
-            });
-          }
-
-          if (input.campaignId) {
-            await linkPersonToCampaign(person.id, input.campaignId);
-          }
-          if (dp.linkedinUrl) existingUrls.add(dp.linkedinUrl);
-
-          storedContacts.push({
-            id: person.id,
-            name: person.name,
-            title: person.title,
-            work_email: person.work_email,
-            personal_email: person.personal_email,
-            linkedin_url: person.linkedin_url,
-            source: "website",
-          });
-        }
-      } catch (err) {
-        console.error("[findContacts] Domain scrape failed:", err);
-      }
-    }
-
-    // ── Phase 2: LinkedIn search with LLM filtering ──────────────────
-    const searchResults = await Promise.all(
-      targetTitles.map(async (title: string) => {
-        const query = `"${org.name}" ${title} site:linkedin.com`;
-        try {
-          const result = await exa.search(query, {
-            numResults: input.numResults,
-            category: "people",
-            includeText: true,
-          });
-          return { title, query, results: result.results };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Unknown error";
-          console.error(`[findContacts] Search failed for "${query}": ${msg}`);
-          return { title, query, results: [], error: msg };
-        }
-      }),
-    );
-
-    const seenUrls = new Set<string>();
-    const candidates: Array<
-      CandidateContact & { searchTitle: string; linkedinUrl: string | null }
-    > = [];
-    let duplicatesSkipped = 0;
-
-    for (const search of searchResults) {
-      for (const result of search.results) {
-        if (seenUrls.has(result.url)) {
-          duplicatesSkipped++;
-          continue;
-        }
-        seenUrls.add(result.url);
-
-        const linkedinUrl = result.url.includes("linkedin.com")
-          ? result.url
-          : null;
-        if (linkedinUrl && existingUrls.has(linkedinUrl)) {
-          duplicatesSkipped++;
-          continue;
-        }
-
-        const parsed = parseLinkedInTitle(result.title);
-        candidates.push({
-          name: parsed.name,
-          title: parsed.title || search.title,
-          linkedinUrl,
-          rawHeadline: result.title,
-          searchTitle: search.title,
-        });
-      }
-    }
-
-    if (candidates.length > 0) {
-      const company = {
-        name: org.name,
-        domain: org.domain,
-        industry: org.industry,
-        location: org.location,
-        description: org.description,
-      };
-      const verified = await filterContactsByCompany(company, candidates);
-
-      for (const v of verified) {
-        const candidate = candidates[v.index];
-        if (!candidate) continue;
-
-        const person = await findOrCreatePerson({
-          name: v.name,
-          title: v.title,
-          linkedin_url: candidate.linkedinUrl,
-          organization_id: orgId,
-          source: "exa",
-        });
-
-        if (input.campaignId) {
-          await linkPersonToCampaign(person.id, input.campaignId);
-        }
-
-        storedContacts.push({
-          id: person.id,
-          name: person.name,
-          title: person.title,
-          work_email: person.work_email,
-          personal_email: person.personal_email,
-          linkedin_url: person.linkedin_url,
-          source: "exa",
-        });
-      }
-    }
+    const result = await findContactsForOrganization(supabase, {
+      organizationId: orgId,
+      campaignId: input.campaignId ?? null,
+      titles: targetTitles,
+      numResults: input.numResults,
+    });
 
     return {
       companyId: input.companyId,
-      companyName: org.name,
+      companyName: result.companyName,
       targetTitles,
-      contacts: storedContacts.map((c) => ({
-        id: c.id,
-        name: c.name,
-        title: c.title,
-        work_email: c.work_email,
-        personal_email: c.personal_email,
-        linkedinUrl: c.linkedin_url,
-        source: c.source,
-      })),
-      searchesRun: searchResults.map((s) => ({
-        title: s.title,
-        query: s.query,
-        resultsFound: s.results.length,
-        error: "error" in s ? (s as { error?: string }).error : undefined,
-      })),
-      totalFound: storedContacts.length,
-      duplicatesSkipped,
+      contacts: result.contacts,
+      searchesRun: result.searchesRun,
+      totalFound: result.totalFound,
+      duplicatesSkipped: result.duplicatesSkipped,
+      // Real counts. These used to report `rejectedAsWrongCompany: 0`
+      // unconditionally while no filtering ran at all, which told the agent
+      // filtering had happened and found nothing wrong.
+      verifiedCount: result.verifiedCount,
+      uncertainCount: result.uncertainCount,
+      rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+      error: result.error,
     };
   },
 });

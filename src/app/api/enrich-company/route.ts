@@ -10,17 +10,9 @@ import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
   mergeEnrichmentData,
   isRecentlyEnriched,
-  findOrCreatePerson,
-  linkPersonToCampaign,
 } from "@/lib/services/knowledge-base";
-import {
-  findPeopleOnDomain,
-  filterContactsByCompany,
-  type CompanyContext,
-  type CandidateContact,
-} from "@/lib/services/contact-filter";
-import { recordVerifiedEmail } from "@/lib/services/email-pattern";
-import { parseLinkedInTitle } from "@/lib/utils";
+import { findContactsForOrganization } from "@/lib/services/contact-discovery";
+import { type CompanyContext } from "@/lib/services/contact-filter";
 
 export const maxDuration = 120;
 
@@ -163,14 +155,19 @@ export async function POST(request: Request) {
   return enrichOrganization(org, orgId, activeSlugs, campaignId, companyId);
 }
 
+/**
+ * Thin wrapper over the shared discovery path.
+ *
+ * This function used to be a third near-identical copy of the contact-finding
+ * logic (alongside the findContacts tool and /api/find-contacts), so a fix in
+ * any one of them left the same bug live in the other two.
+ */
 async function findContactsForCompany(
   orgId: string,
   company: CompanyContext,
   campaignId: string,
-  linkId?: string,
 ): Promise<{ totalFound: number }> {
   const supabase = await createClient();
-  let totalFound = 0;
 
   const { data: campaign } = await supabase
     .from("campaigns")
@@ -183,130 +180,21 @@ async function findContactsForCompany(
   // Bound to avoid per-user Exa spend blowouts.
   const boundedTitles = targetTitles.slice(0, 5);
 
-  // Dedup against existing campaign contacts (by LinkedIn URL only -- name
-  // matching is too fragile with first-name-only entries from team pages)
-  const { data: existingLinks } = await supabase
-    .from("campaign_people")
-    .select("person:people(linkedin_url)")
-    .eq("campaign_id", campaignId);
-
-  const existingUrls = new Set(
-    (existingLinks || [])
-      .map(
-        (l) =>
-          (l.person as unknown as { linkedin_url: string | null } | null)
-            ?.linkedin_url,
-      )
-      .filter(Boolean) as string[],
-  );
-
-  // ── Phase 1: Search the company's own website for team/staff ───────
-  if (company.domain) {
-    try {
-      const domainPeople = await findPeopleOnDomain(
-        company.domain,
-        company.name,
-      );
-      for (const dp of domainPeople) {
-        if (dp.linkedinUrl && existingUrls.has(dp.linkedinUrl)) continue;
-
-        const person = await findOrCreatePerson({
-          name: dp.name,
-          title: dp.title,
-          linkedin_url: dp.linkedinUrl,
-          work_email: dp.email,
-          organization_id: orgId,
-          source: "website",
-        });
-
-        if (dp.email) {
-          await recordVerifiedEmail(supabase, {
-            personId: person.id,
-            email: dp.email,
-            source: "team_page",
-          });
-        }
-
-        await linkPersonToCampaign(person.id, campaignId);
-        if (dp.linkedinUrl) existingUrls.add(dp.linkedinUrl);
-        totalFound++;
-      }
-    } catch (err) {
-      console.error("[findContactsForCompany] Domain scrape failed:", err);
+  try {
+    const result = await findContactsForOrganization(supabase, {
+      organizationId: orgId,
+      campaignId,
+      titles: boundedTitles,
+      numResults: 3,
+    });
+    if (result.error) {
+      console.warn(`[enrich-company] ${company.name}: ${result.error}`);
     }
+    return { totalFound: result.totalFound };
+  } catch (err) {
+    console.error("[enrich-company] contact discovery failed:", err);
+    return { totalFound: 0 };
   }
-
-  // ── Phase 2: LinkedIn search with LLM filtering ────────────────────
-  if (boundedTitles.length > 0) {
-    const exa = new ExaService();
-
-    const searchResults = await Promise.all(
-      boundedTitles.map(async (title: string) => {
-        const query = `"${company.name}" ${title} site:linkedin.com`;
-        try {
-          const result = await exa.search(query, {
-            numResults: 3,
-            category: "people" as const,
-            includeText: true,
-          });
-          return { title, results: result.results };
-        } catch {
-          return { title, results: [] };
-        }
-      }),
-    );
-
-    // Collect deduplicated candidates for LLM filtering
-    const seenUrls = new Set<string>();
-    const candidates: Array<
-      CandidateContact & { searchTitle: string; linkedinUrl: string | null }
-    > = [];
-
-    for (const search of searchResults) {
-      for (const result of search.results) {
-        if (seenUrls.has(result.url)) continue;
-        seenUrls.add(result.url);
-
-        const linkedinUrl = result.url.includes("linkedin.com")
-          ? result.url
-          : null;
-        if (linkedinUrl && existingUrls.has(linkedinUrl)) continue;
-
-        const parsed = parseLinkedInTitle(result.title);
-
-        candidates.push({
-          name: parsed.name,
-          title: parsed.title || search.title,
-          linkedinUrl,
-          rawHeadline: result.title,
-          searchTitle: search.title,
-        });
-      }
-    }
-
-    if (candidates.length > 0) {
-      // LLM filter: verify each candidate actually works at this company
-      const verified = await filterContactsByCompany(company, candidates);
-
-      for (const v of verified) {
-        const candidate = candidates[v.index];
-        if (!candidate) continue;
-
-        const person = await findOrCreatePerson({
-          name: v.name,
-          title: v.title,
-          linkedin_url: candidate.linkedinUrl,
-          organization_id: orgId,
-          source: "exa",
-        });
-
-        await linkPersonToCampaign(person.id, campaignId);
-        totalFound++;
-      }
-    }
-  }
-
-  return { totalFound };
 }
 
 async function enrichOrganization(
@@ -334,7 +222,6 @@ async function enrichOrganization(
           orgId,
           companyCtx,
           campaignId,
-          linkId,
         );
         contactsFound = result.totalFound;
       }
@@ -544,7 +431,6 @@ async function enrichOrganization(
           orgId,
           companyCtx,
           campaignId,
-          linkId,
         );
         contactsFound = result.totalFound;
       } catch (err) {
