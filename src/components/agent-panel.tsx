@@ -79,7 +79,7 @@ function getSuggestions(pathname: string, campaignId: string | null): string[] {
     return [
       "Help me configure my email settings",
       "Show me my API usage costs",
-      "Set up my AgentMail inbox",
+      "Connect my Gmail for outreach",
       "What's my current sending setup?",
     ];
   }

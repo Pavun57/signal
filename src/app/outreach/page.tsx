@@ -89,7 +89,7 @@ export default function OutreachPage() {
         .in("status", ["draft"])
         .order("created_at", { ascending: false })
         .limit(200),
-      supabase.from("user_settings").select("agentmail_inbox_id").maybeSingle(),
+      supabase.from("user_settings").select("gmail_address").maybeSingle(),
       supabase.from("sequence_steps").select("sequence_id, step_number"),
     ]);
 
@@ -99,7 +99,7 @@ export default function OutreachPage() {
     const enrollmentRows = enrollmentCountsRes.data ?? [];
     const cards = enrollmentsRes.data ?? [];
     const rawDrafts = draftsRes.data ?? [];
-    const hasInbox = !!settingsRes.data?.agentmail_inbox_id;
+    const hasInbox = !!settingsRes.data?.gmail_address;
 
     // Sequence counts
     const countsBySeq = new Map<

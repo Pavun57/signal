@@ -1,16 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { encryptSecret } from "@/lib/crypto";
 import { sendApprovedDraft } from "@/lib/services/outreach-sender";
-import { sendMessage } from "@/lib/services/agentmail-service";
+import { sendGmailMessage } from "@/lib/services/gmail-service";
 
-vi.mock("@/lib/services/agentmail-service", () => ({
-  sendMessage: vi.fn(),
-}));
+vi.mock("@/lib/services/gmail-service", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/services/gmail-service")>();
+  // getEffectiveDailyLimit stays real — it's pure and separately tested.
+  return { ...actual, sendGmailMessage: vi.fn() };
+});
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
 }));
 
-const sendMessageMock = vi.mocked(sendMessage);
+const sendGmailMock = vi.mocked(sendGmailMessage);
 
 interface RecordedCall {
   table: string;
@@ -22,7 +26,9 @@ interface RecordedCall {
  * and awaiting the chain pops the next queued response. Lets us assert the
  * exact sequence of reads/claims/updates the sender performs.
  */
-function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
+function fakeSupabase(
+  responses: Array<{ data?: unknown; error?: unknown; count?: number }>,
+) {
   let i = 0;
   const calls: RecordedCall[] = [];
 
@@ -34,6 +40,7 @@ function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
       "select",
       "eq",
       "in",
+      "gte",
       "update",
       "insert",
       "single",
@@ -76,36 +83,65 @@ const draft = {
   body_text: "Hi",
 };
 
+function settingsRow(overrides: Record<string, unknown> = {}) {
+  return {
+    gmail_address: "jay@sahnan.co",
+    gmail_app_password_enc: encryptSecret("abcd efgh ijkl mnop"),
+    // 20 days back — fully ramped, so claim-semantics tests hit the full cap.
+    gmail_connected_at: new Date(Date.now() - 20 * 86400_000).toISOString(),
+    from_name: "Jay Sahnan",
+    reply_to_email: null,
+    daily_send_limit: 30,
+    ...overrides,
+  };
+}
+
 // Await order inside sendApprovedDraft:
-// 0 step select · 1 draft select · 2 settings select · 3 claim update
+// 0 step select · 1 draft select · 2 settings select (resolveSenderConfig) ·
+// 3 claim update · 4 daily-cap count (after the claim, latest snapshot)
 // then send, then bookkeeping (insert, updates, next-step select, enrollment)
-const preSendResponses = [
-  { data: { id: "step_1" } },
-  { data: draft },
-  { data: { agentmail_inbox_id: "inbox_1" } },
-];
+function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
+  return [{ data: { id: "step_1" } }, { data: draft }, { data: settings }];
+}
+
+let savedKey: string | undefined;
 
 describe("sendApprovedDraft claim semantics", () => {
   beforeEach(() => {
-    sendMessageMock.mockReset();
+    savedKey = process.env.EMAIL_CREDENTIALS_KEY;
+    process.env.EMAIL_CREDENTIALS_KEY = Buffer.alloc(32, 7).toString("base64");
+    sendGmailMock.mockReset();
+  });
+  afterEach(() => {
+    process.env.EMAIL_CREDENTIALS_KEY = savedKey;
   });
 
   it("sends after winning the claim", async () => {
     const { client, calls } = fakeSupabase([
-      ...preSendResponses,
+      ...preSendResponses(),
       { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // sent_emails insert
       {}, // draft → sent
       {}, // campaign_people → sent
       { data: null }, // no next step
       {}, // enrollment → completed
     ]);
-    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: "t1" });
+    sendGmailMock.mockResolvedValue({ messageId: "<m1@sahnan.co>" });
 
     const result = await sendApprovedDraft(client, enrollment);
 
-    expect(result).toMatchObject({ ok: true, messageId: "m1" });
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ ok: true, messageId: "<m1@sahnan.co>" });
+    expect(sendGmailMock).toHaveBeenCalledTimes(1);
+    expect(sendGmailMock).toHaveBeenCalledWith(
+      { address: "jay@sahnan.co", appPassword: "abcd efgh ijkl mnop" },
+      expect.objectContaining({
+        fromName: "Jay Sahnan",
+        to: draft.to_email,
+        subject: draft.subject,
+        html: draft.body_html,
+      }),
+    );
 
     const claim = calls[3];
     expect(claim.table).toBe("email_drafts");
@@ -118,11 +154,108 @@ describe("sendApprovedDraft claim semantics", () => {
       name: "eq",
       args: ["status", "draft"],
     });
+
+    // The sent_emails row records the RFC Message-ID and the real address.
+    const insert = calls[5]; // 4 is the cap count (also sent_emails)
+    expect(insert.table).toBe("sent_emails");
+    expect(insert.ops).toContainEqual({
+      name: "insert",
+      args: [
+        expect.objectContaining({
+          message_id: "<m1@sahnan.co>",
+          from_email: "jay@sahnan.co",
+        }),
+      ],
+    });
+  });
+
+  it("passes reply-to through to the gmail send", async () => {
+    const { client } = fakeSupabase([
+      ...preSendResponses(settingsRow({ reply_to_email: "jay@jaysahnan.com" })),
+      { data: { id: draft.id } },
+      { count: 0 },
+      {},
+      {},
+      {},
+      { data: null },
+      {},
+    ]);
+    sendGmailMock.mockResolvedValue({ messageId: "<m2@sahnan.co>" });
+
+    await sendApprovedDraft(client, enrollment);
+
+    expect(sendGmailMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ replyTo: "jay@jaysahnan.com" }),
+    );
+  });
+
+  it("refuses to send past the ramp limit and releases the claim", async () => {
+    const { client, calls } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      {
+        data: settingsRow({
+          gmail_connected_at: new Date().toISOString(), // day 0 → ramp cap 5
+        }),
+      },
+      { data: { id: draft.id } }, // claim won
+      { count: 5 }, // already sent 5 today
+      {}, // claim release
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("warmup ramp"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+    // The capped draft must go back to "draft" so tomorrow's cron sends it.
+    const release = calls[5];
+    expect(release.table).toBe("email_drafts");
+    expect(release.ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ status: "draft" })],
+    });
+  });
+
+  it("refuses to send past the configured daily cap", async () => {
+    const { client } = fakeSupabase([
+      ...preSendResponses(settingsRow({ daily_send_limit: 10 })),
+      { data: { id: draft.id } }, // claim won
+      { count: 10 },
+      {}, // claim release
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("Daily send limit"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
+  it("fails cleanly when gmail is not connected", async () => {
+    const { client } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      { data: { gmail_address: null, gmail_app_password_enc: null } },
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("connect"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("does not send when another caller already claimed the draft", async () => {
     const { client } = fakeSupabase([
-      ...preSendResponses,
+      ...preSendResponses(),
       { data: null }, // claim lost — someone else got there first
     ]);
 
@@ -130,21 +263,25 @@ describe("sendApprovedDraft claim semantics", () => {
 
     expect(result).toMatchObject({ ok: false });
     expect((result as { reason: string }).reason).toMatch(/already claimed/i);
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("releases the claim when the send itself fails", async () => {
     const { client, calls } = fakeSupabase([
-      ...preSendResponses,
+      ...preSendResponses(),
       { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
       {}, // release update
     ]);
-    sendMessageMock.mockRejectedValue(new Error("AgentMail 503"));
+    sendGmailMock.mockRejectedValue(new Error("SMTP 421 try again later"));
 
     const result = await sendApprovedDraft(client, enrollment);
 
-    expect(result).toMatchObject({ ok: false, reason: "AgentMail 503" });
-    const release = calls[4];
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "SMTP 421 try again later",
+    });
+    const release = calls[5];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",
@@ -158,19 +295,25 @@ describe("sendApprovedDraft claim semantics", () => {
   });
 
   it("keeps the claim when bookkeeping fails after the email left", async () => {
-    sendMessageMock.mockResolvedValue({ messageId: "m1", threadId: "t1" });
+    sendGmailMock.mockResolvedValue({ messageId: "<m1@sahnan.co>" });
 
     const base = fakeSupabase([
-      ...preSendResponses,
-      { data: { id: draft.id } },
+      ...preSendResponses(),
+      { data: { id: draft.id } }, // claim won
+      { count: 0 }, // daily-cap count
     ]);
     const origFrom = (base.client as { from: (t: string) => unknown }).from;
-    // The sent_emails insert (first call after the send) blows up.
+    // The sent_emails insert (first call after the send) blows up. Note the
+    // cap-count select also hits sent_emails, so only reject inserts.
     const client = {
-      from: (table: string) =>
-        table === "sent_emails"
-          ? { insert: () => Promise.reject(new Error("insert failed")) }
-          : origFrom(table),
+      from: (table: string) => {
+        if (table !== "sent_emails") return origFrom(table);
+        const real = origFrom(table) as Record<string, unknown>;
+        return {
+          ...real,
+          insert: () => Promise.reject(new Error("insert failed")),
+        };
+      },
     } as never;
 
     await expect(sendApprovedDraft(client, enrollment)).rejects.toThrow(

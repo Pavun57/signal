@@ -16,7 +16,7 @@ User ──▶ Next.js (App Router)
                 ├──▶ Supabase (Postgres + Auth + RLS)
                 ├──▶ Anthropic Claude (via Vercel AI SDK)
                 ├──▶ Browserbase / Stagehand (web automation)
-                ├──▶ AgentMail (outbound email + webhooks)
+                ├──▶ Gmail SMTP/IMAP (outbound email + reply tracking)
                 ├──▶ QStash (scheduled jobs)
                 └──▶ Exa / Google / Apify / GitHub (enrichment)
 ```
@@ -38,7 +38,7 @@ src/
   lib/
     supabase/       # client, server, middleware, admin clients
     tools/          # AI tool definitions (email, profile, sequences)
-    services/       # integrations (agentmail, qstash, exa, browserbase, ...)
+    services/       # integrations (gmail, qstash, exa, browserbase, ...)
     signals/        # signal runner + recipe engine
     email-composition/
     types/          # shared TypeScript types
@@ -100,8 +100,8 @@ If you deploy Signal for multiple independent teams, **do not share a Supabase p
 
 1. User reviews draft sequences in `/outreach/review`.
 2. Send request hits `src/app/api/outreach/send-now/route.ts`.
-3. `src/lib/services/agentmail-service.ts` dispatches, stores `email_drafts` rows.
-4. AgentMail webhook at `src/app/api/agentmail/webhook/route.ts` updates delivery / open / reply state.
+3. `src/lib/services/gmail-service.ts` dispatches over the user's Gmail SMTP, stores `email_drafts` rows.
+4. IMAP polling at `src/app/api/email/track/route.ts` (QStash schedule) updates reply / bounce state.
 
 ## External service touchpoints
 

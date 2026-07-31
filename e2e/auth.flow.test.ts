@@ -43,11 +43,11 @@ test.describe("middleware redirects", () => {
   });
 
   test("public webhook routes do NOT require auth", async ({ request }) => {
-    // /api/agentmail/webhook is a Svix webhook handler — must accept POSTs
-    // without a Clerk session. Without a valid Svix signature it'll return
-    // 400/401 from the handler, NOT a 307 redirect to /login.
+    // /api/outreach/process is a QStash-signed handler — must accept POSTs
+    // without a Clerk session. Without a valid QStash signature it'll return
+    // 401 from the handler, NOT a 307 redirect to /login.
     const res = await request.post(
-      "http://localhost:3000/api/agentmail/webhook",
+      "http://localhost:3000/api/outreach/process",
       {
         data: {},
         failOnStatusCode: false,

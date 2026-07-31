@@ -25,12 +25,15 @@ interface RunPayload {
 
 export async function POST(request: Request) {
   // Verify QStash signature
-  let payload: RunPayload;
+  let payload: RunPayload | null;
   try {
     payload = await verifyQStashSignature<RunPayload>(request);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Invalid signature";
     return Response.json({ error: msg }, { status: 401 });
+  }
+  if (!payload) {
+    return Response.json({ error: "Missing payload" }, { status: 400 });
   }
 
   const { trackingConfigId } = payload;

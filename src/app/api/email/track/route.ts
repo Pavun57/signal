@@ -1,25 +1,32 @@
 import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
-import { getMessage } from "@/lib/services/agentmail-service";
+import { decryptSecret } from "@/lib/crypto";
+import {
+  classifyInboundMessage,
+  fetchInboundSince,
+} from "@/lib/services/gmail-service";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { verifyQStashSignature } from "@/lib/services/qstash";
 
+// One IMAP connect + TLS handshake + fetch per user per run — slower than
+// REST polling, so give the route real headroom.
+export const maxDuration = 120;
+
 const STATUS_EVENT: Record<string, string> = {
-  delivered: "email_delivered",
-  opened: "email_opened",
-  clicked: "email_clicked",
   replied: "email_replied",
   bounced: "email_bounced",
-  complained: "email_complained",
 };
 
 /**
- * Delivery tracking endpoint. Call via a QStash schedule (the route is
- * public, so the signature check is the only auth — each run makes one
- * AgentMail API call per pending email, which an open endpoint would let
- * anyone burn through).
- * Polls AgentMail for delivery status of recently sent emails
- * and updates outreach_status accordingly.
+ * Reply/bounce tracking. Call via a QStash schedule (the route is public, so
+ * the signature check is the only auth). Polls each user's Gmail INBOX over
+ * IMAP and matches inbound In-Reply-To/References headers against the RFC
+ * Message-IDs of pending sends.
+ *
+ * Gmail rows only ever move sent → replied | bounced: there is no
+ * delivered/opened/clicked signal because Signal deliberately sends no
+ * tracking pixel (pixels hurt cold-email deliverability and the data is
+ * mostly fiction post-Apple-MPP).
  */
 
 // Status priority -- only move forward, never regress
@@ -35,6 +42,15 @@ const STATUS_PRIORITY: Record<string, number> = {
   complained: 6,
 };
 
+interface PendingEmail {
+  id: string;
+  message_id: string | null;
+  campaign_people_id: string;
+  user_id: string;
+  status: string;
+  sent_at: string;
+}
+
 export async function POST(request: Request) {
   try {
     await verifyQStashSignature(request);
@@ -45,11 +61,15 @@ export async function POST(request: Request) {
 
   const supabase = getAdminClient();
 
-  // Load recent sent emails that haven't reached a terminal state
+  // Load recent sent emails that haven't reached a terminal state. Clamped
+  // to 14 days: unanswered sends and migrated legacy rows must not drag the
+  // IMAP fetch window (each user's real inbox!) weeks into the past.
+  const windowStart = new Date(Date.now() - 14 * 86400_000).toISOString();
   const { data: emails, error } = await supabase
     .from("sent_emails")
-    .select("id, agentmail_message_id, campaign_people_id, user_id, status")
+    .select("id, message_id, campaign_people_id, user_id, status, sent_at")
     .in("status", ["sent", "delivered", "opened"])
+    .gte("sent_at", windowStart)
     .order("sent_at", { ascending: false })
     .limit(100);
 
@@ -57,79 +77,100 @@ export async function POST(request: Request) {
     return NextResponse.json({ checked: 0, updated: 0 });
   }
 
-  // Load user settings to get inbox IDs
+  // Load gmail credentials for the affected users
   const userIds = [...new Set(emails.map((e) => e.user_id))];
   const { data: settingsRows } = await supabase
     .from("user_settings")
-    .select("user_id, agentmail_inbox_id")
+    .select("user_id, gmail_address, gmail_app_password_enc")
     .in("user_id", userIds);
 
-  const inboxByUser = new Map<string, string>();
+  const credsByUser = new Map<
+    string,
+    { address: string; appPassword: string }
+  >();
   for (const row of settingsRows ?? []) {
-    if (row.agentmail_inbox_id) {
-      inboxByUser.set(row.user_id, row.agentmail_inbox_id);
+    if (row.gmail_address && row.gmail_app_password_enc) {
+      try {
+        credsByUser.set(row.user_id, {
+          address: row.gmail_address,
+          appPassword: decryptSecret(row.gmail_app_password_enc),
+        });
+      } catch {
+        // Undecryptable credential (rotated EMAIL_CREDENTIALS_KEY) — skip;
+        // the user has to reconnect in Settings > Email.
+      }
     }
+  }
+
+  const emailsByUser = new Map<string, PendingEmail[]>();
+  for (const email of emails as PendingEmail[]) {
+    const list = emailsByUser.get(email.user_id) ?? [];
+    list.push(email);
+    emailsByUser.set(email.user_id, list);
   }
 
   let updated = 0;
 
-  for (const email of emails) {
-    const inboxId = inboxByUser.get(email.user_id);
-    if (!inboxId) continue;
+  async function applyStatus(email: PendingEmail, newStatus: string) {
+    // Only move forward in the pipeline
+    const currentPriority = STATUS_PRIORITY[email.status] ?? 0;
+    const newPriority = STATUS_PRIORITY[newStatus] ?? 0;
+    if (newPriority <= currentPriority) return;
+
+    await supabase
+      .from("sent_emails")
+      .update({ status: newStatus })
+      .eq("id", email.id);
+
+    await supabase
+      .from("campaign_people")
+      .update({ outreach_status: newStatus })
+      .eq("id", email.campaign_people_id);
+
+    const eventName = STATUS_EVENT[newStatus];
+    if (eventName) {
+      getPostHogClient().capture({
+        distinctId: email.user_id,
+        event: eventName,
+        properties: {
+          sent_email_id: email.id,
+          campaign_people_id: email.campaign_people_id,
+          previous_status: email.status,
+        },
+      });
+    }
+
+    updated++;
+  }
+
+  for (const [userId, userEmails] of emailsByUser) {
+    const creds = credsByUser.get(userId);
+    if (!creds) continue;
+
+    const pending = new Map<string, string>();
+    for (const e of userEmails) {
+      // Only RFC 5322 Message-IDs ("<...>") can ever match a reply header;
+      // legacy provider ids would just waste window and lookups.
+      if (e.message_id?.startsWith("<")) pending.set(e.message_id, e.id);
+    }
+    if (pending.size === 0) continue;
+
+    const oldest = userEmails.reduce(
+      (min, e) => (e.sent_at < min ? e.sent_at : min),
+      userEmails[0].sent_at,
+    );
 
     try {
-      const msg = await getMessage(inboxId, email.agentmail_message_id);
-      if (!msg) continue;
-
-      // Map AgentMail message labels/status to outreach_status
-      // AgentMail uses labels on messages -- check for delivery-related labels
-      const msgLabels = (msg.labels ?? []) as string[];
-      const msgStatus = msgLabels.join(",").toLowerCase();
-      let newStatus: string | null = null;
-
-      if (msgStatus.includes("delivered")) newStatus = "delivered";
-      else if (msgStatus.includes("bounced") || msgStatus.includes("bounce"))
-        newStatus = "bounced";
-      else if (msgStatus.includes("opened")) newStatus = "opened";
-      else if (msgStatus.includes("clicked")) newStatus = "clicked";
-      else if (msgStatus.includes("complained") || msgStatus.includes("spam"))
-        newStatus = "complained";
-
-      if (!newStatus) continue;
-
-      // Only move forward in the pipeline
-      const currentPriority = STATUS_PRIORITY[email.status] ?? 0;
-      const newPriority = STATUS_PRIORITY[newStatus] ?? 0;
-      if (newPriority <= currentPriority) continue;
-
-      // Update sent_emails
-      await supabase
-        .from("sent_emails")
-        .update({ status: newStatus })
-        .eq("id", email.id);
-
-      // Update campaign_people outreach_status
-      await supabase
-        .from("campaign_people")
-        .update({ outreach_status: newStatus })
-        .eq("id", email.campaign_people_id);
-
-      const eventName = STATUS_EVENT[newStatus];
-      if (eventName) {
-        getPostHogClient().capture({
-          distinctId: email.user_id,
-          event: eventName,
-          properties: {
-            sent_email_id: email.id,
-            campaign_people_id: email.campaign_people_id,
-            previous_status: email.status,
-          },
-        });
+      const inbound = await fetchInboundSince(creds, new Date(oldest));
+      for (const message of inbound) {
+        const hit = classifyInboundMessage(message, pending, creds.address);
+        if (!hit) continue;
+        const email = userEmails.find((e) => e.id === hit.sentEmailId);
+        if (!email) continue;
+        await applyStatus(email, hit.status);
       }
-
-      updated++;
     } catch {
-      // Skip individual failures -- don't break the loop
+      // One user's IMAP failure must not break the whole run
     }
   }
 

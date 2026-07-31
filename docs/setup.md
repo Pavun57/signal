@@ -112,15 +112,15 @@ At this point, you have enough to run `pnpm dev` and see the app boot.
 
 Every block in `.env.example` beyond the required ones is feature-gated. If you don't set a key, the feature that uses it will fail gracefully with a "not configured" message. Pick what you need:
 
-| Service          | Unlocks                                                                          |
-| ---------------- | -------------------------------------------------------------------------------- |
-| Browserbase      | Web scraping, YC scraper, hiring signals (uses your Anthropic key for Stagehand) |
-| AgentMail        | Sending outreach emails + delivery/reply webhooks                                |
-| QStash           | Scheduled signal runs                                                            |
-| Exa              | Neural web search inside chat                                                    |
-| Google API + CSE | Google Places enrichment                                                         |
-| Apify            | LinkedIn + X enrichment                                                          |
-| GitHub token     | GitHub-based signals (commits, releases)                                         |
+| Service            | Unlocks                                                                          |
+| ------------------ | -------------------------------------------------------------------------------- |
+| Browserbase        | Web scraping, YC scraper, hiring signals (uses your Anthropic key for Stagehand) |
+| Gmail app password | Sending outreach emails from your own mailbox + reply tracking over IMAP         |
+| QStash             | Scheduled signal runs                                                            |
+| Exa                | Neural web search inside chat                                                    |
+| Google API + CSE   | Google Places enrichment                                                         |
+| Apify              | LinkedIn + X enrichment                                                          |
+| GitHub token       | GitHub-based signals (commits, releases)                                         |
 
 Signup links live in `.env.example` next to each block.
 

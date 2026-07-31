@@ -35,7 +35,7 @@ These are targets, not SLAs. We'll keep you in the loop if something slips.
 
 Out of scope:
 
-- Issues in third-party services (Supabase, Anthropic, Browserbase, AgentMail, etc.) — report those to the respective vendor.
+- Issues in third-party services (Supabase, Anthropic, Browserbase, Google, etc.) — report those to the respective vendor.
 - Findings that require a local compromise of the self-hoster's environment.
 - Social-engineering or physical attacks.
 - Denial of service via unbounded input where the fix is documented rate-limiting.

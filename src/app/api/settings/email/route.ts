@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
-import { listInboxes, createInbox } from "@/lib/services/agentmail-service";
+import { encryptSecret } from "@/lib/crypto";
+import {
+  getEffectiveDailyLimit,
+  verifyGmailCredentials,
+} from "@/lib/services/gmail-service";
+
+// Connecting runs a live SMTP + IMAP login against Gmail, which takes a few
+// seconds — don't let the default function budget cut it off.
+export const maxDuration = 30;
 
 export async function GET() {
   const ctx = await getSupabaseAndUser();
@@ -11,29 +19,27 @@ export async function GET() {
 
   const { data: settings } = await supabase
     .from("user_settings")
-    .select("agentmail_inbox_id, from_name, reply_to_email")
+    .select(
+      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit",
+    )
     .eq("user_id", user.id)
     .maybeSingle();
 
-  let inboxes: Array<{ inbox_id: string; display_name: string | null }> = [];
-  try {
-    const rawInboxes = await listInboxes();
-    inboxes = rawInboxes.map((inbox) => ({
-      inbox_id: inbox.inboxId ?? "",
-      display_name: inbox.displayName ?? null,
-    }));
-  } catch {
-    // AgentMail not configured or API key invalid -- return empty list
-  }
+  const dailyLimit = settings?.daily_send_limit ?? 30;
 
   return NextResponse.json({
     settings: settings ?? {
-      agentmail_inbox_id: null,
+      gmail_address: null,
+      gmail_connected_at: null,
       from_name: null,
       reply_to_email: null,
+      daily_send_limit: 30,
     },
-    is_configured: !!settings?.agentmail_inbox_id,
-    inboxes,
+    is_configured: !!settings?.gmail_address,
+    effective_daily_limit: getEffectiveDailyLimit(
+      settings?.gmail_connected_at ?? null,
+      dailyLimit,
+    ),
   });
 }
 
@@ -45,35 +51,93 @@ export async function POST(request: Request) {
   const { supabase, user } = ctx;
   const body = await request.json();
 
-  // Handle inbox creation
-  if (body.action === "create_inbox") {
-    const displayName = body.display_name;
-    if (!displayName || typeof displayName !== "string") {
+  if (body.action === "connect_gmail") {
+    const address =
+      typeof body.gmail_address === "string" ? body.gmail_address.trim() : "";
+    const appPassword =
+      typeof body.app_password === "string"
+        ? body.app_password.replace(/\s+/g, "")
+        : "";
+    if (
+      !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address) ||
+      appPassword.length < 16
+    ) {
       return NextResponse.json(
-        { error: "display_name is required" },
+        {
+          error:
+            "A valid email address and 16-character app password are required.",
+        },
         { status: 400 },
       );
     }
-    try {
-      const inbox = await createInbox(displayName);
-      return NextResponse.json({ inbox });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to create inbox";
-      return NextResponse.json({ error: message }, { status: 500 });
+
+    const verified = await verifyGmailCredentials({ address, appPassword });
+    if (!verified.ok) {
+      return NextResponse.json({ error: verified.error }, { status: 400 });
     }
+
+    // Preserve the warmup-ramp clock when re-connecting the same address
+    // (e.g. after rotating the app password).
+    const { data: existing } = await supabase
+      .from("user_settings")
+      .select("gmail_address, gmail_connected_at")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    const connectedAt =
+      existing?.gmail_address === address && existing?.gmail_connected_at
+        ? existing.gmail_connected_at
+        : new Date().toISOString();
+
+    const { error } = await supabase.from("user_settings").upsert(
+      {
+        user_id: user.id,
+        gmail_address: address,
+        gmail_app_password_enc: encryptSecret(appPassword),
+        gmail_connected_at: connectedAt,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ connected: true, gmail_address: address });
   }
 
-  // Save/update settings
-  const { agentmail_inbox_id, from_name, reply_to_email } = body;
+  if (body.action === "disconnect_gmail") {
+    const { error } = await supabase
+      .from("user_settings")
+      .update({
+        gmail_address: null,
+        gmail_app_password_enc: null,
+        gmail_connected_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", user.id);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ disconnected: true });
+  }
 
-  const fields = {
+  // Plain settings save
+  const fields: Record<string, unknown> = {
     user_id: user.id,
-    agentmail_inbox_id: agentmail_inbox_id ?? null,
-    from_name: from_name ?? null,
-    reply_to_email: reply_to_email ?? null,
+    from_name: body.from_name ?? null,
+    reply_to_email: body.reply_to_email ?? null,
     updated_at: new Date().toISOString(),
   };
+
+  if (body.daily_send_limit !== undefined) {
+    const limit = Number(body.daily_send_limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      return NextResponse.json(
+        { error: "daily_send_limit must be an integer between 1 and 500" },
+        { status: 400 },
+      );
+    }
+    fields.daily_send_limit = limit;
+  }
 
   const { error } = await supabase.from("user_settings").upsert(fields, {
     onConflict: "user_id",
