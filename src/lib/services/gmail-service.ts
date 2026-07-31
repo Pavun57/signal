@@ -118,6 +118,19 @@ export async function fetchInboundSince(
   creds: GmailCreds,
   since: Date,
 ): Promise<InboundSummary[]> {
+  // IMAP SINCE is DATE-granular, and the server evaluates it against each
+  // message's internal date in the account's own timezone — not UTC. A UTC
+  // timestamp taken late in the local day is therefore a calendar day ahead
+  // of the server's view, and the search silently returns zero rows. For a
+  // US/Pacific account that is every send between 17:00 and midnight local:
+  // sent 05:48Z (22:48 local, 30 Jul), searching SINCE 31-Jul finds nothing
+  // even though the reply is sitting in the INBOX correctly threaded.
+  //
+  // Widen by a day so the date can never land ahead of the server's. Max real
+  // UTC offset is 14h, so one day always covers it. Over-fetching envelopes
+  // is cheap and costs no correctness: matching is exact on Message-ID.
+  const searchSince = new Date(since.getTime() - 86400_000);
+
   const imap = imapClient(creds);
   await imap.connect();
   const results: InboundSummary[] = [];
@@ -130,7 +143,7 @@ export async function fetchInboundSince(
       // doesn't complete until every row is consumed, and a nested command
       // (like download) queues behind it — mutual wait, guaranteed hang.
       for await (const msg of imap.fetch(
-        { since },
+        { since: searchSince },
         { envelope: true, headers: ["references"], uid: true },
       )) {
         const fromAddress = msg.envelope?.from?.[0]?.address ?? "";
