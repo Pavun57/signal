@@ -372,22 +372,40 @@ export function EmailSettings() {
 
               {testStatus === "waiting" && (
                 <div className="text-muted-foreground space-y-1.5 text-xs">
-                  <p>
-                    {polling
-                      ? "Sent — waiting for your reply. Reply to it and this updates within ~20s."
-                      : "No reply detected yet. Reply to the test, then check again."}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    {polling && (
+                      // Without a live indicator the card looks frozen between
+                      // 20s ticks and the user cannot tell we are still
+                      // watching. motion-safe so it respects reduced-motion.
+                      <span
+                        className="relative flex h-2 w-2 shrink-0"
+                        aria-hidden="true"
+                      >
+                        <span className="bg-success absolute inline-flex h-full w-full motion-safe:animate-ping rounded-full opacity-75" />
+                        <span className="bg-success relative inline-flex h-2 w-2 rounded-full" />
+                      </span>
+                    )}
+                    <p aria-live="polite">
+                      {polling
+                        ? testChecking
+                          ? "Checking your inbox..."
+                          : `Watching for your reply — checking every ${POLL_MS / 1000}s.`
+                        : "No reply detected yet. Reply to the test, then check again."}
+                    </p>
+                  </div>
                   {testWarning && <p>{testWarning}</p>}
-                  {!polling && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void checkTest()}
-                      disabled={testChecking}
-                    >
-                      {testChecking ? "Checking..." : "Check now"}
-                    </Button>
-                  )}
+                  {/* Always offered, not just once polling gives up: the user
+                      knows they replied well before the next tick, and making
+                      them wait up to 20s for a round trip they already
+                      completed is the whole complaint. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void checkTest()}
+                    disabled={testChecking}
+                  >
+                    {testChecking ? "Checking..." : "I've replied — check now"}
+                  </Button>
                 </div>
               )}
 
