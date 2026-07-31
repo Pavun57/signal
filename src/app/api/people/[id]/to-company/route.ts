@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { recordAffiliation } from "@/lib/services/affiliation";
 import { linkPersonToCampaign } from "@/lib/services/knowledge-base";
 
 const BodySchema = z.object({
@@ -83,11 +84,22 @@ export async function POST(
     return Response.json({ error: "Organization not found" }, { status: 404 });
   }
 
+  // Goes through recordAffiliation rather than writing organization_id
+  // directly, so the employer and the evidence for it can never disagree. A
+  // human saying so is the strongest source there is, which also means this is
+  // the one action that can override a machine verdict — the manual escape
+  // hatch when the LLM cannot confirm a real employee.
+  await recordAffiliation(supabase, {
+    personId,
+    organizationId,
+    source: "user_entered",
+    evidence: "assigned by the user",
+  });
+
   const { data: updated, error: updErr } = await supabase
     .from("people")
-    .update({ organization_id: organizationId })
-    .eq("id", personId)
     .select("id, name, organization_id")
+    .eq("id", personId)
     .maybeSingle();
 
   if (updErr) {

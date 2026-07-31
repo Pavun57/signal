@@ -70,9 +70,19 @@ export async function DELETE(
     }
   }
 
+  // Clear the provenance alongside the employer. Detaching while leaving
+  // affiliation_source/confidence in place would let the next passing search
+  // re-attach the person to a DIFFERENT company that then inherits the old
+  // company's confidence and passes the send gate.
   const { error: orgErr } = await supabase
     .from("people")
-    .update({ organization_id: null })
+    .update({
+      organization_id: null,
+      affiliation_source: null,
+      affiliation_confidence: null,
+      affiliation_evidence: null,
+      affiliation_verified_at: null,
+    })
     .eq("id", personId);
 
   if (orgErr) {

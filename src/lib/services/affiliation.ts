@@ -96,8 +96,25 @@ export async function recordAffiliation(
       : -1;
 
   const sameOrg = person.organization_id === organizationId;
-  if (incoming < existingWeight) return;
-  if (sameOrg && incoming === existingWeight && existingSource) return;
+
+  // Moving someone between companies — or detaching them entirely — requires
+  // STRICTLY stronger evidence than whatever put them where they are.
+  //
+  // This was `incoming < existingWeight` with the equal-weight guard applied
+  // only to same-org writes, which meant equal evidence could reassign across
+  // orgs. Since no row is backfilled, every pre-existing person is
+  // organization_id-set + source-NULL, which this function scores as
+  // search_stamp (0.2) — so a single `rejected` verdict, also 0.2, was enough to
+  // silently orphan any legacy contact. `people` is a shared pool across users
+  // on an instance, so one person's search could empty someone else's contact
+  // list. Two equal-confidence LLM calls would also ping-pong the same contact
+  // between two companies on alternate runs.
+  if (sameOrg) {
+    if (incoming < existingWeight) return;
+    if (incoming === existingWeight && existingSource) return;
+  } else if (incoming <= existingWeight) {
+    return;
+  }
 
   await supabase
     .from("people")
@@ -140,6 +157,21 @@ export type SendCheck = { ok: true } | { ok: false; reason: string };
 export function canSendTo(person: SendCandidate): SendCheck {
   if (!person.work_email) {
     return { ok: false, reason: "no email address on file" };
+  }
+
+  // A negative verdict disqualifies the address no matter how it was found.
+  // This has to be checked BEFORE the source shortcuts below: recordBounce
+  // marks a bounced address `undeliverable`, but every address that has ever
+  // been sent carries `send_confirmed` by definition — so trusting the source
+  // first meant a hard-bounced mailbox stayed sendable for the next campaign.
+  if (
+    person.work_email_verification === "undeliverable" ||
+    person.work_email_verification === "risky"
+  ) {
+    return {
+      ok: false,
+      reason: `email verification came back "${person.work_email_verification}" — it is not confirmed deliverable`,
+    };
   }
 
   // A human typing the address, or a previous send it accepted, is proof enough

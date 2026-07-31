@@ -34,6 +34,8 @@ interface PersonRow {
 }
 interface OrgRow {
   id: string;
+  /** recordBounce needs it to re-derive what the pattern would have produced. */
+  domain: string | null;
   email_pattern: string | null;
   email_pattern_confidence: number | null;
   email_pattern_evidence_count: number;
@@ -58,6 +60,7 @@ function createFakeSupabase(initial: {
     })) as PersonRow[],
     organizations: (initial.organizations ?? []).map((o) => ({
       id: "",
+      domain: null,
       email_pattern: null,
       email_pattern_confidence: null,
       email_pattern_evidence_count: 0,
@@ -470,7 +473,7 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "send_confirmed",
           work_email_confidence: 0.95,
           work_email_verified_at: "2026-04-25T00:00:00Z",
@@ -496,7 +499,7 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "team_page",
           work_email_confidence: 0.7,
           work_email_verified_at: "2026-04-25T00:00:00Z",
@@ -504,7 +507,7 @@ describe("recordBounce", () => {
       ],
       organizations: [{ id: "o1" }],
     });
-    await recordBounce(client, { personId: "p1", email: "jane@acme.com" });
+    await recordBounce(client, { personId: "p1", email: "jane.doe@acme.com" });
     expect(tables.people[0].work_email_verified_at).toBeNull();
     expect(tables.people[0].work_email_confidence).toBe(0);
   });
@@ -516,7 +519,7 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "team_page",
           work_email_confidence: 0.7,
         },
@@ -524,6 +527,7 @@ describe("recordBounce", () => {
       organizations: [
         {
           id: "o1",
+          domain: "acme.com",
           email_pattern: "{first}.{last}",
           email_pattern_confidence: 0.9,
           email_pattern_evidence_count: 3,
@@ -531,7 +535,7 @@ describe("recordBounce", () => {
         },
       ],
     });
-    await recordBounce(client, { personId: "p1", email: "jane@acme.com" });
+    await recordBounce(client, { personId: "p1", email: "jane.doe@acme.com" });
     expect(tables.organizations[0].email_pattern).toBe("{first}.{last}");
     expect(tables.organizations[0].email_pattern_confidence).toBeCloseTo(0.9);
     expect(tables.organizations[0].email_pattern_bounce_count).toBe(0);
@@ -544,13 +548,14 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "pattern_derived",
         },
       ],
       organizations: [
         {
           id: "o1",
+          domain: "acme.com",
           email_pattern: "{first}.{last}",
           email_pattern_confidence: 0.8,
           email_pattern_evidence_count: 3,
@@ -558,7 +563,7 @@ describe("recordBounce", () => {
         },
       ],
     });
-    await recordBounce(client, { personId: "p1", email: "jane@acme.com" });
+    await recordBounce(client, { personId: "p1", email: "jane.doe@acme.com" });
     // 1/3 = 0.33 → halve: 0.4
     expect(tables.organizations[0].email_pattern).toBe("{first}.{last}");
     expect(tables.organizations[0].email_pattern_confidence).toBeCloseTo(0.4);
@@ -572,13 +577,14 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "pattern_derived",
         },
       ],
       organizations: [
         {
           id: "o1",
+          domain: "acme.com",
           email_pattern: "{first}.{last}",
           email_pattern_confidence: 0.8,
           email_pattern_evidence_count: 1,
@@ -586,7 +592,7 @@ describe("recordBounce", () => {
         },
       ],
     });
-    await recordBounce(client, { personId: "p1", email: "jane@acme.com" });
+    await recordBounce(client, { personId: "p1", email: "jane.doe@acme.com" });
     // 1/1 = 1.0 → clear
     expect(tables.organizations[0].email_pattern).toBeNull();
     expect(tables.organizations[0].email_pattern_confidence).toBe(0);
@@ -606,13 +612,14 @@ describe("recordBounce", () => {
           id: "p1",
           name: "Jane Doe",
           organization_id: "o1",
-          work_email: "jane@acme.com",
+          work_email: "jane.doe@acme.com",
           work_email_source: "pattern_derived",
         },
       ],
       organizations: [
         {
           id: "o1",
+          domain: "acme.com",
           email_pattern: "{first}.{last}",
           email_pattern_confidence: 0.8,
           email_pattern_evidence_count: 0,
@@ -620,7 +627,7 @@ describe("recordBounce", () => {
         },
       ],
     });
-    await recordBounce(client, { personId: "p1", email: "jane@acme.com" });
+    await recordBounce(client, { personId: "p1", email: "jane.doe@acme.com" });
     // After recompute: no other verified people in the org, so pattern
     // becomes null + evidence stays 0. Bounce count bumps to 1, but the
     // ratio branch is skipped because evidence is still 0.

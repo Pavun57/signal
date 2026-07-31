@@ -200,8 +200,17 @@ export async function findOrCreatePerson(data: {
         updates.personal_email = data.personal_email;
       if (data.twitter_url && !existing.twitter_url)
         updates.twitter_url = data.twitter_url;
-      if (data.organization_id && !existing.organization_id)
-        updates.organization_id = data.organization_id;
+
+      // Deliberately does NOT set organization_id on an existing person.
+      //
+      // Employer is provenance-tracked and recordAffiliation owns it, applying
+      // a monotonic never-downgrade rule. Writing the column here bypassed that
+      // rule while leaving affiliation_source/confidence describing the OLD
+      // employer — so a person detached from Acme (which keeps
+      // affiliation_confidence 0.95 and evidence naming Acme) could be silently
+      // re-attached to Beta by a passing search, and would then sail through
+      // the send gate on Acme's confidence. Callers that mean to set an
+      // employer must call recordAffiliation and say why.
 
       if (Object.keys(updates).length > 0) {
         await supabase.from("people").update(updates).eq("id", existing.id);

@@ -137,7 +137,55 @@ describe("recordAffiliation", () => {
     expect(people[0].organization_id).toBe("org-b");
   });
 
-  it("can detach someone when the evidence points nowhere", async () => {
+  it("refuses an equal-weight move to a different company", async () => {
+    // The legacy corpus is all organization_id-set + source-NULL, which scores
+    // as search_stamp (0.2). A `rejected`/`uncertain` verdict is also 0.2, so
+    // when cross-org moves only required >=, one Haiku call could reassign or
+    // orphan any pre-existing contact — and `people` is shared across users on
+    // an instance, so one person's search corrupted someone else's list.
+    seed({ organization_id: "org-a" }); // legacy: no recorded source
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-b",
+      source: "search_stamp",
+      evidence: "showed up in a search for org-b",
+    });
+
+    expect(people[0].organization_id).toBe("org-a");
+  });
+
+  it("refuses to detach a legacy row on equal-weight evidence", async () => {
+    seed({ organization_id: "org-a" });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "search_stamp",
+      evidence: "rejected by the judge",
+    });
+
+    expect(people[0].organization_id).toBe("org-a");
+  });
+
+  it("does not ping-pong someone between two equally-confident verdicts", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "llm_verified",
+      affiliation_confidence: AFFILIATION_WEIGHT.llm_verified,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-b",
+      source: "llm_verified",
+      evidence: "also looks like org-b",
+    });
+
+    expect(people[0].organization_id).toBe("org-a");
+  });
+
+  it("detaches someone when strictly stronger evidence points elsewhere", async () => {
     seed({
       organization_id: "org-a",
       affiliation_source: "search_stamp",

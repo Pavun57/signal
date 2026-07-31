@@ -97,7 +97,10 @@ function pushCandidate(
  * candidate by discovery order, marked `unchecked` — so a self-hosted instance
  * without a key keeps working exactly as before.
  */
-export async function findEmailForPerson(personId: string): Promise<{
+export async function findEmailForPerson(
+  personId: string,
+  opts: { revalidate?: boolean } = {},
+): Promise<{
   email: string | null;
   source?: string;
   confidence?: number;
@@ -119,13 +122,30 @@ export async function findEmailForPerson(personId: string): Promise<{
     return { email: null, reason: "Person not found.", personId };
   }
 
-  if (person.work_email) {
+  // An address we already hold short-circuits everything — unless it has never
+  // been proven, in which case verifying it IS the job.
+  //
+  // Without this second clause there was no way to make an existing contact
+  // sendable: the gate refuses an unverified address and tells the user to run
+  // findEmail, and findEmail returned the same unverified address untouched.
+  // Every contact that predates verification was permanently stuck, and the
+  // remediation advice was a no-op.
+  const alreadyTrusted =
+    person.work_email_verification === "deliverable" ||
+    person.work_email_source === "user_entered" ||
+    person.work_email_source === "send_confirmed";
+
+  if (person.work_email && (alreadyTrusted || !opts.revalidate)) {
     return {
       email: person.work_email,
       source: person.work_email_source ?? "existing",
       confidence: person.work_email_confidence ?? undefined,
       verification: person.work_email_verification ?? "unchecked",
       personId,
+      reason:
+        alreadyTrusted || !person.work_email
+          ? undefined
+          : "Stored but unverified. Call findEmail with revalidate: true to check it.",
     };
   }
   if (person.personal_email) {
@@ -151,6 +171,23 @@ export async function findEmailForPerson(personId: string): Promise<{
   // The domain has to be able to receive mail at all before any address at it
   // is worth proposing — one DNS lookup gates every domain-derived candidate.
   const domainAcceptsMail = domain ? await mxCheck(domain) : false;
+
+  // ── 0) The address already on file, when we were asked to re-check it. It
+  //       goes first because it is what the user has actually seen and what any
+  //       existing draft is addressed to.
+  if (opts.revalidate && person.work_email) {
+    pushCandidate(
+      candidates,
+      toCandidate(
+        person.work_email,
+        (person.work_email_source as EmailCandidate["source"]) ??
+          "pattern_derived",
+        person.work_email_confidence ?? 0,
+      ),
+      first,
+      last,
+    );
+  }
 
   // ── 1) Org pattern, if we've learned a confident one from verified emails.
   if (domainAcceptsMail && domain && person.organization_id && first) {
@@ -275,15 +312,27 @@ export async function findEmailForPerson(personId: string): Promise<{
   for (const candidate of candidates.slice(0, MAX_VERIFICATIONS_PER_PERSON)) {
     const result = await provider.verifyEmail(candidate.email);
 
-    // Cache the domain's catch-all status the first time we learn it — it is a
-    // property of the MX config, not of this address, and re-probing it per
-    // contact bills once per person at the same company.
-    if (orgIsCatchAll === null && person.organization_id && result.catchAll) {
-      orgIsCatchAll = true;
+    // Catch-all is a property of ONE domain's MX config, so only a verdict
+    // about the company's own domain may be cached against the company.
+    // Previously any candidate's verdict was written to the org: a personal
+    // gmail.com address scraped by Exa flagged the employer catch-all forever,
+    // capping every future contact there at 0.5 and blocking them from
+    // outreach, with nothing to ever clear it. The flag is also recorded when
+    // false, so a negative result is cached too rather than re-probed per
+    // contact.
+    const candidateAtOrgDomain =
+      !!domain && candidate.email.endsWith(`@${domain.toLowerCase()}`);
+
+    if (
+      orgIsCatchAll === null &&
+      person.organization_id &&
+      candidateAtOrgDomain
+    ) {
+      orgIsCatchAll = result.catchAll;
       await supabase
         .from("organizations")
         .update({
-          is_catch_all: true,
+          is_catch_all: result.catchAll,
           catch_all_checked_at: new Date().toISOString(),
         })
         .eq("id", person.organization_id);
@@ -294,7 +343,10 @@ export async function findEmailForPerson(personId: string): Promise<{
       continue;
     }
 
-    const catchAll = result.catchAll || orgIsCatchAll === true;
+    // The org's cached flag only speaks for addresses at the org's domain; an
+    // off-domain candidate is judged solely on its own verdict.
+    const catchAll =
+      result.catchAll || (candidateAtOrgDomain && orgIsCatchAll === true);
 
     if (result.status === "deliverable" && !catchAll) {
       await writeEmailResult(supabase, personId, candidate, {
@@ -556,11 +608,18 @@ async function inferPatternFromOrg(
 
 export const findEmail = tool({
   description:
-    "Discover the email address for a contact using Exa search and common email pattern guessing. Returns the email if already known. Use this before writeEmail if the contact has no email.",
+    "Find and verify a contact's email address. Returns the stored address if there is one. Pass revalidate: true to re-check an address that is stored but unverified — that is the way to unblock a contact the send gate is refusing.",
   inputSchema: z.object({
     personId: z.string().uuid().describe("Person ID to find email for."),
+    revalidate: z
+      .boolean()
+      .optional()
+      .describe(
+        "Re-verify an address that is already stored but unverified. Use when the send gate reports the email has never been verified.",
+      ),
   }),
-  execute: async ({ personId }) => findEmailForPerson(personId),
+  execute: async ({ personId, revalidate }) =>
+    findEmailForPerson(personId, { revalidate }),
 });
 
 // ── findEmails (batch) ─────────────────────────────────────────────────────

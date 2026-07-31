@@ -68,20 +68,31 @@ export async function claimAndSendDraft(
   // sendBulkEmails tools — funnels through here. A check placed only in
   // pickAndDraft would be skipped by three of those four.
   if (draft.person_id) {
-    const { data: person } = await supabase
+    const { data: person, error: personError } = await supabase
       .from("people")
       .select(SEND_GATE_COLUMNS)
       .eq("id", draft.person_id)
       .maybeSingle();
 
-    if (person) {
-      const check = canSendTo(person as unknown as SendCandidate);
-      if (!check.ok) {
-        return {
-          ok: false,
-          reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
-        };
-      }
+    // Fail closed. maybeSingle() returns data: null both for "no such row" and
+    // for a query error, so ignoring either would let a transient PostgREST
+    // failure, an RLS denial, or a person deleted by a merge wave the send
+    // through unchecked — turning the one gate that cannot be bypassed into one
+    // that a database hiccup disables. Not sending is always recoverable;
+    // sending is not.
+    if (personError || !person) {
+      return {
+        ok: false,
+        reason: `Not sending to ${draft.to_email}: could not load the contact to check it (${personError?.message ?? "no such person"}).`,
+      };
+    }
+
+    const check = canSendTo(person as unknown as SendCandidate);
+    if (!check.ok) {
+      return {
+        ok: false,
+        reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
+      };
     }
   }
 

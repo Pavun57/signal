@@ -287,7 +287,9 @@ export async function recomputeOrgPattern(
 ): Promise<void> {
   const { data: people } = await supabase
     .from("people")
-    .select("name, work_email, work_email_source, work_email_verified_at")
+    .select(
+      "name, work_email, work_email_source, work_email_verified_at, work_email_verification",
+    )
     .eq("organization_id", orgId)
     .not("work_email", "is", null)
     .not("work_email_verified_at", "is", null);
@@ -295,14 +297,36 @@ export async function recomputeOrgPattern(
   const candidates: VerifiedEmail[] = [];
   for (const p of people ?? []) {
     if (!p.work_email || !p.work_email_source) continue;
-    if (p.work_email_source === "pattern_derived") continue; // don't feed guesses back in
+    // Guesses must not feed the pattern that produced them — that would let a
+    // pattern confirm itself out of nothing. But a guess a verifier has since
+    // confirmed as deliverable is no longer a guess; it is the strongest
+    // evidence available. Excluding it unconditionally meant the flywheel threw
+    // away the very address that had just proved the pattern right, since the
+    // org-pattern and blind-guess strategies both write `pattern_derived`.
+    if (
+      p.work_email_source === "pattern_derived" &&
+      p.work_email_verification !== "deliverable"
+    ) {
+      continue;
+    }
     const { first, last } = splitName(p.name);
     if (!first || !last) continue; // need both for pattern matching
+
+    // `pattern_derived` weighs 0 by design, so a verified guess would still
+    // contribute nothing if we passed its stored source through. Score it by
+    // what actually established it — a mailbox check — rather than by how it
+    // was first guessed. `send_confirmed` is the existing source meaning
+    // "a real mailbox accepted this", which is exactly what happened.
+    const source: EmailSource =
+      p.work_email_source === "pattern_derived"
+        ? "send_confirmed"
+        : p.work_email_source;
+
     candidates.push({
       email: p.work_email,
       firstName: first,
       lastName: last,
-      source: p.work_email_source,
+      source,
     });
   }
 
@@ -404,7 +428,7 @@ export async function recordBounce(
 
   const { data: person } = await supabase
     .from("people")
-    .select("id, work_email, work_email_source, organization_id")
+    .select("id, name, work_email, work_email_source, organization_id")
     .eq("id", personId)
     .maybeSingle();
 
@@ -418,22 +442,53 @@ export async function recordBounce(
     return;
   }
 
-  // Clear verification + lower confidence on the person.
+  // Mark the address undeliverable, not merely unverified.
+  //
+  // Clearing verified_at and confidence alone left work_email_verification and
+  // work_email_source untouched — and canSendTo trusts `send_confirmed`, which
+  // every sent address carries by definition. So a hard-bounced mailbox stayed
+  // sendable and would be mailed again by the next campaign or signal fire.
   await supabase
     .from("people")
     .update({
       work_email_verified_at: null,
       work_email_confidence: 0,
+      work_email_verification: "undeliverable",
     })
     .eq("id", personId);
 
-  // If the email was derived from the org's pattern, that's evidence the
-  // pattern is wrong. Bump bounce count and reduce / clear confidence.
-  if (
-    person.work_email_source !== "pattern_derived" ||
-    !person.organization_id
-  ) {
-    return;
+  if (!person.organization_id) return;
+
+  // Did this address come from the org's pattern?
+  //
+  // Asking `work_email_source === "pattern_derived"` alone could never be true
+  // here: a bounce is always preceded by a send, and a successful send writes
+  // `send_confirmed` (0.95), overwriting the original source. So the
+  // pattern-degradation half of the feedback loop was unreachable and
+  // email_pattern_bounce_count could never leave zero.
+  //
+  // The fix is not to drop the source check — an address observed on a team
+  // page or returned by a provider bounces because that address is stale, which
+  // says nothing about the pattern, even if it happens to look pattern-shaped.
+  // Instead, also accept `send_confirmed` when the address is exactly what the
+  // pattern would have generated, since that is precisely the state a
+  // pattern-derived address ends up in after being sent to once.
+  const source = person.work_email_source;
+  if (source !== "pattern_derived" && source !== "send_confirmed") return;
+
+  const { first, last } = splitName(person.name ?? "");
+  const { data: patternOrg } = await supabase
+    .from("organizations")
+    .select("email_pattern, domain")
+    .eq("id", person.organization_id)
+    .maybeSingle();
+
+  if (source === "send_confirmed") {
+    const derived =
+      patternOrg?.email_pattern && patternOrg.domain
+        ? applyPattern(patternOrg.email_pattern, first, last, patternOrg.domain)
+        : null;
+    if (!derived || localPart(derived) !== localPart(email)) return;
   }
 
   // If a pattern exists but the cached evidence_count is stale (e.g. 0 because

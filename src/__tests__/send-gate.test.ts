@@ -113,6 +113,19 @@ describe("canSendTo", () => {
     ).toEqual({ ok: true });
   });
 
+  it("blocks a bounced address even though a send once confirmed it", () => {
+    // recordBounce marks the address undeliverable. Without that, canSendTo
+    // trusts send_confirmed — which every sent address carries by definition —
+    // so a hard-bounced mailbox stayed sendable for the next campaign.
+    const result = canSendTo(
+      p({
+        work_email_source: "send_confirmed",
+        work_email_verification: "undeliverable",
+      }),
+    );
+    expect(result.ok).toBe(false);
+  });
+
   it("always explains the blockage rather than failing silently", () => {
     for (const person of [
       p({ work_email: null }),
