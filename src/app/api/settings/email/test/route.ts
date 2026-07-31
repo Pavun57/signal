@@ -3,12 +3,14 @@ import { NextResponse } from "next/server";
 import { decryptSecret } from "@/lib/crypto";
 import {
   checkTestCooldown,
+  extractReplyText,
   matchTestReply,
   validateTestRecipient,
 } from "@/lib/services/email-test";
 import type { InboundSummary } from "@/lib/services/gmail-service";
 import {
   fetchInboundSince,
+  fetchMessageText,
   sendGmailMessage,
 } from "@/lib/services/gmail-service";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
@@ -20,7 +22,7 @@ export const maxDuration = 60;
 const TEST_SUBJECT = "Signal test send";
 
 const SELECT =
-  "gmail_address, gmail_app_password_enc, from_name, reply_to_email, test_message_id, test_to_email, test_sent_at, test_replied_at, test_status";
+  "gmail_address, gmail_app_password_enc, from_name, reply_to_email, test_message_id, test_to_email, test_sent_at, test_replied_at, test_status, test_reply";
 
 type Settings = {
   gmail_address: string | null;
@@ -32,6 +34,14 @@ type Settings = {
   test_sent_at: string | null;
   test_replied_at: string | null;
   test_status: "replied" | "bounced" | null;
+  test_reply: TestReplyDetail | null;
+};
+
+type TestReplyDetail = {
+  from: string;
+  subject: string;
+  at: string;
+  snippet: string;
 };
 
 function testState(settings: Settings) {
@@ -40,6 +50,7 @@ function testState(settings: Settings) {
     sent_at: settings.test_sent_at,
     replied_at: settings.test_replied_at,
     status: settings.test_status,
+    reply: settings.test_reply,
   };
 }
 
@@ -156,9 +167,10 @@ export async function POST(request: Request) {
         test_to_email: valid.to,
         test_sent_at: sentAt,
         test_replied_at: null,
-        // Clear the previous verdict too, or a new test inherits the old
-        // one's status and settles the moment it is first checked.
+        // Clear the previous verdict and its reply detail too, or a new test
+        // inherits the old one's status and settles the moment it is checked.
         test_status: null,
+        test_reply: null,
         updated_at: sentAt,
       })
       .eq("user_id", user.id);
@@ -187,6 +199,7 @@ export async function POST(request: Request) {
     if (settings.test_replied_at) {
       return NextResponse.json({
         status: settings.test_status ?? "replied",
+        reply: settings.test_reply,
         test: testState(settings),
       });
     }
@@ -217,26 +230,41 @@ export async function POST(request: Request) {
     }
 
     const repliedAt = (hit.date ?? new Date()).toISOString();
+
+    // Pull the reply's own words so the user can confirm this is genuinely
+    // their message and not an echo of the test we sent. Only for real
+    // replies: a bounce body is a delivery report, not something to quote.
+    // A failed body fetch costs the excerpt, never the verdict.
+    let snippet = "";
+    if (hit.status === "replied" && hit.uid !== null) {
+      snippet = extractReplyText(await fetchMessageText(creds, hit.uid));
+    }
+
+    const reply: TestReplyDetail = {
+      from: hit.fromAddress,
+      subject: hit.subject,
+      at: repliedAt,
+      snippet,
+    };
+
     await supabase
       .from("user_settings")
       .update({
         test_replied_at: repliedAt,
         test_status: hit.status,
+        test_reply: reply,
         updated_at: new Date().toISOString(),
       })
       .eq("user_id", user.id);
 
     return NextResponse.json({
       status: hit.status,
-      reply: {
-        from: hit.fromAddress,
-        subject: hit.subject,
-        at: repliedAt,
-      },
+      reply,
       test: {
         ...testState(settings),
         replied_at: repliedAt,
         status: hit.status,
+        reply,
       },
     });
   }

@@ -21,6 +21,7 @@ type TestReply = {
   from?: string | null;
   subject?: string | null;
   at: string;
+  snippet?: string | null;
 };
 
 function formatLocalTime(iso: string): string {
@@ -96,8 +97,13 @@ export function EmailSettings() {
       const settled = testData.test?.status;
       if (settled === "replied" || settled === "bounced") {
         setTestStatus(settled);
+        // Reply detail is persisted now, so a reload shows the same
+        // confirmation the detecting tab did — excerpt included.
         setTestReply(
-          testData.test.replied_at ? { at: testData.test.replied_at } : null,
+          testData.test.reply ??
+            (testData.test.replied_at
+              ? { at: testData.test.replied_at }
+              : null),
         );
         setTestWarning(null);
       } else if (testData.test?.sent_at) {
@@ -410,15 +416,24 @@ export function EmailSettings() {
               )}
 
               {testStatus === "replied" && (
-                <p className="text-success text-xs">
-                  {[
-                    "Reply received",
-                    testReply?.from ? ` from ${testReply.from}` : "",
-                    testReply?.subject ? ` — “${testReply.subject}”` : "",
-                    testReply ? ` at ${formatLocalTime(testReply.at)}` : "",
-                    ". Reply tracking is confirmed working.",
-                  ].join("")}
-                </p>
+                <div className="space-y-1.5">
+                  <p className="text-success text-xs">
+                    {[
+                      "Reply received",
+                      testReply?.from ? ` from ${testReply.from}` : "",
+                      testReply?.subject ? ` — “${testReply.subject}”` : "",
+                      testReply ? ` at ${formatLocalTime(testReply.at)}` : "",
+                      ". Reply tracking is confirmed working.",
+                    ].join("")}
+                  </p>
+                  {testReply?.snippet && (
+                    // The reply's own words — the difference between trusting
+                    // a green tick and seeing that it really was your message.
+                    <blockquote className="border-success/40 text-muted-foreground border-l-2 pl-2 text-xs whitespace-pre-wrap">
+                      {testReply.snippet}
+                    </blockquote>
+                  )}
+                </div>
               )}
 
               {testStatus === "bounced" && (

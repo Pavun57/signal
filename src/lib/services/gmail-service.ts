@@ -107,6 +107,8 @@ export interface InboundSummary {
   bodyText: string;
   subject: string;
   date: Date | null;
+  /** IMAP UID, so a caller can fetch this message's body later. */
+  uid: number | null;
 }
 
 /**
@@ -155,6 +157,7 @@ export async function fetchInboundSince(
           bodyText: "",
           subject: msg.envelope?.subject ?? "",
           date: msg.envelope?.date ?? null,
+          uid: msg.uid ?? null,
         });
         if (isDaemon && msg.uid) {
           daemonDownloads.push({ uid: msg.uid, index: results.length - 1 });
@@ -180,6 +183,69 @@ export async function fetchInboundSince(
     await imap.logout().catch(() => {});
   }
   return results;
+}
+
+/**
+ * Fetches one message's plain-text body by UID, on its own connection.
+ *
+ * Deliberately NOT folded into fetchInboundSince: that function is the cron's
+ * hot path, and it downloads bodies only for daemon mail on purpose. A caller
+ * cannot know which message it wants until after classification anyway, which
+ * is well after the fetch generator must have drained — issuing a download
+ * while it is live deadlocks (see the regression test in gmail-imap.test.ts).
+ *
+ * Picks the text/plain part out of bodyStructure rather than assuming part 1,
+ * since a plain-text-only reply has a different structure to Gmail's usual
+ * multipart/alternative. Returns "" rather than throwing: a missing body is a
+ * cosmetic loss, never a reason to fail the caller.
+ */
+export async function fetchMessageText(
+  creds: GmailCreds,
+  uid: number,
+): Promise<string> {
+  const imap = imapClient(creds);
+  try {
+    await imap.connect();
+    const lock = await imap.getMailboxLock("INBOX");
+    try {
+      let part = "1";
+      for await (const msg of imap.fetch(
+        { uid: String(uid) },
+        { bodyStructure: true, uid: true },
+        { uid: true },
+      )) {
+        const structure = msg.bodyStructure as BodyNode | undefined;
+        part = findPlainTextPart(structure) ?? "1";
+      }
+
+      const dl = await imap.download(String(uid), part, { uid: true });
+      if (!dl?.content) return "";
+      return (await streamToString(dl.content)).slice(0, 20_000);
+    } finally {
+      lock.release();
+    }
+  } catch {
+    return "";
+  } finally {
+    await imap.logout().catch(() => {});
+  }
+}
+
+type BodyNode = {
+  type?: string;
+  part?: string;
+  childNodes?: BodyNode[];
+};
+
+/** Depth-first search for the first text/plain leaf's part number. */
+function findPlainTextPart(node: BodyNode | undefined): string | null {
+  if (!node) return null;
+  if (node.type === "text/plain" && node.part) return node.part;
+  for (const child of node.childNodes ?? []) {
+    const found = findPlainTextPart(child);
+    if (found) return found;
+  }
+  return null;
 }
 
 async function streamToString(stream: NodeJS.ReadableStream): Promise<string> {

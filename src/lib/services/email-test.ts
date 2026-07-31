@@ -60,6 +60,41 @@ export interface TestReply {
   fromAddress: string;
   subject: string;
   date: Date | null;
+  uid: number | null;
+}
+
+/** Longest reply excerpt we store and render. */
+export const REPLY_SNIPPET_MAX = 400;
+
+/**
+ * Reduces a raw text/plain reply body to just what the person actually typed.
+ *
+ * Mail clients append the entire quoted original below an attribution line, so
+ * a two-word reply arrives as several hundred characters of our own copy. We
+ * drop everything from the attribution onwards, plus any quoted ">" lines,
+ * which is what makes the excerpt readable proof that the reply is genuinely
+ * theirs rather than an echo of the test we sent.
+ */
+export function extractReplyText(raw: string): string {
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  const kept: string[] = [];
+
+  for (const line of lines) {
+    // "On Thu, 30 Jul 2026 at 22:48, <jay@sahnan.co> wrote:" and the many
+    // client-specific variants of it. Everything after is quoted history.
+    if (/^\s*(on\b.*\bwrote:\s*$|-+\s*original message\s*-+)/i.test(line))
+      break;
+    if (/^\s*>/.test(line)) continue;
+    kept.push(line);
+  }
+
+  const text = kept
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text.length > REPLY_SNIPPET_MAX
+    ? text.slice(0, REPLY_SNIPPET_MAX).trimEnd() + "…"
+    : text;
 }
 
 /**
@@ -81,6 +116,7 @@ export function matchTestReply(
       fromAddress: message.fromAddress,
       subject: message.subject,
       date: message.date,
+      uid: message.uid,
     };
   }
   return null;
