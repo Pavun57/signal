@@ -3,6 +3,7 @@ import { z } from "zod";
 import { auth } from "@clerk/nextjs/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+import { getQStashClient, getBaseUrl } from "@/lib/services/qstash";
 import {
   scoreTargetAccounts,
   type TargetAccountToScore,
@@ -417,6 +418,101 @@ export const prioritizeTargetAccounts = tool({
         "Present the top slice and the estimated cost to the user and get explicit approval " +
         "before enriching. Accounts whose importedContacts already match the ICP titles can " +
         "be enriched with skipContactFinding to save spend.",
+    };
+  },
+});
+
+export const enrichTargetAccounts = tool({
+  description:
+    "Queue background enrichment (and contact finding) for approved target accounts. " +
+    "ONLY call this after the user has approved the cost quoted by prioritizeTargetAccounts. " +
+    "Runs as a background chain (~1 min/company) — check progress with getTargetList, " +
+    "don't poll in a loop. Set skipContactFinding for accounts whose imported contacts " +
+    "already match the ICP; split accounts across two calls if only some qualify.",
+  inputSchema: z.object({
+    listId: z.string().uuid().describe("Target account list ID"),
+    campaignId: z
+      .string()
+      .uuid()
+      .describe("Campaign providing signal config and ICP titles"),
+    organizationIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .describe("Organizations from the list to enrich (the approved slice)"),
+    skipContactFinding: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Skip contact discovery and only enrich the companies — use when " +
+          "imported contacts already cover the ICP titles",
+      ),
+  }),
+  execute: async (input) => {
+    const supabase = await createClient();
+    const { userId } = await auth();
+
+    // RLS proves the list is mine; then prove the orgs are actually on it.
+    await loadListOrFail(supabase, input.listId);
+    const orgIds = [...new Set(input.organizationIds)];
+    const found = new Set<string>();
+    for (const ids of chunk(orgIds, UPSERT_CHUNK)) {
+      const { data, error } = await supabase
+        .from("target_accounts")
+        .select("organization_id")
+        .eq("list_id", input.listId)
+        .in("organization_id", ids);
+      if (error) throw new Error(`Failed to verify accounts: ${error.message}`);
+      for (const row of data ?? []) found.add(row.organization_id);
+    }
+    const missing = orgIds.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      return {
+        error:
+          `${missing.length} organization(s) are not in this list: ` +
+          `${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ", …" : ""}. ` +
+          "Check the IDs against getTargetList.",
+      };
+    }
+
+    // Fail on missing QStash config BEFORE stamping rows — never fall back
+    // to inline enrichment, and never leave a stamped queue nothing drains.
+    let qstash;
+    try {
+      qstash = getQStashClient();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        error:
+          "The QStash integration isn't configured, so background enrichment can't run " +
+          `(${msg}). Set QSTASH_TOKEN (and the signing keys) in the environment, then retry.`,
+      };
+    }
+
+    const stampedAt = new Date().toISOString();
+    for (const ids of chunk(orgIds, UPSERT_CHUNK)) {
+      const { error } = await supabase
+        .from("target_accounts")
+        .update({ enrich_requested_at: stampedAt })
+        .eq("list_id", input.listId)
+        .in("organization_id", ids);
+      if (error) throw new Error(`Failed to queue accounts: ${error.message}`);
+    }
+
+    // ONE message starts the chain; the process route re-publishes itself
+    // until the stamped work drains.
+    await qstash.publishJSON({
+      url: getBaseUrl() + "/api/target-lists/process",
+      body: {
+        listId: input.listId,
+        campaignId: input.campaignId,
+        userId: userId ?? "",
+        skipContactFinding: input.skipContactFinding ?? false,
+      },
+    });
+
+    return {
+      queued: orgIds.length,
+      note: "Enrichment runs in the background (~1 min/company). Ask me for progress.",
     };
   },
 });

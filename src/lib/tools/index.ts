@@ -77,6 +77,7 @@ import {
   getTargetList,
   linkTargetListToCampaign,
   prioritizeTargetAccounts,
+  enrichTargetAccounts,
 } from "./target-list-tools";
 import { getPostHogClient } from "@/lib/posthog-server";
 
@@ -145,6 +146,7 @@ const rawTools = {
   getTargetList,
   linkTargetListToCampaign,
   prioritizeTargetAccounts,
+  enrichTargetAccounts,
 };
 
 type ToolCtx = { userId?: string; campaignId?: string | null };

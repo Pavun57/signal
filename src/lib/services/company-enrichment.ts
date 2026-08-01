@@ -116,6 +116,16 @@ async function findContactsForCompany(
   }
 }
 
+export interface EnrichmentOptions {
+  /**
+   * Skip contact discovery and only run company enrichment — for accounts
+   * whose imported contacts already match the ICP. Deliberately a separate
+   * flag rather than `campaignId: null`: the campaign also gates which
+   * signal searches run, and that gating must survive a contacts-only skip.
+   */
+  skipContactFinding?: boolean;
+}
+
 /**
  * Enrich an organization (website extraction + signal-gated Exa searches +
  * Google reviews) and, when campaign context exists, find contacts for it.
@@ -127,6 +137,7 @@ export async function enrichAndFindContacts(
   supabase: SupabaseClient,
   organizationId: string,
   campaignId: string | null,
+  options?: EnrichmentOptions,
 ): Promise<CompanyEnrichmentResult> {
   const { data: orgRow, error: orgError } = await supabase
     .from("organizations")
@@ -142,6 +153,7 @@ export async function enrichAndFindContacts(
 
   const org = orgRow as Record<string, unknown>;
   const orgId = organizationId;
+  const findContactsEnabled = !options?.skipContactFinding;
 
   // Resolve active signal slugs for this campaign
   const activeSlugs = campaignId
@@ -153,7 +165,7 @@ export async function enrichAndFindContacts(
   if (recent) {
     // Still find contacts even if enrichment is cached
     let contactsFound = 0;
-    if (campaignId) {
+    if (campaignId && findContactsEnabled) {
       const companyCtx: CompanyContext = {
         name: org.name as string,
         domain: (org.domain as string) || null,
@@ -367,7 +379,7 @@ export async function enrichAndFindContacts(
 
   // Also find contacts if we have campaign context
   let contactsFound = 0;
-  if (campaignId) {
+  if (campaignId && findContactsEnabled) {
     try {
       const companyCtx: CompanyContext = {
         name: org.name as string,
