@@ -64,9 +64,10 @@ interface Candidate {
  *
  * Contact-per-row files (rows carrying `person`) additionally import people:
  * one org + N contacts per company, deduped by linkedin_url / name+org inside
- * findOrCreatePerson, with affiliation provenance (`user_entered`, the upload
- * is the user's own claim) and the email stored as an unchecked suggestion the
- * send gate verifies just-in-time. People are NOT linked to any campaign here
+ * findOrCreatePerson, with affiliation provenance (`csv_import` — an upload
+ * is a suggestion Signal's own verification may override, not a human
+ * assertion) and the email stored as an unchecked suggestion the send gate
+ * verifies just-in-time. People are NOT linked to any campaign here
  * — linkTargetListToCampaign owns that.
  */
 export async function appendAccountsToList(
@@ -181,25 +182,30 @@ export async function appendAccountsToList(
               supabase,
             );
 
-            // The user's own upload names this employer — that is a human
-            // assertion, same rank as assigning the contact by hand.
+            // The upload names this employer, but a CSV is often an
+            // AI-generated prospect list or a stale export — a suggestion,
+            // not a human assertion. csv_import (0.85) keeps the contact
+            // above the send threshold while letting email_domain
+            // verification or an explicit human edit override a bad upload.
             await recordAffiliation(supabase, {
               personId: person.id,
               organizationId: org.id,
-              source: "user_entered",
-              evidence: `csv_import: the user's uploaded target list places them at ${candidate.name}`,
+              source: "csv_import",
+              evidence: `the user's uploaded target list places them at ${candidate.name}`,
             });
 
-            // Imported addresses are free suggestions, not proof: record them
-            // with a non-trusted source so verification stays unchecked and
-            // the send gate's just-in-time verifier proves the mailbox before
-            // anything leaves (lazy-verification convention). Junk that isn't
-            // even email-shaped is skipped silently — the person still imports.
+            // Imported addresses are free suggestions, not proof: csv_import
+            // ranks below every verified-ish source, so an upload can never
+            // displace an address a scrape or provider established, and
+            // verification stays unchecked so the send gate's just-in-time
+            // verifier proves the mailbox before anything leaves
+            // (lazy-verification convention). Junk that isn't even
+            // email-shaped is skipped silently — the person still imports.
             if (p.email && EMAIL_SHAPE.test(p.email)) {
               await recordVerifiedEmail(supabase, {
                 personId: person.id,
                 email: p.email,
-                source: "provider_found",
+                source: "csv_import",
               });
             }
             people++;

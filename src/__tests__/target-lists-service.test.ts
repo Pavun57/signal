@@ -316,23 +316,26 @@ describe("appendAccountsToList", () => {
       client,
     );
 
-    // Affiliation provenance: the user's own upload names the employer.
+    // Affiliation provenance: an upload is a suggestion, not a human
+    // assertion — csv_import, never user_entered, so Signal's own
+    // verification (email_domain) and explicit human edits both outrank it.
     expect(affiliations).toHaveLength(3);
     for (const a of affiliations) {
       expect(a).toMatchObject({
         organizationId: "org_acme.com",
-        source: "user_entered",
+        source: "csv_import",
       });
-      expect(String(a.evidence)).toContain("csv_import");
+      expect(String(a.evidence)).toContain("uploaded target list");
     }
 
-    // Imported addresses are free suggestions: recorded with a non-trusted
-    // source so the send gate's just-in-time verifier still proves them
-    // (data-quality convention — verification stays unchecked until send).
+    // Imported addresses are free suggestions: recorded as csv_import — below
+    // every verified-ish source, so an upload can never displace an
+    // established address — and the send gate's just-in-time verifier still
+    // proves them (verification stays unchecked until send).
     expect(verifiedEmails).toHaveLength(2);
     expect(verifiedEmails[0]).toMatchObject({
       email: "ada@acme.com",
-      source: "provider_found",
+      source: "csv_import",
     });
   });
 
