@@ -125,6 +125,25 @@ export interface SwipeCampaign {
   positioning: unknown;
 }
 
+/** The signed-in user, from `user_profile`. */
+export interface SwipeSender {
+  name?: string | null;
+  roleTitle?: string | null;
+  companyName?: string | null;
+  offeringSummary?: string | null;
+}
+
+/**
+ * A real contact from the campaign, not a stand-in. `enrichmentData` is the
+ * `people.enrichment_data` blob as stored.
+ */
+export interface SwipeRecipient {
+  name?: string | null;
+  title?: string | null;
+  company?: string | null;
+  enrichmentData?: unknown;
+}
+
 /**
  * Who the email is from and to. Deliberately separate from the campaign: the
  * signed-in user and the contact they picked are always known, while campaign
@@ -132,28 +151,96 @@ export interface SwipeCampaign {
  * campaign row silently dropped the names too, and the model invented its own.
  */
 export interface SwipePersona {
-  senderName?: string | null;
-  /** e.g. "Dana Whitfield, VP Engineering at Fernpath" */
-  recipient?: string | null;
+  sender?: SwipeSender | null;
+  recipient?: SwipeRecipient | null;
+}
+
+/**
+ * Enrichment blobs run to tens of kilobytes and every batch resends them. The
+ * composer caps its own at 8k; this one is smaller because six drafts have to
+ * fit alongside it in a single response budget.
+ */
+export const MAX_ENRICHMENT_CHARS = 6_000;
+
+/**
+ * The same rule the composer's system prompt carries, verbatim in intent.
+ *
+ * Only emitted once a *real* person is named. Without it the batch prompt's
+ * variation rule actively pushes the model into fabrication: it is told to
+ * spread drafts across a "data" opener and a "signal" opener, and if the
+ * enrichment holds no number and no announcement it will write a plausible one
+ * about somebody who exists. The last clause is what stops that, and it has to
+ * be explicit — the variation rule is stated as "the whole job" above.
+ */
+const NO_FABRICATION = `NEVER INVENT DATA. This is a real person at a real company. Every name, number, quote, event and claim about them must already appear in the context above. If a signal isn't there, you don't have it — don't infer it, don't approximate it, don't write something plausible in its place. A weaker email built on true details always beats a stronger one carrying a fabricated detail.
+
+This outranks the variation rule. Vary how you open, never what you claim: if the context supports no number, do not write a data-led draft, and vary on another axis instead.`;
+
+function field(label: string, value?: string | null): string | null {
+  const v = value?.trim();
+  return v ? `${label}: ${v}` : null;
+}
+
+function renderSender(sender: SwipeSender | null | undefined): string {
+  const rows = sender
+    ? ([
+        field("Name", sender.name),
+        field("Role", sender.roleTitle),
+        field("Company", sender.companyName),
+        field("What they sell", sender.offeringSummary),
+      ].filter(Boolean) as string[])
+    : [];
+
+  if (!rows.length) {
+    return "WHO THESE ARE FROM: not known. Never invent a sender name, company or role.";
+  }
+  return `WHO THESE ARE FROM — sign off as this person, and never invent another name, company or offer:\n${wrapUntrusted(rows.join("\n"))}`;
+}
+
+function renderRecipient(recipient: SwipeRecipient | null | undefined): string {
+  const rows = recipient
+    ? ([
+        field("Name", recipient.name),
+        field("Title", recipient.title),
+        field("Company", recipient.company),
+      ].filter(Boolean) as string[])
+    : [];
+
+  if (!rows.length) {
+    return "WHO THESE ARE TO: nobody specific. Use neutral placeholders sparingly and never invent a named person.";
+  }
+
+  if (recipient?.enrichmentData) {
+    rows.push(
+      `Enrichment (LinkedIn, Twitter, news, background):\n${JSON.stringify(
+        recipient.enrichmentData,
+      ).slice(0, MAX_ENRICHMENT_CHARS)}`,
+    );
+  }
+
+  return `WHO THESE ARE TO — a real prospect. Address this person, and nobody else:\n${wrapUntrusted(
+    rows.join("\n"),
+  )}\n\n${NO_FABRICATION}`;
+}
+
+/** How the deck labels the recipient on the card. Shared so the UI and the
+ * prompt cannot disagree about who the run is about. */
+export function recipientLabel(
+  recipient: SwipeRecipient | null | undefined,
+): string | null {
+  if (!recipient) return null;
+  const name = recipient.name?.trim();
+  if (!name) return null;
+  const where = [recipient.title?.trim(), recipient.company?.trim()]
+    .filter(Boolean)
+    .join(", ");
+  return where ? `${name} · ${where}` : name;
 }
 
 function renderContext(
   campaign: SwipeCampaign | null,
   persona: SwipePersona,
 ): string {
-  const who = [
-    persona.senderName
-      ? `Sender (sign off as this person): ${persona.senderName}`
-      : "",
-    persona.recipient
-      ? `Recipient (address this person): ${persona.recipient}`
-      : "",
-  ].filter(Boolean);
-
-  const whoBlock = who.length
-    ? `WHO THESE ARE FROM AND TO — use these names in every draft, never invent others:\n${wrapUntrusted(who.join("\n"))}`
-    : "No sender or recipient is given. Use neutral placeholders sparingly and never invent a named person.";
-
   const campaignBlock = campaign
     ? `THE CAMPAIGN THESE ARE FOR:\n${wrapUntrusted(
         [
@@ -165,7 +252,9 @@ function renderContext(
       )}`
     : "No campaign context is available. Write plausible but generic B2B cold emails, and do not invent specific claims about the recipient's company.";
 
-  return `${whoBlock}\n\n${campaignBlock}`;
+  return `${renderSender(persona.sender)}\n\n${renderRecipient(
+    persona.recipient,
+  )}\n\n${campaignBlock}`;
 }
 
 // ── Prompt 1: generate a batch ──────────────────────────────────────────────

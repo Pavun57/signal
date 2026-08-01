@@ -1,12 +1,30 @@
+"use client";
+
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
+import { Loader2 } from "lucide-react";
+
 import { SafeLink } from "@/components/safe-link";
 import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
 
 /**
  * Prototype route. The interview at /email-skills asks questions; this judges
  * drafts instead and derives the rules from what gets kept. Both exist side by
- * side until one is chosen — nothing here writes to email_voice_profiles yet.
+ * side until one is chosen.
+ *
+ * `?campaign=<id>` scopes the run, the same parameter and the same meaning as
+ * /email-skills. Everything downstream of it is resolved server-side by the
+ * route: the campaign's own linked profile if it has one, and one real contact
+ * from that campaign for the drafts to be about. Without the parameter the run
+ * is the user-level default and the drafts are generic, which is exactly what
+ * a default voice should be interviewed against.
  */
-export default function VoiceSwipePage() {
+function SwipeScope() {
+  const searchParams = useSearchParams();
+  return <VoiceSwipe campaignId={searchParams.get("campaign")} />;
+}
+
+function PageShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* `min-h-full` plus `justify-center` centres the whole thing on a tall
@@ -23,7 +41,7 @@ export default function VoiceSwipePage() {
             what you kept.
           </p>
           <p className="text-muted-foreground mt-2 text-xs">
-            Prototype · seeded drafts, nothing saved ·{" "}
+            Prototype ·{" "}
             <SafeLink
               href="/email-skills"
               className="hover:text-foreground underline underline-offset-2"
@@ -32,8 +50,31 @@ export default function VoiceSwipePage() {
             </SafeLink>
           </p>
         </div>
-        <VoiceSwipe />
+        {children}
       </div>
     </div>
+  );
+}
+
+/**
+ * `useSearchParams` opts a page out of prerendering unless it sits under a
+ * Suspense boundary — without one `next build` fails on this route while
+ * `next dev` renders it fine. The fallback is the page chrome the scoped view
+ * would draw anyway, so the boundary costs nothing visually.
+ */
+export default function VoiceSwipePage() {
+  return (
+    <PageShell>
+      <Suspense
+        fallback={
+          <div className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
+            <Loader2 className="size-4 animate-spin" />
+            Loading...
+          </div>
+        }
+      >
+        <SwipeScope />
+      </Suspense>
+    </PageShell>
   );
 }

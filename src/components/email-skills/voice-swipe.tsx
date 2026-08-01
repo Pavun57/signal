@@ -27,7 +27,6 @@ import {
   type SwipeEmail,
   type Verdict,
 } from "@/lib/voice-swipe";
-import { SEED_RECIPIENT } from "@/lib/voice-swipe-deck";
 
 interface Message {
   who: "agent" | "you";
@@ -78,6 +77,12 @@ interface ApiDraft {
   axes: SwipeEmail["attrs"];
 }
 
+/** The prospect the server chose for this run. Null when it could not find one. */
+interface ApiRecipient {
+  personId: string;
+  label: string | null;
+}
+
 let draftSeq = 0;
 function toEmail(d: ApiDraft): SwipeEmail {
   draftSeq += 1;
@@ -92,12 +97,8 @@ function toEmail(d: ApiDraft): SwipeEmail {
 
 export function VoiceSwipe({
   campaignId = null,
-  senderName = null,
-  recipient = SEED_RECIPIENT,
 }: {
   campaignId?: string | null;
-  senderName?: string | null;
-  recipient?: string | null;
 }) {
   const [queue, setQueue] = useState<SwipeEmail[]>([]);
   const [verdicts, setVerdicts] = useState<Verdict[]>([]);
@@ -137,6 +138,22 @@ export function VoiceSwipe({
   const threadRef = useRef<HTMLDivElement>(null);
   const busy = useRef(false);
   const openingRef = useRef(false);
+
+  /**
+   * The prospect every draft in this run is written about. The server picks
+   * them on the opening batch; from then on we send the id back so it re-reads
+   * the same person, and we never overwrite it.
+   *
+   * Held in a ref rather than state on purpose. It has to stay out of
+   * `fetchBatch`'s dependency list — if the identity of that callback changed
+   * the moment a recipient arrived, the effects keyed on it would re-run — and
+   * more importantly a recipient that can change mid-run breaks the whole
+   * measurement: a keep or a pass would then be about the prospect rather than
+   * about the voice, which is the only thing this flow measures. The label is
+   * mirrored into state solely so the card can render it.
+   */
+  const recipientRef = useRef<string | null>(null);
+  const [recipientLabel, setRecipientLabel] = useState<string | null>(null);
 
   const kept = judgedEmails.filter((_, i) => verdicts[i]?.liked);
   const passed = judgedEmails.filter((_, i) => !verdicts[i]?.liked);
@@ -182,8 +199,7 @@ export function VoiceSwipe({
             action: "next",
             transcript: buildTranscript(extraInstruction),
             campaignId,
-            senderName,
-            recipient,
+            recipientPersonId: recipientRef.current,
             count,
           }),
         });
@@ -191,6 +207,13 @@ export function VoiceSwipe({
         if (!res.ok || !data?.drafts?.length) {
           setError(data?.error ?? "Could not write the next drafts.");
           return [];
+        }
+        // Only ever set once. A later batch echoing a different person means
+        // the campaign changed under us, not that this run should switch.
+        const chosen = data.recipient as ApiRecipient | null | undefined;
+        if (!recipientRef.current && chosen?.personId) {
+          recipientRef.current = chosen.personId;
+          setRecipientLabel(chosen.label ?? null);
         }
         return (data.drafts as ApiDraft[]).map(toEmail);
       } catch {
@@ -200,7 +223,7 @@ export function VoiceSwipe({
         setPending(null);
       }
     },
-    [buildTranscript, campaignId, recipient, senderName],
+    [buildTranscript, campaignId],
   );
 
   useEffect(() => {
@@ -324,8 +347,7 @@ export function VoiceSwipe({
             action: "complete",
             transcript: buildTranscript(),
             campaignId,
-            senderName,
-            recipient,
+            recipientPersonId: recipientRef.current,
           }),
         });
         const data = await res.json().catch(() => null);
@@ -339,15 +361,7 @@ export function VoiceSwipe({
         setSkillState("failed");
       }
     })();
-  }, [
-    done,
-    opened,
-    judgedEmails.length,
-    buildTranscript,
-    campaignId,
-    senderName,
-    recipient,
-  ]);
+  }, [done, opened, judgedEmails.length, buildTranscript, campaignId]);
 
   // Opening batch. Fires once; StrictMode double-invokes effects in dev and a
   // second cold-start call is a wasted Opus request, not just a slow one.
@@ -603,6 +617,7 @@ export function VoiceSwipe({
                   <Card
                     email={tallest}
                     marks={[]}
+                    to={recipientLabel}
                     className="invisible"
                     aria-hidden
                   />
@@ -615,6 +630,7 @@ export function VoiceSwipe({
                       key={e.id}
                       email={e}
                       marks={[]}
+                      to={recipientLabel}
                       aria-hidden
                       className={
                         behind.length - i === 1
@@ -631,6 +647,7 @@ export function VoiceSwipe({
                   key={card.id}
                   email={card}
                   marks={marks[card.id] ?? []}
+                  to={recipientLabel}
                   className={cn(
                     // transition-all, not transition-transform: the opacity in
                     // the leaving classes was never animated, so the card
@@ -981,11 +998,14 @@ function Progress({
 function Card({
   email,
   marks,
+  to,
   className,
   ...rest
 }: {
   email: SwipeEmail;
   marks: Mark[];
+  /** The run's real prospect. Null when there was nobody to write about. */
+  to?: string | null;
 } & React.HTMLAttributes<HTMLElement>) {
   // Escape happens via React; marks are applied by splitting on the phrase so a
   // selection containing regex metacharacters can't break the render.
@@ -1026,7 +1046,7 @@ function Card({
       )}
     >
       <span className="text-muted-foreground mb-3.5 text-[0.8125rem]">
-        To {SEED_RECIPIENT}
+        To {to ?? "a prospect in this campaign"}
       </span>
       <h2 className="mb-3.5 text-[1.1875rem] leading-[1.35] font-medium tracking-tight text-balance">
         {email.subject}

@@ -14,8 +14,12 @@ import {
   buildSkillPrompt,
   buildSkillSystem,
   normaliseInstructions,
+  recipientLabel,
   type SwipeCampaign,
+  type SwipePersona,
 } from "@/lib/email-skills/swipe-prompts";
+import { resolveRecipient } from "@/lib/email-skills/swipe-recipient";
+import { getProfileForPrompt } from "@/lib/profile";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 import { llmTimeout } from "@/lib/utils/timeout";
 
@@ -69,8 +73,11 @@ const BodySchema = z.object({
   transcript: TranscriptSchema,
   campaignId: z.string().uuid().nullish(),
   count: z.number().int().min(2).max(8).optional(),
-  senderName: z.string().max(120).nullish(),
-  recipient: z.string().max(200).nullish(),
+  // The person the whole run is written about, pinned by the client after the
+  // opening batch resolved them. An id, never the contact's details: the
+  // client may say *which* of its own contacts, and the server re-reads the
+  // facts. See resolveRecipient.
+  recipientPersonId: z.string().uuid().nullish(),
 });
 
 /** Ceiling on the serialised transcript, which is what actually reaches the model. */
@@ -103,25 +110,51 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { action, transcript, campaignId, count, senderName, recipient } =
+  const { action, transcript, campaignId, count, recipientPersonId } =
     parsed.data;
 
   if (JSON.stringify(transcript).length > MAX_TRANSCRIPT_CHARS) {
     return Response.json({ error: "Transcript too large" }, { status: 413 });
   }
 
+  // Each of these three is optional and independently absent-able. A user with
+  // no profile, no campaign, or a campaign with no enriched contacts still gets
+  // drafts — the prompt has a fallback for each — because being unable to write
+  // anything is a worse failure than writing something generic.
+  //
   // RLS scopes campaigns to the signed-in user, so an id belonging to someone
   // else resolves to nothing rather than to their data.
-  let campaign: SwipeCampaign | null = null;
-  if (campaignId) {
-    const { data } = await supabase
-      .from("campaigns")
-      .select("name, icp, offering, positioning")
-      .eq("id", campaignId)
-      .maybeSingle();
-    campaign = (data as SwipeCampaign | null) ?? null;
-  }
-  const persona = { senderName, recipient };
+  const [campaignRes, profile, resolved] = await Promise.all([
+    campaignId
+      ? supabase
+          .from("campaigns")
+          .select("name, icp, offering, positioning")
+          .eq("id", campaignId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    // Same resolution the chat route uses, so a campaign with its own linked
+    // profile writes as that persona rather than as the most recent one.
+    getProfileForPrompt(campaignId),
+    resolveRecipient(supabase, campaignId, recipientPersonId),
+  ]);
+
+  const campaign = (campaignRes.data as SwipeCampaign | null) ?? null;
+  const persona: SwipePersona = {
+    sender: profile
+      ? {
+          name: profile.name,
+          roleTitle: profile.role_title,
+          companyName: profile.company_name,
+          offeringSummary: profile.offering_summary,
+        }
+      : null,
+    recipient: resolved?.recipient ?? null,
+  };
+  // Echoed back so the client can pin it for the rest of the run and show the
+  // card's "To" line honestly.
+  const recipientOut = resolved
+    ? { personId: resolved.personId, label: recipientLabel(resolved.recipient) }
+    : null;
 
   if (action === "next") {
     try {
@@ -147,10 +180,17 @@ export async function POST(request: Request) {
         // truncates and fails generateObject outright.
         maxOutputTokens: 9_000,
       });
-      return Response.json({ drafts: object.drafts });
+      return Response.json({
+        drafts: object.drafts,
+        recipient: recipientOut,
+      });
     } catch (err) {
       const salvaged = salvageObject(err, BatchSchema);
-      if (salvaged) return Response.json({ drafts: salvaged.drafts });
+      if (salvaged)
+        return Response.json({
+          drafts: salvaged.drafts,
+          recipient: recipientOut,
+        });
       return Response.json(
         {
           error:

@@ -129,8 +129,17 @@ async function loadCampaign(id?: string): Promise<SwipeCampaign | null> {
  * wrong in a draft, so they must not depend on a table lookup succeeding.
  */
 const PERSONA: SwipePersona = {
-  senderName: "Jay",
-  recipient: "Dana Whitfield, VP Engineering at Fernpath",
+  sender: {
+    name: "Jay",
+    roleTitle: "Founder",
+    companyName: "Arbor",
+    offeringSummary: "usage metering to invoice for API companies",
+  },
+  recipient: {
+    name: "Dana Whitfield",
+    title: "VP Engineering",
+    company: "Fernpath",
+  },
 };
 
 async function run() {
