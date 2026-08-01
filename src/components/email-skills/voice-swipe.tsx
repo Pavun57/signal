@@ -124,6 +124,15 @@ export function VoiceSwipe({
     "opening",
   );
   const [error, setError] = useState<string | null>(null);
+  /** The rules the model wrote, once `complete` has saved them. */
+  const [skill, setSkill] = useState<{
+    instructions: string;
+    summary: string;
+  } | null>(null);
+  const [skillState, setSkillState] = useState<"idle" | "saving" | "failed">(
+    "idle",
+  );
+  const savedRef = useRef(false);
 
   const threadRef = useRef<HTMLDivElement>(null);
   const busy = useRef(false);
@@ -291,6 +300,53 @@ export function VoiceSwipe({
     verdicts,
     fetchBatch,
     say,
+  ]);
+
+  /**
+   * The point of the whole run: turn it into a skill the composer applies to
+   * every future email. Without this the run ends by showing the attribute
+   * derived fallback and saving nothing at all.
+   *
+   * Guarded by a ref rather than by `skill`, because the request is in flight
+   * for ~10s and the effect re-runs on every render in that window.
+   */
+  useEffect(() => {
+    if (!done || !opened || savedRef.current) return;
+    if (judgedEmails.length === 0) return;
+    savedRef.current = true;
+    void (async () => {
+      setSkillState("saving");
+      try {
+        const res = await fetch("/api/email-skills/swipe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "complete",
+            transcript: buildTranscript(),
+            campaignId,
+            senderName,
+            recipient,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.instructions) {
+          setSkillState("failed");
+          return;
+        }
+        setSkill({ instructions: data.instructions, summary: data.summary });
+        setSkillState("idle");
+      } catch {
+        setSkillState("failed");
+      }
+    })();
+  }, [
+    done,
+    opened,
+    judgedEmails.length,
+    buildTranscript,
+    campaignId,
+    senderName,
+    recipient,
   ]);
 
   // Opening batch. Fires once; StrictMode double-invokes effects in dev and a
@@ -491,6 +547,8 @@ export function VoiceSwipe({
         kept={kept}
         passed={passed}
         comments={thread.filter((m) => m.who === "you").map((m) => m.text)}
+        skill={skill}
+        skillState={skillState}
       />
     );
   }
@@ -1086,6 +1144,8 @@ function Result({
   kept,
   passed,
   comments,
+  skill,
+  skillState,
 }: {
   converged: boolean;
   roll: { kept: number; of: number };
@@ -1093,17 +1153,39 @@ function Result({
   kept: SwipeEmail[];
   passed: SwipeEmail[];
   comments: string[];
+  skill: { instructions: string; summary: string } | null;
+  skillState: "idle" | "saving" | "failed";
 }) {
-  const rules = deriveRules(kept, passed);
+  // The model's rules are the deliverable. deriveRules is a local fallback so
+  // the run still shows something if the save failed — but it is derived from
+  // attribute counts, not from anything the user said, so it must never be
+  // presented as the saved skill.
+  const rules = skill
+    ? skill.instructions.split("\n").filter((l) => l.trim())
+    : deriveRules(kept, passed);
+
   return (
     <div className="max-w-2xl">
       <h1 className="mb-2 text-[1.375rem] font-medium tracking-tight">
-        {didConverge ? "That's your voice." : "Ran out of drafts."}
+        {skillState === "saving"
+          ? "Writing your voice…"
+          : didConverge
+            ? "That's your voice."
+            : "Ran out of drafts."}
       </h1>
+      {skill?.summary && (
+        <p className="mb-4 text-[0.9375rem] leading-relaxed">{skill.summary}</p>
+      )}
       <p className="text-muted-foreground mb-6 text-[0.9375rem] leading-relaxed">
-        {didConverge
-          ? `You kept ${roll.kept} of the last ${roll.of} — it's writing emails you'd send. `
-          : `It didn't reach ${Math.round(TARGET_RATE * 100)}% before the seed deck ran out. A real run keeps generating. `}
+        {skill
+          ? "Saved. Every cold email the agent writes from now on goes through these rules. "
+          : skillState === "saving"
+            ? "Turning the run into rules the agent will follow. "
+            : skillState === "failed"
+              ? "The rules could not be saved, so nothing was written. What's below is a local summary of the run, not your saved voice. "
+              : didConverge
+                ? `You kept ${roll.kept} of the last ${roll.of} — it's writing emails you'd send. `
+                : `It didn't reach ${Math.round(TARGET_RATE * 100)}% before the drafts ran out. `}
         Built from {judged} judgement{judged === 1 ? "" : "s"}
         {comments.length
           ? ` and ${comments.length} comment${comments.length > 1 ? "s" : ""}`
