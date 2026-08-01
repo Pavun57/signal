@@ -4,7 +4,7 @@
 
 **Goal:** Take the working `/email-skills/swipe` prototype to something mergeable: driven by the main agent, grounded in the user's real profile, campaign and contacts, and free of the review findings.
 
-**Architecture:** A `voice_swipe_runs` row becomes the single source of truth for a run. Server-side agent tools write drafts into it; the deck reads it and writes verdicts back. Supabase realtime keeps the two in sync, which lets the private chat panel be deleted entirely — the conversation moves to the main `AgentPanel` that already sits beside every page.
+**Architecture:** No new schema. The run lives in `sessionStorage` and is handed to the agent through the chat body, both of which this codebase already does. Server-side tools return drafts through the message stream; a context provider carries them to the deck, which sits in the same React tree as `AgentPanel`. That lets the private chat panel be deleted entirely — the conversation moves to the main agent panel already mounted beside every page.
 
 **Tech Stack:** Next.js App Router, Supabase (Postgres + RLS + realtime), AI SDK `tool()`, Anthropic Opus 5, vitest, Tailwind v4.
 
@@ -39,146 +39,48 @@ Read these before starting. They are short and each one prevents a wrong turn:
 
 The private chat panel in `voice-swipe.tsx` is a third chat engine, alongside the real agent and the old interview wizard. This deletes it.
 
-### Task 1.1: Migration for `voice_swipe_runs`
-
-**Files:**
-
-- Create: `supabase/migrations/20260802000000_voice_swipe_runs.sql`
-
-**Step 1: Write the migration**
-
-```sql
--- Voice-swipe runs
--- 2026-08-02
---
--- One row per in-progress run. It exists because the agent's tools execute
--- server-side and cannot touch React state: the tool writes drafts here, the
--- deck reads them, and the deck writes verdicts back for the next tool call to
--- read. Without a shared row the agent would have to learn each swipe from a
--- narrated chat message, which pollutes the conversation it is trying to hold.
---
--- Only one run per (user, campaign) is live at a time. A second would leave the
--- agent's tools ambiguous about which deck they are writing into, so the unique
--- index below makes that unrepresentable rather than a race.
-
-create table if not exists public.voice_swipe_runs (
-  id uuid primary key default gen_random_uuid(),
-  user_id text not null,
-  campaign_id uuid references public.campaigns(id) on delete cascade,
-  -- Drafts currently queued, newest batch appended. Same shape the batch prompt
-  -- returns: { subject, body, axes }.
-  drafts jsonb not null default '[]'::jsonb,
-  -- Judged drafts with their verdicts and any phrase comments.
-  judged jsonb not null default '[]'::jsonb,
-  -- Everything the user typed, in order.
-  instructions jsonb not null default '[]'::jsonb,
-  -- Emails they pasted as samples of their own writing (Phase 2).
-  samples jsonb not null default '[]'::jsonb,
-  status text not null default 'active' check (status in ('active', 'complete', 'abandoned')),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
--- campaign_id is nullable (the user-level default voice), and NULL never equals
--- NULL in a unique index — so a plain unique(user_id, campaign_id) would let a
--- user accumulate unlimited default-scope runs. coalesce onto a sentinel closes
--- that, matching how email_voice_profiles.campaign_key already handles it.
-create unique index if not exists voice_swipe_runs_one_active
-  on public.voice_swipe_runs (
-    user_id,
-    coalesce(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid)
-  )
-  where status = 'active';
-
-alter table public.voice_swipe_runs enable row level security;
-
--- Clerk puts the user id in `sub`. requesting_user_id() is defined by an
--- earlier migration and is what every other policy in this schema uses.
-create policy "own runs" on public.voice_swipe_runs
-  for all to authenticated
-  using (user_id = requesting_user_id())
-  with check (user_id = requesting_user_id());
-
--- The deck subscribes to its own row so the agent's writes appear without
--- polling.
-alter publication supabase_realtime add table public.voice_swipe_runs;
-```
-
-**Step 2: Verify `requesting_user_id()` exists and is what other policies use**
-
-Run: `grep -rn "requesting_user_id" supabase/migrations | head -3`
-Expected: at least one match in an earlier migration. **If it does not exist, stop** and copy the RLS predicate from whichever policy `email_voice_profiles` uses instead — getting this wrong silently exposes every user's runs to every other user.
-
-**Step 3: Apply locally**
-
-Run: `supabase db push` (or `supabase migration up` depending on your local setup)
-Expected: applies without error.
-
-**Step 4: Verify RLS actually denies**
-
-Run in `supabase studio` SQL editor, as an anon session:
-
-```sql
-select count(*) from public.voice_swipe_runs;
-```
-
-Expected: 0 rows or a permission error — never another user's data.
-
-**Step 5: Commit**
-
-```bash
-git add supabase/migrations/20260802000000_voice_swipe_runs.sql
-git commit -m "feat(email-voice): voice_swipe_runs table"
-```
-
----
-
-### Task 1.2: Run accessors
+### Task 1.1: Run state in sessionStorage
 
 **Files:**
 
 - Create: `src/lib/email-skills/swipe-run.ts`
 - Test: `src/__tests__/swipe-run.test.ts`
 
-Thin, typed helpers so neither the tools nor the deck hand-roll queries.
+**A migration was written for this and reverted (`d7c7044`, reverted). Do not
+reintroduce one.** The reasoning matters, because a table looks like the obvious
+answer:
 
-**Step 1: Write the failing test**
+- `voice-wizard.tsx:38` already persists an in-progress interview in
+  `sessionStorage`, deliberately and with the reasoning written down: an
+  unfinished run is worth nothing to the composer, but losing eight answers to
+  a reload is what makes people give up.
+- `src/app/api/chat/route.ts:89-95` already accepts `campaignId` and
+  `pageContext` from the client body, so there is an existing channel for
+  handing the agent arbitrary per-message context.
 
-```ts
-import { describe, expect, it } from "vitest";
-import { toTranscript } from "@/lib/email-skills/swipe-run";
+Between them the two things a table would buy — the agent seeing your swipes,
+and the run surviving a reload — are already solved. A migration also reaches
+production through CI on merge, so it is not a free addition.
 
-describe("toTranscript", () => {
-  it("builds the prompt transcript from a run row", () => {
-    const row = {
-      judged: [{ subject: "s", body: "b", axes: {}, kept: true, notes: [] }],
-      instructions: ["no em dashes"],
-      samples: ["Hi — this is one I sent."],
-    };
-    const t = toTranscript(row as never);
-    expect(t.judged).toHaveLength(1);
-    expect(t.instructions).toContain("no em dashes");
-    // Samples are the strongest evidence there is, so they must reach the
-    // prompt — dropping them here is a silent quality regression.
-    expect(JSON.stringify(t)).toContain("this is one I sent");
-  });
-});
-```
+Implement `toTranscript`, `readRun`, `saveRun`, `clearRun`, keyed by user and
+campaign exactly as `storageKey` in `voice-wizard.tsx:47` does. A campaign run
+must never resume into the user-level default.
 
-**Step 2: Run it, confirm it fails**
+### Task 1.2: Share the run with `AgentPanel`
 
-Run: `pnpm vitest run src/__tests__/swipe-run.test.ts`
-Expected: FAIL, module not found.
+**Files:**
 
-**Step 3: Implement**
+- Create: `src/lib/voice-run-context.tsx`
+- Modify: `src/components/dashboard-shell.tsx` (wrap, so both halves see it)
 
-Export `VoiceSwipeRun` (the row type), `toTranscript(row)`, `getActiveRun(supabase, userId, campaignId)`, `startRun(...)`, `appendDrafts(...)`, `recordVerdict(...)`, `addInstruction(...)`, `completeRun(...)`. Keep every one a single query; no business logic.
+`AgentPanel` and the page content are siblings under `DashboardShell`, so a
+context reaches both. The provider holds the run, hydrates from
+`sessionStorage`, and writes back on change.
 
-**Step 4: Run it, confirm it passes. Then `pnpm test` for the whole suite.**
-
-**Step 5: Commit**
-
----
+The deck subscribes for drafts. `AgentPanel` sends the transcript in the chat
+body on each message, alongside the `campaignId` and `pageContext` it already
+sends, and watches the message stream for a `writeVoiceDrafts` tool result to
+push into the provider.
 
 ### Task 1.3: The three agent tools
 
