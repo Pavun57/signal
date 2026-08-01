@@ -74,6 +74,7 @@
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
@@ -128,6 +129,13 @@
   --warn: #8a5f0a;
   --category: #b02d63;
   --border: #edebeb;
+  /* Structural edges — pane splits, and card outlines sitting on a card ground.
+     --border is #edebeb against a #f6f5f5 page and a #ffffff card: under a 2%
+     step either way, so it reads as nothing. It is sized for hairlines *inside*
+     a component, not for the boundary between two of them. Dark mode never had
+     this problem (#161213 on #0c0a0a separates on its own), which is why a
+     component can look right there and wash out here. */
+  --border-strong: #d8d3d4;
   --input: #edebeb;
   --ring: oklch(0.56 0.23 265);
   --chart-1: oklch(0.56 0.23 265);
@@ -174,6 +182,7 @@
   --warn: #f0c24a;
   --category: #f481ad;
   --border: #2e2929;
+  --border-strong: #3a3333;
   --input: #2e2929;
   --ring: oklch(0.66 0.22 265);
   --chart-1: oklch(0.66 0.22 265);
