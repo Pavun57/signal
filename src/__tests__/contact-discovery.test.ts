@@ -59,18 +59,26 @@ vi.mock("@/lib/services/email-pattern", () => ({
   recordVerifiedEmail: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { findContactsForOrganization } from "@/lib/services/contact-discovery";
+import {
+  findContactsForOrganization,
+  MAX_ALREADY_LINKED,
+} from "@/lib/services/contact-discovery";
 
 let org: Record<string, unknown> = {};
+/** Rows the people-list queries resolve to (org dedup / campaign links). */
+let orgPeople: Array<Record<string, unknown>> = [];
 
 function client(): SupabaseClient {
   const chain = () => {
-    // The org-people dedup query selects a list; everything else in these
-    // tests resolves the single org row.
+    // The people queries (org dedup, campaign links) select a list; everything
+    // else in these tests resolves the single org row. Keyed on the presence of
+    // linkedin_url rather than an exact column string — matching the whole
+    // string meant widening the select silently handed back a non-iterable org
+    // row instead of a list.
     let wantsList = false;
     const c: Record<string, unknown> & PromiseLike<unknown> = {
       select: (cols?: string) => {
-        if (cols === "linkedin_url") wantsList = true;
+        if (cols?.includes("linkedin_url")) wantsList = true;
         return c;
       },
       eq: () => c,
@@ -78,10 +86,10 @@ function client(): SupabaseClient {
       single: () => c,
       maybeSingle: () => c,
       then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
-        Promise.resolve({ data: wantsList ? [] : org, error: null }).then(
-          onF,
-          onR,
-        ),
+        Promise.resolve({
+          data: wantsList ? orgPeople : org,
+          error: null,
+        }).then(onF, onR),
     } as unknown as Record<string, unknown> & PromiseLike<unknown>;
     return c;
   };
@@ -92,6 +100,7 @@ beforeEach(() => {
   created.length = 0;
   affiliations.length = 0;
   exaResults.results = [];
+  orgPeople = [];
   judged.mockReset().mockResolvedValue([]);
   org = {
     id: "org-1",
@@ -130,6 +139,102 @@ describe("domain gate", () => {
     const result = await run();
 
     expect(result.error).toMatch(/resolve the company's website/i);
+  });
+});
+
+describe("titles", () => {
+  it("leaves the title blank when the headline does not name one", async () => {
+    // The title we searched for is not evidence about the person we found.
+    // Falling back to it stamped the ICP target title onto anyone whose
+    // headline didn't parse, which is how a 15-person startup ended up
+    // showing three Heads of Growth and four Revenue Operations.
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/c", title: "Cal C" },
+    ];
+
+    await run();
+
+    const candidates = judged.mock.calls[0][1] as Array<{
+      name: string;
+      title: string | null;
+      searchTitle: string;
+    }>;
+    expect(candidates[0].name).toBe("Cal C");
+    expect(candidates[0].title).toBeNull();
+    // Still available as query context — just never mistaken for their role.
+    expect(candidates[0].searchTitle).toBe("engineer");
+  });
+
+  it("keeps a title it actually read off the headline", async () => {
+    exaResults.results = [
+      {
+        url: "https://www.linkedin.com/in/a",
+        title: "Ann A - Staff Engineer at Browserbase",
+      },
+    ];
+
+    await run();
+
+    const candidates = judged.mock.calls[0][1] as Array<{
+      title: string | null;
+    }>;
+    expect(candidates[0].title).toBe("Staff Engineer at Browserbase");
+  });
+});
+
+describe("alreadyLinked", () => {
+  const person = (i: number) => ({
+    id: `ex${i}`,
+    name: `Existing ${i}`,
+    title: "Engineer",
+    work_email: null,
+    personal_email: null,
+    linkedin_url: `https://www.linkedin.com/in/ex${i}`,
+  });
+
+  it("returns people already attached to the org", async () => {
+    orgPeople = [person(1), person(2)];
+
+    const result = await run();
+
+    expect(result.alreadyLinkedTotal).toBe(2);
+    expect(result.alreadyLinked.map((p) => p.name)).toEqual([
+      "Existing 1",
+      "Existing 2",
+    ]);
+  });
+
+  it("caps the roster but still reports the true total", async () => {
+    // A truncated list that reports its own length reads as complete, which is
+    // how "that's everyone at this company" becomes a silent lie.
+    orgPeople = Array.from({ length: MAX_ALREADY_LINKED + 20 }, (_, i) =>
+      person(i),
+    );
+
+    const result = await run();
+
+    expect(result.alreadyLinked).toHaveLength(MAX_ALREADY_LINKED);
+    expect(result.alreadyLinkedTotal).toBe(MAX_ALREADY_LINKED + 20);
+  });
+
+  it("dedups against every known person, not just the capped ones", async () => {
+    // Capping dedup would re-fetch and re-bill people we already hold.
+    orgPeople = Array.from({ length: MAX_ALREADY_LINKED + 1 }, (_, i) =>
+      person(i),
+    );
+    // The last person is past the display cap; a search hit for them must
+    // still be recognised as a duplicate.
+    exaResults.results = [
+      {
+        url: `https://www.linkedin.com/in/ex${MAX_ALREADY_LINKED}`,
+        title: "Existing 50 - Browserbase",
+      },
+    ];
+
+    const result = await run();
+
+    expect(result.duplicatesSkipped).toBe(1);
+    expect(judged).not.toHaveBeenCalled();
   });
 });
 

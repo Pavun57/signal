@@ -97,9 +97,15 @@ interface PersonSummaryInput {
  * drawer so the user gets a quick read before scanning the raw signals.
  * Returns null on failure / no usable signal.
  */
+export interface PersonSummary {
+  summary: string | null;
+  /** Read off the enrichment material, not carried over from what we stored. */
+  currentTitle: string | null;
+}
+
 export async function summarizePerson(
   input: PersonSummaryInput,
-): Promise<string | null> {
+): Promise<PersonSummary | null> {
   const sections: string[] = [];
 
   if (input.title) sections.push(`Current title: ${input.title}`);
@@ -150,8 +156,16 @@ export async function summarizePerson(
           .describe(
             "2-3 sentence overview of who the person is and what they've been up to recently. Plain prose, no markdown.",
           ),
+        currentTitle: z
+          .string()
+          .nullable()
+          .describe(
+            "The person's current job title, read from the source material — e.g. 'Head of GTM / Revenue Ops'. Just the role, without the company name. Null if the source material does not state it.",
+          ),
       }),
       prompt: `Summarize this person for a sales researcher who needs a quick read on who they are. Target: 2-3 sentences, plain prose, no markdown, no bullets. Cover their role and one or two notable threads from their background or recent activity. Skip generic platitudes ("results-driven leader") -- if the source material is thin, keep the summary short rather than padding it.
+
+Also extract their current job title. The "Current title" line below, if present, is what we have on file and may be wrong -- it is often a guess carried over from a search query. Trust the profile, headline and background material over it. Return null rather than guessing when the material does not state a title.
 
 ${UNTRUSTED_NOTICE}
 
@@ -170,7 +184,10 @@ ${wrapUntrusted(body)}`,
       metadata: { model: MODEL_LABEL, personName: input.name },
     });
 
-    return object.summary.trim() || null;
+    return {
+      summary: object.summary.trim() || null,
+      currentTitle: object.currentTitle?.trim() || null,
+    };
   } catch (err) {
     console.error("[summarize-person] failed:", err);
     return null;
