@@ -1,4 +1,5 @@
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { recordAffiliation } from "@/lib/services/affiliation";
 
 export const maxDuration = 60;
 
@@ -36,6 +37,21 @@ function extractCompanySignals(
   return [...signals];
 }
 
+/** Escape a company name for safe use inside a RegExp. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Longest company name that appears in the person's text signals.
+ *
+ * Matching is word-boundary anchored. Plain substring matching — what this did
+ * before — pairs "Meta" with "Metadata Inc.", "Signal" with "signal
+ * processing", and "Ramp" with "rampant", silently filing people under
+ * companies they have never worked for. A boundary match is still only a
+ * lexical hint, never proof, which is why the caller records it as the weakest
+ * affiliation source rather than as a settled fact.
+ */
 function findOrgMatch(signals: string[], orgs: OrgRow[]): string | null {
   const text = signals.join(" \n ").toLowerCase();
   if (!text) return null;
@@ -44,7 +60,10 @@ function findOrgMatch(signals: string[], orgs: OrgRow[]): string | null {
   for (const org of orgs) {
     const name = org.name.toLowerCase().trim();
     if (name.length < 3) continue;
-    if (text.includes(name)) {
+    const boundary = new RegExp(
+      `(^|[^a-z0-9])${escapeRegExp(name)}([^a-z0-9]|$)`,
+    );
+    if (boundary.test(text)) {
       if (!best || name.length > best.len) {
         best = { id: org.id, len: name.length };
       }
@@ -99,11 +118,21 @@ export async function POST() {
       unmatched.push(row.id);
       continue;
     }
-    const { error: updErr } = await supabase
-      .from("people")
-      .update({ organization_id: orgId })
-      .eq("id", row.id);
-    if (!updErr) linked += 1;
+    // Recorded as search_stamp — the weakest source — because a company name
+    // appearing in someone's headline is a lexical hint, not evidence of
+    // employment. Writing it as a bare organization_id, as this did before,
+    // made a guess indistinguishable from a confirmed employee.
+    try {
+      await recordAffiliation(supabase, {
+        personId: row.id,
+        organizationId: orgId,
+        source: "search_stamp",
+        evidence: "company name matched in stored profile text",
+      });
+      linked += 1;
+    } catch (err) {
+      console.error("[backfill-orgs] recordAffiliation failed:", err);
+    }
   }
 
   return Response.json({

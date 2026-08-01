@@ -31,20 +31,52 @@ export function normalizeDomain(raw: string): string {
 }
 
 /**
- * Normalize a LinkedIn URL for dedup: strip query params and trailing slashes.
+ * Normalize a LinkedIn URL for dedup: canonical host, no query, no trailing
+ * slash.
+ *
+ * The host matters for two separate reasons, and getting it wrong broke both:
+ *
+ *  1. Dedup. This previously kept whatever host it was handed, so
+ *     `linkedin.com/in/x` and `www.linkedin.com/in/x` normalized to different
+ *     strings and slipped past the unique index on people.linkedin_url — one
+ *     human, two rows, two different employers possible.
+ *
+ *  2. Fetching. linkedin.com redirects to www.linkedin.com, and the scrapers we
+ *     use do not follow it: the apex form returns an empty body. Every URL
+ *     stored before this fix is apex, so affiliation checks against a stored
+ *     URL would have failed 100% of the time.
  */
 export function normalizeLinkedInUrl(raw: string): string {
   try {
     const url = new URL(raw);
-    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    const host = /(^|\.)linkedin\.com$/i.test(url.hostname)
+      ? "www.linkedin.com"
+      : url.hostname;
+    return `https://${host}${url.pathname.replace(/\/+$/, "")}`;
   } catch {
     return raw.replace(/\/+$/, "");
   }
 }
 
 /**
- * Find an existing organization by domain (primary) or name (fallback),
- * or create a new one. Returns the organization record.
+ * Whether an organization is identified well enough to have people attached to
+ * it.
+ *
+ * A domain is what makes a company a distinct thing. Without one we cannot tell
+ * two same-named companies apart, cannot verify an email against the employer's
+ * domain, and cannot check a LinkedIn profile against anything meaningful — so
+ * attaching contacts to a domain-less org is how the wrong people end up
+ * pooled under the right name.
+ */
+export function canHoldPeople(org: { domain?: string | null }): boolean {
+  return Boolean(org.domain);
+}
+
+/**
+ * Find an existing organization by domain, or create a new one. Returns the
+ * organization record.
+ *
+ * Note there is deliberately no name-based merge — see the comment in the body.
  */
 export async function findOrCreateOrganization(data: {
   name: string;
@@ -86,17 +118,18 @@ export async function findOrCreateOrganization(data: {
     }
   }
 
-  // Fallback: match by name if no domain. Escape ilike wildcards so a name
-  // like "100% Design" matches literally instead of as a pattern.
-  if (!normalizedDomain) {
-    const { data: existing } = await supabase
-      .from("organizations")
-      .select("*")
-      .ilike("name", data.name.replace(/[%_\\]/g, "\\$&"))
-      .maybeSingle();
-
-    if (existing) return existing as Organization;
-  }
+  // NO name-based merge fallback.
+  //
+  // This used to match an existing org by name whenever no domain was supplied,
+  // which silently collapsed genuinely different companies that share a name
+  // into one row — and with them, their people. Two "Acme"s in different
+  // industries became one organization with one pooled contact list, and
+  // nothing recorded that it had happened.
+  //
+  // A name is not an identity; a domain is. Without one we create a separate
+  // row and leave `domain` null, which marks the org unresolved. Unresolved
+  // orgs are excluded from people-attachment (see canHoldPeople) precisely so
+  // that a duplicate is a harmless empty row rather than a contaminated one.
 
   // Create new
   const { data: created, error } = await supabase
@@ -167,8 +200,17 @@ export async function findOrCreatePerson(data: {
         updates.personal_email = data.personal_email;
       if (data.twitter_url && !existing.twitter_url)
         updates.twitter_url = data.twitter_url;
-      if (data.organization_id && !existing.organization_id)
-        updates.organization_id = data.organization_id;
+
+      // Deliberately does NOT set organization_id on an existing person.
+      //
+      // Employer is provenance-tracked and recordAffiliation owns it, applying
+      // a monotonic never-downgrade rule. Writing the column here bypassed that
+      // rule while leaving affiliation_source/confidence describing the OLD
+      // employer — so a person detached from Acme (which keeps
+      // affiliation_confidence 0.95 and evidence naming Acme) could be silently
+      // re-attached to Beta by a passing search, and would then sail through
+      // the send gate on Acme's confidence. Callers that mean to set an
+      // employer must call recordAffiliation and say why.
 
       if (Object.keys(updates).length > 0) {
         await supabase.from("people").update(updates).eq("id", existing.id);

@@ -6,6 +6,7 @@
   "packageManager": "pnpm@10.6.5",
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "clear:local": "node scripts/clear-local-data.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -13,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "audit:data": "tsx scripts/audit-data-quality.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

@@ -48,6 +48,11 @@ next-env.d.ts
 # data files
 *.csv
 
+# database dumps -- these carry real contact data and email bodies
+backup-*.sql
+*.dump
+/supabase/dumps/
+
 # tooling config
 .claude/
 .mcp.json

@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   }
   const { supabase, user } = ctx;
 
-  let body: { personId?: string };
+  let body: { personId?: string; revalidate?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -45,6 +45,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const result = await findEmailForPerson(personId);
+  // `revalidate` re-checks an address that is stored but unverified. Without it
+  // the send gate's own advice ("run findEmail") could not be followed from the
+  // UI, because findEmailForPerson short-circuits on any stored address.
+  const result = await findEmailForPerson(personId, {
+    revalidate: body.revalidate === true,
+  });
   return NextResponse.json(result);
 }

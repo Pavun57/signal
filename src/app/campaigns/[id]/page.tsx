@@ -162,6 +162,18 @@ export default function CampaignDetailPage() {
           personal_email_verified_at: person.personal_email_verified_at as
             | string
             | null,
+          work_email_source:
+            (person.work_email_source as string | null) ?? null,
+          work_email_verification:
+            (person.work_email_verification as string | null) ?? null,
+          work_email_confidence:
+            (person.work_email_confidence as number | null) ?? null,
+          affiliation_source:
+            (person.affiliation_source as string | null) ?? null,
+          affiliation_confidence:
+            (person.affiliation_confidence as number | null) ?? null,
+          affiliation_evidence:
+            (person.affiliation_evidence as string | null) ?? null,
           linkedin_url: person.linkedin_url as string | null,
           twitter_url: person.twitter_url as string | null,
           enrichment_status:

@@ -4,6 +4,11 @@ import { verifyQStashSignature } from "@/lib/services/qstash";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { sendApprovedDraft } from "@/lib/services/outreach-sender";
 import {
+  canDraftFor,
+  SEND_GATE_COLUMNS,
+  type SendCandidate,
+} from "@/lib/services/affiliation";
+import {
   selectContactsForSignal,
   type Candidate,
 } from "@/lib/services/contact-selector";
@@ -177,7 +182,7 @@ async function pickAndDraft(
   const { data: people } = await supabase
     .from("people")
     .select(
-      "id, name, title, work_email, personal_email, linkedin_url, enrichment_data",
+      `id, name, title, work_email, personal_email, linkedin_url, enrichment_data, ${SEND_GATE_COLUMNS}`,
     )
     .eq("organization_id", payload.organizationId);
 
@@ -208,6 +213,7 @@ async function pickAndDraft(
     "complained",
   ]);
   const candidates: Candidate[] = [];
+  const blockedByGate: string[] = [];
   for (const p of people) {
     const cp = cpByPersonId.get(p.id as string);
     if (!cp) continue; // not in this campaign
@@ -216,6 +222,17 @@ async function pickAndDraft(
     // Must have an email to be draft-able. saveDraft reads work_email ?? personal_email.
     const email = (p.work_email as string) ?? (p.personal_email as string);
     if (!email) continue;
+    // Don't spend a Claude call drafting for someone the send gate will refuse.
+    // outreach-sender re-checks this — that is the authoritative gate — but
+    // filtering here means a signal fire doesn't quietly bill for a draft that
+    // can never leave.
+    // Draft-stage check, deliberately NOT canSendTo: an unchecked address is
+    // draftable — the send gate verifies it just-in-time when the mail leaves.
+    const gate = canDraftFor(p as unknown as SendCandidate);
+    if (!gate.ok) {
+      blockedByGate.push(`${p.name ?? p.id}: ${gate.reason}`);
+      continue;
+    }
     const enrichment = p.enrichment_data as Record<string, unknown> | null;
     candidates.push({
       personId: p.id as string,
@@ -228,7 +245,14 @@ async function pickAndDraft(
     });
   }
 
-  if (candidates.length === 0) return 0;
+  if (candidates.length === 0) {
+    if (blockedByGate.length > 0) {
+      console.warn(
+        `[outreach/process] ${blockedByGate.length} contact(s) blocked by the data-quality gate: ${blockedByGate.slice(0, 5).join("; ")}`,
+      );
+    }
+    return 0;
+  }
 
   const { picks } = await selectContactsForSignal({
     reason: payload.reason ?? "Signal fired",

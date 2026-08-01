@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { recordAffiliation } from "@/lib/services/affiliation";
 import { linkPersonToCampaign } from "@/lib/services/knowledge-base";
 
 const BodySchema = z.object({
@@ -62,6 +63,27 @@ export async function POST(
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // The PERSON must also be in one of the caller's campaigns (same gate as
+  // /api/find-email). Checking only the target org let any user force-move any
+  // contact in the shared pool — including one another user had hand-assigned,
+  // since the user_entered override deliberately outranks every prior claim.
+  const { data: personOwnership } = await supabase
+    .from("campaign_people")
+    .select("campaign:campaigns!inner(user_id)")
+    .eq("person_id", personId)
+    .limit(1)
+    .maybeSingle();
+
+  const personOwnerId =
+    (personOwnership?.campaign as unknown as { user_id?: string } | null)
+      ?.user_id ?? null;
+  if (personOwnerId && personOwnerId !== user.id) {
+    return Response.json(
+      { error: "Forbidden: contact belongs to another user's campaign" },
+      { status: 403 },
+    );
+  }
+
   // If a campaignId was supplied, double-check the user owns it too.
   if (campaignId) {
     const { data: camp } = await supabase
@@ -83,11 +105,22 @@ export async function POST(
     return Response.json({ error: "Organization not found" }, { status: 404 });
   }
 
+  // Goes through recordAffiliation rather than writing organization_id
+  // directly, so the employer and the evidence for it can never disagree. A
+  // human saying so is the strongest source there is, which also means this is
+  // the one action that can override a machine verdict — the manual escape
+  // hatch when the LLM cannot confirm a real employee.
+  await recordAffiliation(supabase, {
+    personId,
+    organizationId,
+    source: "user_entered",
+    evidence: "assigned by the user",
+  });
+
   const { data: updated, error: updErr } = await supabase
     .from("people")
-    .update({ organization_id: organizationId })
-    .eq("id", personId)
     .select("id, name, organization_id")
+    .eq("id", personId)
     .maybeSingle();
 
   if (updErr) {

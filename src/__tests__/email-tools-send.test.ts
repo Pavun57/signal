@@ -110,6 +110,19 @@ afterEach(() => {
   process.env.EMAIL_CREDENTIALS_KEY = savedKey;
 });
 
+/** A contact the data-quality gate lets through. */
+function gatePasses() {
+  return {
+    data: {
+      work_email: baseDraft.to_email,
+      work_email_source: "user_entered",
+      work_email_verification: "deliverable",
+      affiliation_confidence: 0.9,
+      affiliation_source: "team_page",
+    },
+  };
+}
+
 describe("sendEmail review gating", () => {
   function wire(
     responses: Array<{ data?: unknown; error?: unknown; count?: number }>,
@@ -162,6 +175,7 @@ describe("sendEmail review gating", () => {
     const { calls } = wire([
       { data: { ...baseDraft, review_status: "approved" } }, // draft select
       settingsResponse(), // resolveSenderConfig
+      gatePasses(), // send-gate person read
       { data: { id: baseDraft.id } }, // claim won
       { count: 0 }, // daily-cap count
       {}, // sent_emails insert
@@ -181,7 +195,7 @@ describe("sendEmail review gating", () => {
     });
     expect(sendGmailMock).toHaveBeenCalledTimes(1);
 
-    const claim = calls[2];
+    const claim = calls[3]; // 2 is the send-gate person read
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -194,6 +208,7 @@ describe("sendEmail review gating", () => {
     wire([
       { data: { ...baseDraft, review_status: "approved" } },
       settingsResponse(),
+      gatePasses(), // send-gate person read
       { data: null }, // claim lost
     ]);
 
@@ -220,6 +235,7 @@ describe("sendBulkEmails review gating", () => {
       },
       { data: [{ ...baseDraft, id: "d_ok", review_status: "approved" }] },
       settingsResponse(),
+      gatePasses(), // send-gate person read
       { data: { id: "d_ok" } }, // claim won
       { count: 0 }, // daily-cap count
       {}, // sent_emails insert

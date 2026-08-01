@@ -1,17 +1,6 @@
 import { withAction } from "@/lib/services/cost-tracker";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
-import { ExaService } from "@/lib/services/exa-service";
-import {
-  findOrCreatePerson,
-  linkPersonToCampaign,
-} from "@/lib/services/knowledge-base";
-import {
-  findPeopleOnDomain,
-  filterContactsByCompany,
-  type CandidateContact,
-} from "@/lib/services/contact-filter";
-import { recordVerifiedEmail } from "@/lib/services/email-pattern";
-import { parseLinkedInTitle } from "@/lib/utils";
+import { findContactsForOrganization } from "@/lib/services/contact-discovery";
 
 export const maxDuration = 120;
 
@@ -83,137 +72,24 @@ export async function POST(request: Request) {
   };
 
   return withAction(`Find contacts: ${org.name}`, async () => {
-    let totalFound = 0;
-
-    // Dedup against existing people linked to this campaign (by LinkedIn URL)
-    const { data: existingLinks } = await supabase
-      .from("campaign_people")
-      .select("person:people(linkedin_url)")
-      .eq("campaign_id", campaignId);
-
-    const existingUrls = new Set(
-      (existingLinks || [])
-        .map(
-          (l) =>
-            (l.person as unknown as { linkedin_url: string | null } | null)
-              ?.linkedin_url,
-        )
-        .filter(Boolean) as string[],
-    );
-
-    // ── Phase 1: Search the company's own website for team/staff ───────
-    if (org.domain) {
-      try {
-        const domainPeople = await findPeopleOnDomain(org.domain, org.name);
-        for (const dp of domainPeople) {
-          if (dp.linkedinUrl && existingUrls.has(dp.linkedinUrl)) continue;
-
-          const person = await findOrCreatePerson({
-            name: dp.name,
-            title: dp.title,
-            linkedin_url: dp.linkedinUrl,
-            work_email: dp.email,
-            organization_id: orgId,
-            source: "website",
-          });
-
-          if (dp.email) {
-            await recordVerifiedEmail(supabase, {
-              personId: person.id,
-              email: dp.email,
-              source: "team_page",
-            });
-          }
-
-          await linkPersonToCampaign(person.id, campaignId);
-          if (dp.linkedinUrl) existingUrls.add(dp.linkedinUrl);
-          totalFound++;
-        }
-      } catch (err) {
-        console.error("[find-contacts] Domain scrape failed:", err);
-      }
-    }
-
-    // ── Phase 2: LinkedIn search with LLM filtering ────────────────────
-    if (boundedTitles.length > 0) {
-      const exa = new ExaService();
-      const searchResults = await Promise.all(
-        boundedTitles.map(async (title: string) => {
-          const query = `"${org.name}" ${title} site:linkedin.com`;
-          try {
-            const result = await exa.search(query, {
-              numResults: 3,
-              category: "people" as const,
-              includeText: true,
-            });
-            return { title, results: result.results };
-          } catch {
-            return { title, results: [] };
-          }
-        }),
-      );
-
-      // Collect deduplicated candidates for LLM filtering
-      const seenUrls = new Set<string>();
-      const candidates: Array<
-        CandidateContact & { searchTitle: string; linkedinUrl: string | null }
-      > = [];
-
-      for (const search of searchResults) {
-        for (const result of search.results) {
-          if (seenUrls.has(result.url)) continue;
-          seenUrls.add(result.url);
-
-          const linkedinUrl = result.url.includes("linkedin.com")
-            ? result.url
-            : null;
-          if (linkedinUrl && existingUrls.has(linkedinUrl)) continue;
-
-          const parsed = parseLinkedInTitle(result.title);
-
-          candidates.push({
-            name: parsed.name,
-            title: parsed.title || search.title,
-            linkedinUrl,
-            rawHeadline: result.title,
-            searchTitle: search.title,
-          });
-        }
-      }
-
-      if (candidates.length > 0) {
-        const company = {
-          name: org.name,
-          domain: org.domain,
-          industry: org.industry,
-          location: org.location,
-          description: org.description,
-        };
-        const verified = await filterContactsByCompany(company, candidates);
-
-        for (const v of verified) {
-          const candidate = candidates[v.index];
-          if (!candidate) continue;
-
-          const person = await findOrCreatePerson({
-            name: v.name,
-            title: v.title,
-            linkedin_url: candidate.linkedinUrl,
-            organization_id: orgId,
-            source: "exa",
-          });
-
-          await linkPersonToCampaign(person.id, campaignId);
-          totalFound++;
-        }
-      }
-    }
+    // All discovery goes through the one shared path — this route used to hold
+    // its own near-identical copy of it, as did the findContacts tool and the
+    // enrich-company route, so any fix landed in one and stayed broken in two.
+    const result = await findContactsForOrganization(supabase, {
+      organizationId: orgId,
+      campaignId,
+      titles: boundedTitles,
+      numResults: 3,
+    });
 
     return Response.json({
-      companyId,
-      companyName: org.name,
-      totalFound,
+      contacts: result.contacts,
+      totalFound: result.totalFound,
       targetTitles,
+      verifiedCount: result.verifiedCount,
+      uncertainCount: result.uncertainCount,
+      rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+      error: result.error,
     });
   }); // end withAction
 }

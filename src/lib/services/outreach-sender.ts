@@ -9,6 +9,13 @@ import {
   type SenderConfig,
 } from "@/lib/services/email-transport";
 import { trackUsage } from "@/lib/services/cost-tracker";
+import { recordVerifiedEmail } from "@/lib/services/email-pattern";
+import {
+  canSendTo,
+  SEND_GATE_COLUMNS,
+  type SendCandidate,
+} from "@/lib/services/affiliation";
+import { verifyAddressForSend } from "@/lib/services/send-verification";
 
 export interface EnrollmentForSend {
   id: string;
@@ -53,6 +60,111 @@ export async function claimAndSendDraft(
   trackMetadata?: Record<string, unknown>,
 ): Promise<SendResult> {
   const now = new Date().toISOString();
+
+  // Data-quality gate, before the claim so a blocked draft stays sendable once
+  // the contact is fixed rather than being parked in "queued".
+  //
+  // This is the last line of defence and the only one that cannot be bypassed:
+  // every sender — the followups cron, send-now, and the agent's sendEmail and
+  // sendBulkEmails tools — funnels through here. A check placed only in
+  // pickAndDraft would be skipped by three of those four.
+  if (draft.person_id) {
+    const { data: person, error: personError } = await supabase
+      .from("people")
+      .select(SEND_GATE_COLUMNS)
+      .eq("id", draft.person_id)
+      .maybeSingle();
+
+    // Fail closed. maybeSingle() returns data: null both for "no such row" and
+    // for a query error, so ignoring either would let a transient PostgREST
+    // failure, an RLS denial, or a person deleted by a merge wave the send
+    // through unchecked — turning the one gate that cannot be bypassed into one
+    // that a database hiccup disables. Not sending is always recoverable;
+    // sending is not.
+    if (personError || !person) {
+      return {
+        ok: false,
+        reason: `Not sending to ${draft.to_email}: could not load the contact to check it (${personError?.message ?? "no such person"}).`,
+      };
+    }
+
+    // Just-in-time verification — the only place provider credits are spent.
+    // Discovery stored this address as a free, unchecked suggestion; now that
+    // an email is actually about to leave, prove it. The verdict is cached on
+    // the person, so this bills at most once per contact ever, and because it
+    // runs inside the daily-send-capped path, verification spend can never
+    // outrun sending.
+    let gated = person as unknown as SendCandidate & {
+      organization_id?: string | null;
+    };
+    const needsJit =
+      !!gated.work_email &&
+      gated.work_email_source !== "user_entered" &&
+      gated.work_email_source !== "send_confirmed" &&
+      gated.work_email_verification !== "deliverable" &&
+      gated.work_email_verification !== "undeliverable" &&
+      gated.work_email_verification !== "risky";
+
+    if (needsJit && gated.work_email) {
+      const jit = await verifyAddressForSend(supabase, {
+        personId: draft.person_id,
+        email: gated.work_email,
+        organizationId: gated.organization_id ?? null,
+      });
+
+      if (jit.outcome !== "verified") {
+        // blocked and unavailable both refuse; only `blocked` wrote a verdict.
+        // Unavailable is retryable — the next attempt re-checks for free.
+        return {
+          ok: false,
+          reason: `Not sending to ${draft.to_email}: ${jit.reason}.`,
+        };
+      }
+
+      // The service just wrote verification (and possibly an affiliation
+      // upgrade — a deliverable mailbox at the employer's domain is proof of
+      // employment). Re-read rather than patching fields by hand so the gate
+      // judges exactly what was persisted.
+      const { data: refreshed, error: refreshError } = await supabase
+        .from("people")
+        .select(SEND_GATE_COLUMNS)
+        .eq("id", draft.person_id)
+        .maybeSingle();
+      if (refreshError || !refreshed) {
+        return {
+          ok: false,
+          reason: `Not sending to ${draft.to_email}: could not re-read the contact after verification (${refreshError?.message ?? "no such person"}).`,
+        };
+      }
+      gated = refreshed as unknown as typeof gated;
+    }
+
+    const check = canSendTo(gated);
+    if (!check.ok) {
+      return {
+        ok: false,
+        reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
+      };
+    }
+
+    // The gate's verdict is about the person's address on file — but the mail
+    // goes to draft.to_email, which was frozen into the draft when it was
+    // written. Sequence drafts for every step are pre-created at enrollment,
+    // so after a bounce is fixed by verifying a NEW address onto the person,
+    // the remaining steps still carry the old one: without this comparison the
+    // gate would approve on the new address's verdict and deliver to the very
+    // address that just hard-bounced.
+    const personEmail = gated.work_email;
+    if (
+      personEmail &&
+      draft.to_email.toLowerCase() !== personEmail.toLowerCase()
+    ) {
+      return {
+        ok: false,
+        reason: `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail} — regenerate the draft so it uses the current address.`,
+      };
+    }
+  }
 
   // Atomically claim the draft before sending. Overlapping callers — the
   // followups cron racing a send-now click, agent retries, or two process
@@ -158,6 +270,29 @@ export async function claimAndSendDraft(
     console.error(
       `[outreach-sender] sent_emails insert failed for draft ${draft.id} (message ${messageId}): ${insertError.message}`,
     );
+  }
+
+  // A mailbox that accepted an SMTP handover is the strongest evidence we get
+  // short of a reply, and it is free. Recording it here is what finally writes
+  // `send_confirmed` — the highest-weighted machine source in SOURCE_WEIGHT,
+  // which nothing in the codebase had ever set — so a company's email pattern
+  // learns from addresses that actually worked. A later bounce reverses it via
+  // recordBounce in the tracking cron; together those two are the feedback loop.
+  //
+  // Deliberately here rather than in sendGmailMessage: the Settings test send
+  // calls that directly, has no person_id, and must stay invisible to this
+  // bookkeeping.
+  if (draft.person_id) {
+    try {
+      await recordVerifiedEmail(supabase, {
+        personId: draft.person_id,
+        email: draft.to_email,
+        source: "send_confirmed",
+      });
+    } catch (err) {
+      // The email has already left; bookkeeping must never surface as a failure.
+      console.error("[outreach-sender] recordVerifiedEmail failed:", err);
+    }
   }
 
   await supabase

@@ -28,15 +28,32 @@ export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const { added, found } = (await res.json()) as {
-        added: number;
-        found: number;
-      };
-      if (added === 0) {
+      const { added, found, uncertainCount, rejectedAsWrongCompany, error } =
+        (await res.json()) as {
+          added: number;
+          found: number;
+          uncertainCount?: number;
+          rejectedAsWrongCompany?: number;
+          error?: string;
+        };
+
+      // A refusal (e.g. the company has no domain on record, so contacts cannot
+      // be told apart from another company of the same name) comes back 200
+      // with an explanation. Dropping it left the user staring at "no new
+      // people found" with no idea why or what would fix it.
+      if (error) {
+        toast.error(error);
+      } else if (added === 0) {
         toast.info(`Searched ${found} results, no new people found.`);
       } else {
+        const notes = [];
+        if (uncertainCount)
+          notes.push(`${uncertainCount} unconfirmed — blocked from outreach`);
+        if (rejectedAsWrongCompany)
+          notes.push(`${rejectedAsWrongCompany} work elsewhere`);
         toast.success(
-          `Added ${added} new ${added === 1 ? "person" : "people"}.`,
+          `Added ${added} new ${added === 1 ? "person" : "people"}.` +
+            (notes.length ? ` ${notes.join(", ")}.` : ""),
         );
       }
       onComplete?.();

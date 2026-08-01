@@ -93,6 +93,7 @@ const SERVICE_LABELS: Record<string, string> = {
   browserbase: "Browserbase",
   google: "Google Places",
   gmail: "Gmail",
+  email_provider: "Email verifier",
 };
 
 const OP_LABELS: Record<string, string> = {

@@ -31,10 +31,25 @@ export interface CandidateContact {
   rawHeadline: string | null;
 }
 
+/**
+ * Three outcomes, not two.
+ *
+ * The binary version forced every candidate into "employee" or "not", and the
+ * honest answer for a large share of them is "the evidence does not say". On
+ * the dev database, 19 of 41 contacts at one company had a headline that never
+ * mentions their employer — common at small startups — so a filter that must
+ * choose either keeps provably-wrong people or deletes real ones. `uncertain`
+ * is what lets us keep them, visibly unproven, and resolve them later.
+ */
+export type ContactVerdict = "verified" | "uncertain" | "rejected";
+
 export interface VerifiedContact {
   index: number;
   name: string;
   title: string | null;
+  verdict: ContactVerdict;
+  /** One line explaining the call, stored as affiliation_evidence. */
+  evidence: string;
 }
 
 export interface DomainPerson {
@@ -260,9 +275,18 @@ function headlineMentionsCompany(
 // ── LLM-based LinkedIn result filtering ──────────────────────────────────
 
 /**
- * Filter LinkedIn search results to only include people who genuinely work
- * at the target company. Pre-filters by company name in headline, then uses
- * Haiku to disambiguate similarly-named companies.
+ * Judge which search results genuinely work at the target company.
+ *
+ * The headline check used to be a hard pre-filter, and anything that failed it
+ * was dropped before the LLM ever saw it — returning `[]` outright when nothing
+ * matched. That is why searchPeople stopped calling this at all: at small
+ * companies most people's LinkedIn headline never names their employer, so the
+ * filter deleted real employees in bulk. Measured on the dev database, it would
+ * have discarded 22 of 41 genuine contacts.
+ *
+ * So the headline match is now a *hint passed to the LLM*, not a gate. Every
+ * candidate is judged, and the ones the evidence cannot settle come back
+ * `uncertain` rather than being silently dropped or silently trusted.
  */
 export async function filterContactsByCompany(
   company: CompanyContext,
@@ -270,23 +294,25 @@ export async function filterContactsByCompany(
 ): Promise<VerifiedContact[]> {
   if (candidates.length === 0) return [];
 
-  // Pre-filter: only keep candidates whose headline mentions the company.
-  // This catches obvious mismatches (completely different companies) cheaply
-  // before we spend tokens on the LLM call.
-  const preFiltered = candidates
-    .map((c, originalIndex) => ({ ...c, originalIndex }))
-    .filter((c) => headlineMentionsCompany(c.rawHeadline, company.name));
+  const indexed = candidates.map((c, originalIndex) => ({
+    ...c,
+    originalIndex,
+  }));
+  const hintedCount = indexed.filter((c) =>
+    headlineMentionsCompany(c.rawHeadline, company.name),
+  ).length;
 
   console.log(
-    `[contact-filter] Pre-filter: ${candidates.length} candidates → ${preFiltered.length} mention "${company.name}"`,
+    `[contact-filter] Judging ${candidates.length} candidates for "${company.name}" (${hintedCount} name-matched headlines)`,
   );
 
-  if (preFiltered.length === 0) return [];
-
-  const summaries = preFiltered
+  const summaries = indexed
     .map(
       (c, i) =>
-        `[${i}] ${c.rawHeadline || c.name}${c.title ? ` (parsed: ${c.title})` : ""}`,
+        `[${i}] ${c.rawHeadline || c.name}${c.title ? ` (parsed: ${c.title})` : ""}` +
+        ` — headline names the target company: ${
+          headlineMentionsCompany(c.rawHeadline, company.name) ? "yes" : "no"
+        }`,
     )
     .join("\n");
 
@@ -295,7 +321,7 @@ export async function filterContactsByCompany(
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
       schema: z.object({
-        verified: z.array(
+        judged: z.array(
           z.object({
             index: z
               .number()
@@ -306,10 +332,20 @@ export async function filterContactsByCompany(
               .string()
               .nullable()
               .describe("Cleaned job title without company name"),
+            verdict: z
+              .enum(["verified", "uncertain", "rejected"])
+              .describe(
+                "verified = evidence says they work at the target company; rejected = evidence says they work somewhere else; uncertain = the evidence does not settle it",
+              ),
+            evidence: z
+              .string()
+              .describe(
+                "One short sentence citing what decided it, e.g. \"headline reads 'Wafer'\" or 'headline names no employer'",
+              ),
           }),
         ),
       }),
-      prompt: `You are filtering LinkedIn search results to find people who actually work at a specific company.
+      prompt: `You are judging whether each LinkedIn search result actually works at a specific company.
 
 ${UNTRUSTED_NOTICE}
 
@@ -322,13 +358,17 @@ Target company:
 Candidates (scraped from LinkedIn results):
 ${wrapUntrusted(summaries)}
 
-Rules:
-- ONLY include people who genuinely work at the target company specifically
-- Reject people at similarly-named but DIFFERENT companies (e.g., "Dixons Carphone" is NOT "Dixons Estate Agents", "Miller Rose" is NOT "Miller & Carter")
-- Use the domain and industry to disambiguate -- if the target is an estate agent, reject people from retail/electronics companies with similar names
-- If a person's headline has no company reference and their role doesn't match the industry, EXCLUDE them
-- Clean up names: remove LinkedIn suffixes, emoji, excessive credentials
-- Clean up titles: extract just the role (e.g., "Branch Manager" not "Branch Manager at Dixons")`,
+Return a verdict for EVERY candidate. Use exactly three verdicts:
+
+- "verified" — the evidence positively places them at the target company, e.g. the headline names it.
+- "rejected" — the evidence positively places them somewhere ELSE. Similarly-named but different companies belong here ("Dixons Carphone" is NOT "Dixons Estate Agents"; "Miller Rose" is NOT "Miller & Carter"). Use the domain and industry to disambiguate — if the target is an estate agent, a retail-electronics employee with a similar company name is rejected.
+- "uncertain" — the evidence does not settle it either way. A headline that names no employer at all is UNCERTAIN, not rejected: at small companies most people never mention their employer in their headline. Reserve "rejected" for a positive signal pointing elsewhere.
+
+Do not guess in order to avoid "uncertain". An honest "uncertain" is more useful than a confident mistake in either direction — uncertain contacts are kept and flagged for review, while rejected ones are detached from the company.
+
+Also clean up the display fields:
+- names: remove LinkedIn suffixes, emoji, excessive credentials
+- titles: extract just the role ("Branch Manager", not "Branch Manager at Dixons")`,
     });
 
     trackUsage({
@@ -340,22 +380,60 @@ Rules:
       metadata: {
         model: "claude-haiku-4-5",
         companyName: company.name,
-        candidateCount: preFiltered.length,
-        verifiedCount: object.verified.length,
+        candidateCount: indexed.length,
+        verifiedCount: object.judged.filter((v) => v.verdict === "verified")
+          .length,
+        uncertainCount: object.judged.filter((v) => v.verdict === "uncertain")
+          .length,
+        rejectedCount: object.judged.filter((v) => v.verdict === "rejected")
+          .length,
       },
     });
 
-    // Map LLM indices (which reference preFiltered) back to original candidate indices
-    return object.verified.map((v) => ({
-      ...v,
-      index: preFiltered[v.index]?.originalIndex ?? v.index,
-    }));
+    // Drop hallucinated indices, then map back to the caller's numbering.
+    const seen = new Set<number>();
+    const judged: VerifiedContact[] = [];
+    for (const v of object.judged) {
+      const original = indexed[v.index];
+      if (!original || seen.has(v.index)) continue;
+      seen.add(v.index);
+      judged.push({
+        index: original.originalIndex,
+        name: v.name,
+        title: v.title,
+        verdict: v.verdict,
+        evidence: v.evidence,
+      });
+    }
+
+    // Anything the model failed to return a verdict for is unknown, not bad.
+    for (const c of indexed) {
+      if (seen.has(indexed.indexOf(c))) continue;
+      if (judged.some((j) => j.index === c.originalIndex)) continue;
+      judged.push({
+        index: c.originalIndex,
+        name: c.name,
+        title: c.title,
+        verdict: "uncertain",
+        evidence: "no verdict returned for this candidate",
+      });
+    }
+
+    return judged;
   } catch (err) {
     console.error(
-      "[contact-filter] LLM filter failed, rejecting all candidates (safe fallback):",
+      "[contact-filter] LLM judge failed; returning all candidates as uncertain:",
       err,
     );
-    // Safe fallback: reject all rather than adding wrong people
-    return [];
+    // The old fallback discarded every candidate on an LLM error, which turns a
+    // transient outage into silent data loss. Uncertain keeps them, visibly
+    // unproven, and the send gate still refuses them until something confirms.
+    return candidates.map((c, index) => ({
+      index,
+      name: c.name,
+      title: c.title,
+      verdict: "uncertain" as const,
+      evidence: "affiliation check unavailable",
+    }));
   }
 }

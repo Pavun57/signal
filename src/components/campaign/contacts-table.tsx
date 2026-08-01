@@ -11,6 +11,10 @@ import {
 
 import { ContactDetail } from "@/components/campaign/contact-detail";
 import {
+  AffiliationBadge,
+  EmailProvenanceBadge,
+} from "@/components/ui/provenance-badge";
+import {
   enrichmentStatusStyles,
   type EnrichmentStatus,
 } from "@/lib/status-styles";
@@ -175,13 +179,19 @@ export function ContactsTable({
                     {contact.title || "--"}
                   </td>
                   <td className="text-muted-foreground hidden px-3 py-2.5 md:table-cell">
-                    {contact.company?.name || "--"}
+                    <span className="inline-flex items-center gap-1.5">
+                      {contact.company?.name || "--"}
+                      {/* Only renders when the employer is unconfirmed — a
+                          quiet list means everyone here is sendable. */}
+                      <AffiliationBadge person={contact} />
+                    </span>
                   </td>
                   <td className="px-3 py-2.5">
                     <div
                       className="inline-flex items-center gap-2"
                       onClick={(e) => e.stopPropagation()}
                     >
+                      <EmailProvenanceBadge person={contact} />
                       <span className="inline-flex items-center gap-1.5 text-xs">
                         <span
                           className={`h-1.5 w-1.5 rounded-full ${enrichment.className}`}

@@ -253,6 +253,15 @@ export interface CampaignContact {
   personal_email: string | null;
   work_email_verified_at: string | null;
   personal_email_verified_at: string | null;
+  /** How the address was found (user_entered, pattern_derived, exa_search, …). */
+  work_email_source: string | null;
+  /** Whether a verifier has proven it (deliverable / risky / undeliverable / unchecked). */
+  work_email_verification: string | null;
+  work_email_confidence: number | null;
+  /** Why we believe they work at this company, and how strongly. */
+  affiliation_source: string | null;
+  affiliation_confidence: number | null;
+  affiliation_evidence: string | null;
   linkedin_url: string | null;
   twitter_url: string | null;
   enrichment_status: "pending" | "in_progress" | "enriched" | "failed";
