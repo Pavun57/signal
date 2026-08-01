@@ -15,6 +15,10 @@ import { toast } from "sonner";
 import { ContactDetail } from "@/components/campaign/contact-detail";
 import { Button } from "@/components/ui/button";
 import { EditableEmail } from "@/components/ui/editable-email";
+import {
+  AffiliationBadge,
+  EmailProvenanceBadge,
+} from "@/components/ui/provenance-badge";
 import { createClient } from "@/lib/supabase/client";
 import type { CampaignContact, EnrichmentData } from "@/lib/types/campaign";
 import { apiFetch } from "@/lib/api-fetch";
@@ -62,6 +66,11 @@ interface DraftForReview {
   person_bio_summary: string | null;
   person_work_email: string | null;
   person_work_email_confidence: number | null;
+  person_work_email_source: string | null;
+  person_work_email_verification: string | null;
+  person_affiliation_source: string | null;
+  person_affiliation_confidence: number | null;
+  person_affiliation_evidence: string | null;
   person_personal_email: string | null;
   person_linkedin_url: string | null;
   person_twitter_url: string | null;
@@ -76,15 +85,6 @@ interface DraftForReview {
   total_steps: number;
   delay_days: number | null;
   delay_hours: number | null;
-}
-
-function emailConfidenceLabel(
-  confidence: number | null,
-): { label: string; tone: "verified" | "ok" | "guessed" } | null {
-  if (confidence == null) return null;
-  if (confidence >= 0.9) return { label: "verified", tone: "verified" };
-  if (confidence >= 0.5) return { label: "likely", tone: "ok" };
-  return { label: "guessed", tone: "guessed" };
 }
 
 function formatDelay(days: number | null, hours: number | null): string {
@@ -161,7 +161,9 @@ function ReviewPageInner() {
           people(
             name, title, bio_summary, organization_id, enrichment_data,
             enrichment_status, last_enriched_at,
-            work_email, work_email_confidence,
+            work_email, work_email_confidence, work_email_source,
+            work_email_verification, affiliation_source,
+            affiliation_confidence, affiliation_evidence,
             personal_email, linkedin_url, twitter_url,
             organizations(name, domain, industry)
           ),
@@ -197,6 +199,11 @@ function ReviewPageInner() {
           last_enriched_at: string | null;
           work_email: string | null;
           work_email_confidence: number | null;
+          work_email_source: string | null;
+          work_email_verification: string | null;
+          affiliation_source: string | null;
+          affiliation_confidence: number | null;
+          affiliation_evidence: string | null;
           personal_email: string | null;
           linkedin_url: string | null;
           twitter_url: string | null;
@@ -236,6 +243,12 @@ function ReviewPageInner() {
           person_bio_summary: person?.bio_summary ?? null,
           person_work_email: person?.work_email ?? null,
           person_work_email_confidence: person?.work_email_confidence ?? null,
+          person_work_email_source: person?.work_email_source ?? null,
+          person_work_email_verification:
+            person?.work_email_verification ?? null,
+          person_affiliation_source: person?.affiliation_source ?? null,
+          person_affiliation_confidence: person?.affiliation_confidence ?? null,
+          person_affiliation_evidence: person?.affiliation_evidence ?? null,
           person_personal_email: person?.personal_email ?? null,
           person_linkedin_url: person?.linkedin_url ?? null,
           person_twitter_url: person?.twitter_url ?? null,
@@ -810,6 +823,12 @@ function ReviewPageInner() {
     personal_email: currentContact.person_personal_email,
     work_email_verified_at: null,
     personal_email_verified_at: null,
+    work_email_source: currentContact.person_work_email_source,
+    work_email_verification: currentContact.person_work_email_verification,
+    work_email_confidence: currentContact.person_work_email_confidence,
+    affiliation_source: currentContact.person_affiliation_source,
+    affiliation_confidence: currentContact.person_affiliation_confidence,
+    affiliation_evidence: currentContact.person_affiliation_evidence,
     linkedin_url: currentContact.person_linkedin_url,
     twitter_url: currentContact.person_twitter_url,
     enrichment_status: isEnriching
@@ -869,26 +888,28 @@ function ReviewPageInner() {
                   value={currentContact.to_email}
                   onSave={handleContactEmailEdit}
                 />
-                {(() => {
-                  const chip = emailConfidenceLabel(
-                    currentContact.person_work_email_confidence,
-                  );
-                  if (!chip) return null;
-                  const toneClass =
-                    chip.tone === "verified"
-                      ? "bg-success/10 text-success"
-                      : chip.tone === "ok"
-                        ? "bg-muted text-muted-foreground"
-                        : "bg-warn/10 text-warn";
-                  return (
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${toneClass}`}
-                      title={`Confidence: ${(currentContact.person_work_email_confidence! * 100).toFixed(0)}%`}
-                    >
-                      {chip.label}
-                    </span>
-                  );
-                })()}
+                <EmailProvenanceBadge
+                  person={{
+                    work_email:
+                      currentContact.person_work_email ??
+                      currentContact.to_email,
+                    work_email_source: currentContact.person_work_email_source,
+                    work_email_verification:
+                      currentContact.person_work_email_verification,
+                    work_email_confidence:
+                      currentContact.person_work_email_confidence,
+                  }}
+                />
+                <AffiliationBadge
+                  person={{
+                    affiliation_source:
+                      currentContact.person_affiliation_source,
+                    affiliation_confidence:
+                      currentContact.person_affiliation_confidence,
+                    affiliation_evidence:
+                      currentContact.person_affiliation_evidence,
+                  }}
+                />
               </div>
             </div>
 

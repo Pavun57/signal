@@ -41,6 +41,12 @@ interface PersonRow {
   personal_email: string | null;
   work_email_verified_at: string | null;
   personal_email_verified_at: string | null;
+  work_email_source: string | null;
+  work_email_verification: string | null;
+  work_email_confidence: number | null;
+  affiliation_source: string | null;
+  affiliation_confidence: number | null;
+  affiliation_evidence: string | null;
   enrichment_status: CampaignContact["enrichment_status"];
   enrichment_data: EnrichmentData;
   source: string | null;
@@ -85,7 +91,7 @@ export default function CompanyPage() {
       supabase
         .from("people")
         .select(
-          "id, name, title, department, seniority, role_summary, bio_summary, linkedin_url, twitter_url, work_email, personal_email, work_email_verified_at, personal_email_verified_at, enrichment_status, enrichment_data, source, created_at, updated_at",
+          "id, name, title, department, seniority, role_summary, bio_summary, linkedin_url, twitter_url, work_email, personal_email, work_email_verified_at, personal_email_verified_at, work_email_source, work_email_verification, work_email_confidence, affiliation_source, affiliation_confidence, affiliation_evidence, enrichment_status, enrichment_data, source, created_at, updated_at",
         )
         .eq("organization_id", companyId)
         .order("name", { ascending: true }),
@@ -207,6 +213,12 @@ export default function CompanyPage() {
       personal_email: p.personal_email,
       work_email_verified_at: p.work_email_verified_at,
       personal_email_verified_at: p.personal_email_verified_at,
+      work_email_source: p.work_email_source,
+      work_email_verification: p.work_email_verification,
+      work_email_confidence: p.work_email_confidence,
+      affiliation_source: p.affiliation_source,
+      affiliation_confidence: p.affiliation_confidence,
+      affiliation_evidence: p.affiliation_evidence,
       linkedin_url: p.linkedin_url,
       twitter_url: p.twitter_url,
       enrichment_status: p.enrichment_status,
