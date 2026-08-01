@@ -9,7 +9,14 @@
 
 **Tech Stack:** Next.js 16 App Router, Supabase RLS (Clerk `requesting_user_id()`), QStash, Vercel AI SDK `generateObject` + zod, Vitest.
 
-**Branch:** `feat/target-account-lists` (created, off current main which includes the Gmail transport).
+**Branch:** `feat/target-accounts` (off main @ 42f8a5a, which includes the Gmail transport AND the contact-data-quality work — lazy email verification, affiliation provenance, consolidated contact discovery).
+
+**Re-verified 2026-07-31 against main @ 42f8a5a.** Four amendments vs the original draft:
+
+1. Migration slot is now `20260801000002` (data-quality migrations took 20260801000000/1).
+2. Task 5 shrank: contact-finding was already consolidated into `src/lib/services/contact-discovery.ts` — `findContactsForOrganization(supabase, {organizationId, campaignId, titles, numResults})` already takes a client param. Only `enrichOrganization` still needs extracting from the route.
+3. Task 8's service composes `enrichOrganization` (extracted) + `findContactsForOrganization` (existing) under the admin client.
+4. E2E expectations: discovered contact emails now arrive as `unchecked` by design (owner decision: discovery is free, Hunter verification happens just-in-time inside `claimAndSendDraft`, bounded by the daily send cap). Enrichment output includes affiliation provenance. The tranche flow is unchanged.
 
 **Conventions the executor must follow (from the 2026-07-30 audits):**
 
@@ -25,7 +32,7 @@
 
 **Files:**
 
-- Create: `supabase/migrations/20260731000000_target_account_lists.sql`
+- Create: `supabase/migrations/20260801000002_target_account_lists.sql`
 
 **Step 1: Write it** (shape copied from `20260729000000_email_voice_profiles.sql` — transaction, lock timeouts, named policies, updated_at trigger):
 
@@ -233,9 +240,10 @@ Commit: `feat(target-lists): create/append API with org resolution`
 - Create: `src/lib/services/company-enrichment.ts`
 - Modify: `src/app/api/enrich-company/route.ts` (becomes a thin wrapper)
 
-Mechanical move, no behavior change. From `enrich-company/route.ts` move:
+Mechanical move, no behavior change — SMALLER than originally scoped: contact-finding already lives in `src/lib/services/contact-discovery.ts` (`findContactsForOrganization`, client-parameterized, added by the data-quality work). From `enrich-company/route.ts` move only:
 
-- `enrichOrganization(...)` (route.ts:312) and `findContactsForCompany(...)` (route.ts:166), `getActiveSignalSlugs` (:34) and the four `SIGNAL_SLUG_*` constants (:28-31).
+- `enrichOrganization(...)` (route.ts:200) plus `getActiveSignalSlugs` (:26) and the `SIGNAL_SLUG_*` constants; fold in the thin `findContactsForCompany` wrapper (:165) — it just loads ICP titles and calls `findContactsForOrganization`.
+- Every moved function takes an explicit `SupabaseClient` (they currently call `createClient()` internally — that breaks under the QStash admin client) and returns plain data, not `Response.json` (the route wraps).
 - New exported entry point:
 
 ```ts
