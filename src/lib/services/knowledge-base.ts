@@ -1,4 +1,5 @@
 import { getDomain } from "tldts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import type { Organization, Person } from "@/lib/types/campaign";
 
@@ -167,17 +168,22 @@ export async function findOrCreateOrganization(data: {
  * Find an existing person by LinkedIn URL (primary) or name+org (fallback),
  * or create a new one. Returns the person record.
  */
-export async function findOrCreatePerson(data: {
-  name: string;
-  linkedin_url?: string | null;
-  work_email?: string | null;
-  personal_email?: string | null;
-  twitter_url?: string | null;
-  title?: string | null;
-  organization_id?: string | null;
-  source?: string | null;
-}): Promise<Person> {
-  const supabase = await createClient();
+export async function findOrCreatePerson(
+  data: {
+    name: string;
+    linkedin_url?: string | null;
+    work_email?: string | null;
+    personal_email?: string | null;
+    twitter_url?: string | null;
+    title?: string | null;
+    organization_id?: string | null;
+    source?: string | null;
+  },
+  client?: SupabaseClient,
+): Promise<Person> {
+  // Callers running outside a Clerk session (e.g. QStash processors) must
+  // pass their own client; defaults to the RLS request client otherwise.
+  const supabase = client ?? (await createClient());
   const normalizedLinkedin = data.linkedin_url
     ? normalizeLinkedInUrl(data.linkedin_url)
     : null;
@@ -317,8 +323,9 @@ export async function linkOrganizationToCampaign(
 export async function linkPersonToCampaign(
   personId: string,
   campaignId: string,
+  client?: SupabaseClient,
 ): Promise<{ id: string }> {
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
 
   const { data, error } = await supabase
     .from("campaign_people")
@@ -343,8 +350,9 @@ export async function mergeEnrichmentData(
   id: string,
   newData: Record<string, unknown>,
   status: "enriched" | "failed" = "enriched",
+  client?: SupabaseClient,
 ): Promise<void> {
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
 
   // Fetch existing enrichment_data
   const { data: existing } = await supabase
@@ -389,8 +397,9 @@ export async function isRecentlyEnriched(
   table: "organizations" | "people",
   id: string,
   maxAgeDays: number = 7,
+  client?: SupabaseClient,
 ): Promise<boolean> {
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
 
   const { data } = await supabase
     .from(table)
