@@ -336,6 +336,32 @@ describe("appendAccountsToList", () => {
     });
   });
 
+  it("skips junk that is not email-shaped but still imports the person", async () => {
+    const { client } = fakeSupabase([
+      { data: [{ id: "ta_1" }] },
+      { data: { row_count: 0 } },
+      {},
+    ]);
+
+    const result = await appendAccountsToList(client, "list-1", [
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: { name: "Ada Lovelace", title: "CTO", email: "n/a" },
+      },
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: { name: "Grace Hopper", email: "see notes @ CRM" },
+      },
+    ]);
+
+    expect(result).toMatchObject({ imported: 1, peopleImported: 2 });
+    expect(findOrCreatePersonMock).toHaveBeenCalledTimes(2);
+    // Neither "n/a" nor "see notes @ CRM" reaches recordVerifiedEmail.
+    expect(verifiedEmails).toHaveLength(0);
+  });
+
   it("still imports people when the account already exists (linkedin-deduped downstream)", async () => {
     // Re-import of the same file: the account upsert returns no rows.
     const { client } = fakeSupabase([{ data: [] }]);

@@ -14,6 +14,8 @@ export interface TargetAccount {
   organization_id: string;
   raw: Record<string, string>;
   enrich_requested_at: string | null;
+  /** Per-row flag stamped with enrich_requested_at; cleared when claimed. */
+  skip_contact_finding: boolean;
   created_at: string;
 }
 

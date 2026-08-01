@@ -132,11 +132,18 @@ export const getTargetList = tool({
       .eq("list_id", input.listId)
       .eq("organizations.enrichment_status", "enriched");
 
+    // Same join + filters as the processor's picker (pickEnrichBatch): only
+    // stamped rows whose org is still pending are real in-flight work —
+    // already-enriched orgs drain instantly and must not count as queued.
     const { count: enrichQueued } = await supabase
       .from("target_accounts")
-      .select("id", { count: "exact", head: true })
+      .select("id, organizations!inner(enrichment_status)", {
+        count: "exact",
+        head: true,
+      })
       .eq("list_id", input.listId)
-      .not("enrich_requested_at", "is", null);
+      .not("enrich_requested_at", "is", null)
+      .eq("organizations.enrichment_status", "pending");
 
     const accounts = (accountRows ?? []).map((row) => {
       const org = row.organization as unknown as {
@@ -205,13 +212,16 @@ export const linkTargetListToCampaign = tool({
     }
 
     // Contacts imported with the list (contact-per-row files) ride along:
-    // link people at these orgs so outreach machinery can see them.
+    // link people at these orgs so outreach machinery can see them. Only
+    // list-imported contacts — the orgs live in a shared pool, and people
+    // discovered by other campaigns/users must not be swept into this one.
     const personIds: string[] = [];
     for (const ids of chunk(orgIds, UPSERT_CHUNK)) {
       const { data, error } = await supabase
         .from("people")
         .select("id")
-        .in("organization_id", ids);
+        .in("organization_id", ids)
+        .eq("source", "target_list");
       if (error)
         throw new Error(`Failed to load imported contacts: ${error.message}`);
       personIds.push(...(data ?? []).map((p: { id: string }) => p.id));
@@ -347,20 +357,23 @@ export const prioritizeTargetAccounts = tool({
         })
       : [];
 
-    // Persist: existing scoring rubric — qualified at >= 6.
-    await Promise.all(
-      results.map((r) =>
-        supabase
-          .from("campaign_organizations")
-          .update({
-            relevance_score: r.score,
-            score_reason: r.reason,
-            status: r.score >= 6 ? "qualified" : "disqualified",
-          })
-          .eq("campaign_id", input.campaignId)
-          .eq("organization_id", r.organizationId),
-      ),
-    );
+    // Persist: existing scoring rubric — qualified at >= 6. Sequential
+    // chunks of 20 so a big list can't fire hundreds of parallel updates.
+    for (const batch of chunk(results, 20)) {
+      await Promise.all(
+        batch.map((r) =>
+          supabase
+            .from("campaign_organizations")
+            .update({
+              relevance_score: r.score,
+              score_reason: r.reason,
+              status: r.score >= 6 ? "qualified" : "disqualified",
+            })
+            .eq("campaign_id", input.campaignId)
+            .eq("organization_id", r.organizationId),
+        ),
+      );
+    }
 
     // Top slice across everything now scored (fresh + previously scored).
     const scoreByOrg = new Map<string, { score: number; reason: string }>();
@@ -451,26 +464,75 @@ export const enrichTargetAccounts = tool({
     const supabase = await createClient();
     const { userId } = await auth();
 
-    // RLS proves the list is mine; then prove the orgs are actually on it.
+    // RLS proves the list is mine…
     await loadListOrFail(supabase, input.listId);
+
+    // …and that the campaign is too (same RLS pattern as
+    // prioritizeTargetAccounts): the campaignId goes into a QStash payload
+    // processed under the admin client, so ownership must be proven here.
+    const { data: campaign, error: campaignError } = await supabase
+      .from("campaigns")
+      .select("id")
+      .eq("id", input.campaignId)
+      .single();
+    if (campaignError || !campaign) {
+      return {
+        error:
+          `Campaign not found (or not yours): ${campaignError?.message ?? input.campaignId}. ` +
+          "Check the campaign ID with getCampaigns.",
+      };
+    }
+
+    // Then prove the orgs are actually on the list, and grab each org's
+    // enrichment status so non-pending ones are reported, not stamped.
     const orgIds = [...new Set(input.organizationIds)];
-    const found = new Set<string>();
+    const statusByOrg = new Map<string, string>();
     for (const ids of chunk(orgIds, UPSERT_CHUNK)) {
       const { data, error } = await supabase
         .from("target_accounts")
-        .select("organization_id")
+        .select(
+          "organization_id, organization:organizations(enrichment_status)",
+        )
         .eq("list_id", input.listId)
         .in("organization_id", ids);
       if (error) throw new Error(`Failed to verify accounts: ${error.message}`);
-      for (const row of data ?? []) found.add(row.organization_id);
+      for (const row of data ?? []) {
+        const org = row.organization as unknown as {
+          enrichment_status: string;
+        } | null;
+        statusByOrg.set(
+          row.organization_id,
+          org?.enrichment_status ?? "pending",
+        );
+      }
     }
-    const missing = orgIds.filter((id) => !found.has(id));
+    const missing = orgIds.filter((id) => !statusByOrg.has(id));
     if (missing.length > 0) {
       return {
         error:
           `${missing.length} organization(s) are not in this list: ` +
           `${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ", …" : ""}. ` +
           "Check the IDs against getTargetList.",
+      };
+    }
+
+    // Only pending orgs get stamped: failed/in_progress/enriched ones would
+    // never be picked by the processor (it filters on pending), so stamping
+    // them just inflates the queue count and misleads the agent.
+    const pendingIds = orgIds.filter((id) => statusByOrg.get(id) === "pending");
+    const skippedNotPending = orgIds
+      .filter((id) => statusByOrg.get(id) !== "pending")
+      .map((organizationId) => ({
+        organizationId,
+        status: statusByOrg.get(organizationId)!,
+      }));
+    if (pendingIds.length === 0) {
+      return {
+        queued: 0,
+        skippedNotPending,
+        note:
+          "None of these accounts are pending enrichment — nothing was queued. " +
+          "Check their status with getTargetList.",
       };
     }
 
@@ -488,11 +550,17 @@ export const enrichTargetAccounts = tool({
       };
     }
 
+    // The skip flag is stamped PER ROW, not carried in the chain payload:
+    // two concurrent calls with opposite flags each mark their own rows, and
+    // the processor honors whatever each row says.
     const stampedAt = new Date().toISOString();
-    for (const ids of chunk(orgIds, UPSERT_CHUNK)) {
+    for (const ids of chunk(pendingIds, UPSERT_CHUNK)) {
       const { error } = await supabase
         .from("target_accounts")
-        .update({ enrich_requested_at: stampedAt })
+        .update({
+          enrich_requested_at: stampedAt,
+          skip_contact_finding: input.skipContactFinding ?? false,
+        })
         .eq("list_id", input.listId)
         .in("organization_id", ids);
       if (error) throw new Error(`Failed to queue accounts: ${error.message}`);
@@ -506,12 +574,12 @@ export const enrichTargetAccounts = tool({
         listId: input.listId,
         campaignId: input.campaignId,
         userId: userId ?? "",
-        skipContactFinding: input.skipContactFinding ?? false,
       },
     });
 
     return {
-      queued: orgIds.length,
+      queued: pendingIds.length,
+      skippedNotPending,
       note: "Enrichment runs in the background (~1 min/company). Ask me for progress.",
     };
   },

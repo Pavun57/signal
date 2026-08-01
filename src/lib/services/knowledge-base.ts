@@ -378,7 +378,11 @@ export async function mergeEnrichmentData(
     }
   }
 
-  await supabase
+  // Throw on failure: a swallowed error here leaves enrichment_status stuck
+  // at 'pending' with the caller believing the work landed — the target-list
+  // chain would then re-pick the org forever. Callers' per-account error
+  // handling owns the failure.
+  const { error: updateError } = await supabase
     .from(table)
     .update({
       enrichment_data: merged,
@@ -387,6 +391,11 @@ export async function mergeEnrichmentData(
         status === "enriched" ? new Date().toISOString() : undefined,
     })
     .eq("id", id);
+  if (updateError) {
+    throw new Error(
+      `Failed to persist enrichment for ${table}/${id}: ${updateError.message}`,
+    );
+  }
 }
 
 /**

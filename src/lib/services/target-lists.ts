@@ -21,6 +21,9 @@ export const MAX_ROWS_PER_REQUEST = 500;
 /** Same chunked parallelism as import-csv (route.ts:164-179). */
 const CHUNK_SIZE = 10;
 
+/** Minimal email shape gate — CSVs carry junk like "n/a" or "see notes". */
+const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
 export interface AppendAccountsResult {
   imported: number;
   skipped: number;
@@ -190,8 +193,9 @@ export async function appendAccountsToList(
             // Imported addresses are free suggestions, not proof: record them
             // with a non-trusted source so verification stays unchecked and
             // the send gate's just-in-time verifier proves the mailbox before
-            // anything leaves (lazy-verification convention).
-            if (p.email) {
+            // anything leaves (lazy-verification convention). Junk that isn't
+            // even email-shaped is skipped silently — the person still imports.
+            if (p.email && EMAIL_SHAPE.test(p.email)) {
               await recordVerifiedEmail(supabase, {
                 personId: person.id,
                 email: p.email,

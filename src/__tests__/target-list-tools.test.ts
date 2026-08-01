@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   createClient: vi.fn(),
   auth: vi.fn(),
   scoreTargetAccounts: vi.fn(),
+  getQStashClient: vi.fn(),
+  publishJSON: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -26,16 +28,24 @@ vi.mock("@clerk/nextjs/server", () => ({
 vi.mock("@/lib/services/target-account-scorer", () => ({
   scoreTargetAccounts: h.scoreTargetAccounts,
 }));
+vi.mock("@/lib/services/qstash", () => ({
+  getQStashClient: h.getQStashClient,
+  getBaseUrl: () => "http://localhost:3000",
+}));
 
 import {
   getTargetLists,
   getTargetList,
   linkTargetListToCampaign,
   prioritizeTargetAccounts,
+  enrichTargetAccounts,
 } from "@/lib/tools/target-list-tools";
 
 const LIST = "11111111-1111-1111-1111-111111111111";
 const CAMPAIGN = "22222222-2222-2222-2222-222222222222";
+const ORG_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const ORG_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+const ORG_C = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 
 interface RecordedCall {
   table: string;
@@ -105,6 +115,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.auth.mockResolvedValue({ userId: "user_1" });
   h.scoreTargetAccounts.mockResolvedValue([]);
+  h.publishJSON.mockResolvedValue({ messageId: "msg_1" });
+  h.getQStashClient.mockReturnValue({ publishJSON: h.publishJSON });
 });
 
 describe("getTargetLists", () => {
@@ -165,6 +177,23 @@ describe("getTargetList", () => {
     ]);
     expect(result.counts).toEqual({ total: 3, enriched: 1, enrichQueued: 2 });
     expect(op(calls, "target_accounts", "limit")?.args).toEqual([25]);
+
+    // enrichQueued mirrors the processor's picker: stamped AND org still
+    // pending — otherwise it overstates in-flight work forever.
+    const queuedCall = calls.find(
+      (c) =>
+        c.table === "target_accounts" &&
+        c.ops.some(
+          (o) =>
+            o.name === "not" &&
+            o.args[0] === "enrich_requested_at" &&
+            o.args[2] === null,
+        ),
+    );
+    expect(queuedCall?.ops).toContainEqual({
+      name: "eq",
+      args: ["organizations.enrichment_status", "pending"],
+    });
   });
 });
 
@@ -206,6 +235,14 @@ describe("linkTargetListToCampaign", () => {
     expect(peopleUpsert.args[1]).toEqual({
       onConflict: "campaign_id,person_id",
       ignoreDuplicates: true,
+    });
+
+    // Orgs live in a shared pool: only list-imported contacts ride along,
+    // never people other campaigns/users discovered at the same companies.
+    const peopleSelect = calls.find((c) => c.table === "people");
+    expect(peopleSelect?.ops).toContainEqual({
+      name: "eq",
+      args: ["source", "target_list"],
     });
   });
 
@@ -399,5 +436,186 @@ describe("prioritizeTargetAccounts", () => {
       organizationId: "org_a",
       score: 9,
     });
+  });
+});
+
+describe("enrichTargetAccounts", () => {
+  const listRow = { data: { id: LIST, name: "Q3 targets" } };
+  const campaignRow = { data: { id: CAMPAIGN } };
+  const verifyRow = (id: string, status = "pending") => ({
+    organization_id: id,
+    organization: { enrichment_status: status },
+  });
+
+  it("errors when the campaign is not found (or not mine) before touching rows", async () => {
+    const { client, calls } = fakeSupabase([
+      listRow,
+      { data: null, error: { message: "0 rows" } }, // campaign lookup
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{ error?: string }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A],
+    });
+
+    expect(result.error).toMatch(/campaign not found/i);
+    expect(h.publishJSON).not.toHaveBeenCalled();
+    expect(op(calls, "target_accounts", "update")).toBeUndefined();
+  });
+
+  it("rejects organizations that are not on the list, without stamping", async () => {
+    const { client, calls } = fakeSupabase([
+      listRow,
+      campaignRow,
+      { data: [verifyRow(ORG_A)] }, // ORG_B missing from the list
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{ error?: string }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A, ORG_B],
+    });
+
+    expect(result.error).toMatch(/not in this list/);
+    expect(result.error).toContain(ORG_B);
+    expect(h.publishJSON).not.toHaveBeenCalled();
+    expect(op(calls, "target_accounts", "update")).toBeUndefined();
+  });
+
+  it("checks QStash config BEFORE stamping any rows", async () => {
+    h.getQStashClient.mockImplementation(() => {
+      throw new Error("QSTASH_TOKEN is not set");
+    });
+    const { client, calls } = fakeSupabase([
+      listRow,
+      campaignRow,
+      { data: [verifyRow(ORG_A)] },
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{ error?: string }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A],
+    });
+
+    expect(result.error).toMatch(/QStash/);
+    // No stamped queue left behind that nothing will ever drain.
+    expect(op(calls, "target_accounts", "update")).toBeUndefined();
+    expect(h.publishJSON).not.toHaveBeenCalled();
+  });
+
+  it("stamps the per-row skip flag and publishes a payload WITHOUT skipContactFinding", async () => {
+    const { client, calls } = fakeSupabase([
+      listRow,
+      campaignRow,
+      { data: [verifyRow(ORG_A), verifyRow(ORG_B)] },
+      {}, // stamp update
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{
+      queued: number;
+      skippedNotPending: Array<Record<string, string>>;
+    }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A, ORG_B],
+      skipContactFinding: true,
+    });
+
+    expect(result.queued).toBe(2);
+    expect(result.skippedNotPending).toEqual([]);
+
+    // The flag lands on the rows…
+    const stamp = calls.find(
+      (c) =>
+        c.table === "target_accounts" && c.ops.some((o) => o.name === "update"),
+    )!;
+    const stampArgs = stamp.ops.find((o) => o.name === "update")!
+      .args[0] as Record<string, unknown>;
+    expect(stampArgs.skip_contact_finding).toBe(true);
+    expect(stampArgs.enrich_requested_at).toEqual(expect.any(String));
+    expect(stamp.ops).toContainEqual({
+      name: "in",
+      args: ["organization_id", [ORG_A, ORG_B]],
+    });
+
+    // …and NOT in the chain payload (exact match asserts absence): a
+    // chain-level flag cross-contaminates concurrent tranches.
+    expect(h.publishJSON).toHaveBeenCalledTimes(1);
+    expect(h.publishJSON).toHaveBeenCalledWith({
+      url: "http://localhost:3000/api/target-lists/process",
+      body: { listId: LIST, campaignId: CAMPAIGN, userId: "user_1" },
+    });
+  });
+
+  it("stamps only pending orgs and reports the rest as skippedNotPending", async () => {
+    const { client, calls } = fakeSupabase([
+      listRow,
+      campaignRow,
+      {
+        data: [
+          verifyRow(ORG_A, "pending"),
+          verifyRow(ORG_B, "enriched"),
+          verifyRow(ORG_C, "failed"),
+        ],
+      },
+      {}, // stamp update (ORG_A only)
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{
+      queued: number;
+      skippedNotPending: Array<{ organizationId: string; status: string }>;
+    }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A, ORG_B, ORG_C],
+    });
+
+    expect(result.queued).toBe(1);
+    expect(result.skippedNotPending).toEqual([
+      { organizationId: ORG_B, status: "enriched" },
+      { organizationId: ORG_C, status: "failed" },
+    ]);
+
+    const stamp = calls.find(
+      (c) =>
+        c.table === "target_accounts" && c.ops.some((o) => o.name === "update"),
+    )!;
+    expect(stamp.ops).toContainEqual({
+      name: "in",
+      args: ["organization_id", [ORG_A]],
+    });
+    expect(h.publishJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues nothing (and skips QStash) when no org is pending", async () => {
+    const { client, calls } = fakeSupabase([
+      listRow,
+      campaignRow,
+      { data: [verifyRow(ORG_A, "enriched")] },
+    ]);
+    h.createClient.mockResolvedValue(client);
+
+    const result = await run<{
+      queued: number;
+      skippedNotPending: Array<{ organizationId: string; status: string }>;
+    }>(enrichTargetAccounts, {
+      listId: LIST,
+      campaignId: CAMPAIGN,
+      organizationIds: [ORG_A],
+    });
+
+    expect(result.queued).toBe(0);
+    expect(result.skippedNotPending).toEqual([
+      { organizationId: ORG_A, status: "enriched" },
+    ]);
+    expect(op(calls, "target_accounts", "update")).toBeUndefined();
+    expect(h.publishJSON).not.toHaveBeenCalled();
   });
 });
