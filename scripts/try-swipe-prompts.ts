@@ -1,0 +1,249 @@
+/**
+ * Exercises the two swipe prompts against a real campaign, before any UI is
+ * built around them.
+ *
+ * The question this answers is narrow and load-bearing: does the model produce
+ * drafts that differ enough to make a swipe mean something? A batch where every
+ * draft opens the same way teaches nothing, and no interface can rescue that.
+ * It then simulates a picky user and checks the batch actually narrows, and
+ * finally prints the skill written from the whole run.
+ *
+ *   pnpm tsx scripts/try-swipe-prompts.ts            # uses your latest campaign
+ *   pnpm tsx scripts/try-swipe-prompts.ts <uuid>     # a specific one
+ */
+import { anthropic } from "@ai-sdk/anthropic";
+import { config } from "dotenv";
+import { generateObject } from "ai";
+import type { z } from "zod";
+
+import { MODELS } from "../src/lib/ai/models";
+import { salvageObject } from "../src/lib/ai/salvage-object";
+import {
+  BatchSchema,
+  SkillSchema,
+  buildBatchPrompt,
+  buildBatchSystem,
+  buildSkillPrompt,
+  buildSkillSystem,
+  normaliseInstructions,
+  type Draft,
+  type JudgedDraft,
+  type SwipeCampaign,
+  type SwipePersona,
+  type SwipeTranscript,
+} from "../src/lib/email-skills/swipe-prompts";
+
+config({ path: ".env.local" });
+
+const AXES = ["opener", "tone", "close", "greeting", "signoff"] as const;
+
+async function generate<T>(
+  schema: z.ZodType<T>,
+  system: string,
+  prompt: string,
+  maxOutputTokens: number,
+): Promise<T> {
+  try {
+    const { object } = await generateObject({
+      model: anthropic(MODELS.EMAIL),
+      schema,
+      system,
+      prompt,
+      providerOptions: { anthropic: { effort: "medium" } },
+      maxRetries: 0,
+      maxOutputTokens,
+    });
+    return object;
+  } catch (err) {
+    // Anthropic intermittently wraps a correct payload in a `value` key.
+    const salvaged = salvageObject(err, schema);
+    if (salvaged) return salvaged;
+    throw err;
+  }
+}
+
+/** The measurement that matters: how much of the axis space did the batch use? */
+function report(drafts: Draft[], label: string) {
+  console.log(`\n${"─".repeat(72)}\n${label} — ${drafts.length} drafts\n`);
+
+  for (const d of drafts) {
+    const axes = AXES.map((a) => `${a}:${d.axes[a]}`).join("  ");
+    const words = d.body.trim().split(/\s+/).length;
+    console.log(`  ▸ ${d.subject}   [${words}w]`);
+    console.log(`    ${axes}`);
+    console.log(
+      d.body
+        .split("\n")
+        .map((l) => `    │ ${l}`)
+        .join("\n"),
+    );
+    console.log("");
+  }
+
+  const spread = AXES.map((a) => {
+    const values = new Set(drafts.map((d) => d.axes[a]));
+    return `${a}=${values.size}`;
+  }).join("  ");
+  console.log(`  VARIATION  ${spread}   (distinct values per axis)`);
+
+  // Pairwise: any two drafts identical on all five axes are wasted slots.
+  let clashes = 0;
+  for (let i = 0; i < drafts.length; i++) {
+    for (let j = i + 1; j < drafts.length; j++) {
+      const same = AXES.every((a) => drafts[i].axes[a] === drafts[j].axes[a]);
+      if (same) clashes += 1;
+    }
+  }
+  const openers = new Set(drafts.map((d) => d.axes.opener)).size;
+  console.log(
+    `  IDENTICAL PAIRS  ${clashes}${clashes ? "  ← wasted slots" : ""}` +
+      `   DISTINCT OPENERS  ${openers}/${drafts.length}` +
+      `${openers < Math.min(4, drafts.length) ? "  ← too narrow" : ""}`,
+  );
+}
+
+async function loadCampaign(id?: string): Promise<SwipeCampaign | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    console.log("No Supabase env — running without campaign context.\n");
+    return null;
+  }
+  const { createClient } = await import("@supabase/supabase-js");
+  const supabase = createClient(url, key);
+  const q = supabase
+    .from("campaigns")
+    .select("name, icp, offering, positioning");
+  const { data } = id
+    ? await q.eq("id", id).maybeSingle()
+    : await q.order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (!data) {
+    console.log("No campaign found — running without context.\n");
+    return null;
+  }
+  return data as SwipeCampaign;
+}
+
+/**
+ * Always supplied, campaign or not. Names are the first thing you notice are
+ * wrong in a draft, so they must not depend on a table lookup succeeding.
+ */
+const PERSONA: SwipePersona = {
+  senderName: "Jay",
+  recipient: "Dana Whitfield, VP Engineering at Fernpath",
+};
+
+async function run() {
+  const campaign = await loadCampaign(process.argv[2]);
+  console.log(`Campaign: ${campaign?.name ?? "(none)"}`);
+  console.log(`Model:    ${MODELS.EMAIL}`);
+
+  const transcript: SwipeTranscript = { judged: [], instructions: [] };
+
+  // ── Batch 1: cold start, maximum spread expected ──────────────────────────
+  const t0 = Date.now();
+  const first = await generate<{ drafts: Draft[] }>(
+    BatchSchema,
+    buildBatchSystem(campaign, PERSONA),
+    buildBatchPrompt(transcript, 6),
+    8_000,
+  );
+  console.log(`\n(batch 1 took ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  report(first.drafts, "BATCH 1 — cold start");
+
+  // ── Simulate a picky user: keeps blunt/signal, passes the rest ────────────
+  const judged: JudgedDraft[] = first.drafts.map((d) => ({
+    subject: d.subject,
+    body: d.body,
+    axes: d.axes,
+    kept: d.axes.opener === "signal" || d.axes.tone === "blunt",
+  }));
+  transcript.judged.push(...judged);
+  transcript.instructions.push(
+    "I like blunt but not too formal",
+    "dont use em dashes",
+  );
+  // The first of those is the exact input that broke the regex engine: it
+  // deleted the blunt drafts because a negation appeared in the sentence.
+  const notes = judged.find((d) => !d.kept);
+  if (notes) {
+    notes.notes = [
+      {
+        phrase: notes.body.split(/\s+/).slice(0, 4).join(" "),
+        note: "I'd never open like this",
+      },
+    ];
+  }
+
+  console.log(
+    `\nSimulated user kept ${judged.filter((d) => d.kept).length}/${judged.length}, ` +
+      `and typed: ${transcript.instructions.map((i) => `“${i}”`).join(", ")}`,
+  );
+
+  // ── Batch 2: must narrow AND obey the instructions ────────────────────────
+  const t1 = Date.now();
+  const second = await generate<{ drafts: Draft[] }>(
+    BatchSchema,
+    buildBatchSystem(campaign, PERSONA),
+    buildBatchPrompt(transcript, 4),
+    6_000,
+  );
+  console.log(`\n(batch 2 took ${((Date.now() - t1) / 1000).toFixed(1)}s)`);
+  report(second.drafts, "BATCH 2 — after keeps + instructions");
+
+  const emDash = second.drafts.filter((d) => d.body.includes("—")).length;
+  const formal = second.drafts.filter((d) => d.axes.tone === "formal").length;
+  const blunt = second.drafts.filter((d) => d.axes.tone === "blunt").length;
+  console.log("\n  INSTRUCTION COMPLIANCE");
+  console.log(
+    `    em dashes present   ${emDash}/${second.drafts.length}  ${emDash ? "← VIOLATION" : "✓"}`,
+  );
+  console.log(
+    `    formal drafts       ${formal}/${second.drafts.length}  ${formal ? "← VIOLATION" : "✓"}`,
+  );
+  console.log(
+    `    blunt kept alive    ${blunt}/${second.drafts.length}  ${blunt ? "✓" : "← over-narrowed"}`,
+  );
+
+  // ── The skill ─────────────────────────────────────────────────────────────
+  transcript.judged.push(
+    ...second.drafts.map((d) => ({
+      subject: d.subject,
+      body: d.body,
+      axes: d.axes,
+      kept: d.axes.tone === "blunt",
+    })),
+  );
+
+  const t2 = Date.now();
+  const skill = await generate<{ instructions: string; summary: string }>(
+    SkillSchema,
+    buildSkillSystem(campaign, PERSONA),
+    buildSkillPrompt(transcript),
+    4_000,
+  );
+  console.log(`\n(skill took ${((Date.now() - t2) / 1000).toFixed(1)}s)`);
+  const cleaned = normaliseInstructions(skill.instructions);
+  const rawLines = skill.instructions
+    .split("\n")
+    .filter((l) => l.trim()).length;
+  const keptLines = cleaned.split("\n").length;
+
+  console.log(`\n${"─".repeat(72)}\nTHE SKILL\n`);
+  console.log(`  summary: ${skill.summary}\n`);
+  console.log(
+    cleaned
+      .split("\n")
+      .map((l) => `  ${l}`)
+      .join("\n"),
+  );
+  if (rawLines !== keptLines) {
+    console.log(`\n  (deduped ${rawLines - keptLines} repeated rule(s))`);
+  }
+  console.log(`\n${"─".repeat(72)}`);
+}
+
+run().catch((err) => {
+  console.error("\nFAILED:", err instanceof Error ? err.message : err);
+  process.exit(1);
+});

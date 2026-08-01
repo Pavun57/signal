@@ -1,0 +1,296 @@
+import { z } from "zod";
+
+import { UNTRUSTED_NOTICE, wrapUntrusted } from "@/lib/prompt-safety";
+
+/**
+ * The two prompts behind voice-by-swiping.
+ *
+ * The user judges drafts instead of answering questions, and types instructions
+ * in plain English as they go. Both signals are natural language or become it,
+ * so the model does the interpreting — the earlier attempt parsed instructions
+ * with regexes and deleted the very thing the user had asked to keep ("I like
+ * blunt but not too formal" removed the blunt drafts, because a negation
+ * appeared somewhere in the sentence).
+ *
+ * Nothing here mutates draft text. Instructions are carried in the transcript
+ * and honoured by the next generation, which is the only way an instruction
+ * like "warmer" can be satisfied at all.
+ */
+
+// ── Shared shapes ───────────────────────────────────────────────────────────
+
+/**
+ * The axes a batch must vary across. The model declares which value each draft
+ * took, which is what holds it to actually varying: a batch of six drafts that
+ * all open on the signal is worthless, because then every swipe carries the
+ * same meaning and the run learns nothing.
+ */
+export const DraftAxesSchema = z.object({
+  opener: z.enum([
+    "signal",
+    "problem",
+    "data",
+    "story",
+    "question",
+    "social",
+    "compliment",
+    "pitch",
+  ]),
+  tone: z.enum(["blunt", "warm", "neutral", "formal"]),
+  close: z.enum(["question", "cta", "statement"]),
+  greeting: z.enum(["firstname", "hi", "dear"]),
+  signoff: z.enum(["name", "none", "best", "regards"]),
+});
+
+export const DraftSchema = z.object({
+  subject: z.string().max(200),
+  body: z
+    .string()
+    .max(2_000)
+    .describe("Plain text. Real line breaks, no HTML."),
+  axes: DraftAxesSchema,
+});
+
+export const BatchSchema = z.object({
+  drafts: z.array(DraftSchema).min(2).max(8),
+});
+
+export type Draft = z.infer<typeof DraftSchema>;
+export type DraftAxes = z.infer<typeof DraftAxesSchema>;
+
+export const SkillSchema = z.object({
+  instructions: z
+    .string()
+    .max(8_000)
+    .describe("Imperative rules for the drafting model, one per line."),
+  summary: z.string().max(500).describe("One sentence, shown in the UI."),
+});
+
+// ── Transcript ──────────────────────────────────────────────────────────────
+
+export interface JudgedDraft {
+  subject: string;
+  body: string;
+  axes: DraftAxes;
+  kept: boolean;
+  /** Phrases the user highlighted on this draft, with what they said. */
+  notes?: { phrase: string; note: string }[];
+}
+
+export interface SwipeTranscript {
+  judged: JudgedDraft[];
+  /** Free-text instructions typed into the panel, in order. */
+  instructions: string[];
+}
+
+/** Bounded so a long run can't push an unbounded prompt at the operator's key. */
+export const MAX_JUDGED_IN_PROMPT = 40;
+export const MAX_INSTRUCTIONS_IN_PROMPT = 40;
+
+function renderTranscript(t: SwipeTranscript): string {
+  const judged = t.judged.slice(-MAX_JUDGED_IN_PROMPT);
+  const instructions = t.instructions.slice(-MAX_INSTRUCTIONS_IN_PROMPT);
+
+  if (!judged.length && !instructions.length) {
+    return "Nothing judged yet. This is the opening batch.";
+  }
+
+  const lines: string[] = [];
+
+  if (judged.length) {
+    lines.push("DRAFTS ALREADY JUDGED:");
+    for (const d of judged) {
+      lines.push(
+        `- [${d.kept ? "KEPT" : "PASSED"}] ${JSON.stringify(d.axes)} subject: ${d.subject}`,
+      );
+      lines.push(`  ${d.body.replace(/\n+/g, " ⏎ ")}`);
+      for (const n of d.notes ?? []) {
+        lines.push(`  ↳ highlighted “${n.phrase}” and said: ${n.note}`);
+      }
+    }
+  }
+
+  if (instructions.length) {
+    lines.push("", "WHAT THEY HAVE TOLD YOU DIRECTLY:");
+    for (const i of instructions) lines.push(`- ${i}`);
+  }
+
+  return lines.join("\n");
+}
+
+export interface SwipeCampaign {
+  name: string;
+  icp: unknown;
+  offering: unknown;
+  positioning: unknown;
+}
+
+/**
+ * Who the email is from and to. Deliberately separate from the campaign: the
+ * signed-in user and the contact they picked are always known, while campaign
+ * context often isn't. Folding these into SwipeCampaign meant a missing
+ * campaign row silently dropped the names too, and the model invented its own.
+ */
+export interface SwipePersona {
+  senderName?: string | null;
+  /** e.g. "Dana Whitfield, VP Engineering at Fernpath" */
+  recipient?: string | null;
+}
+
+function renderContext(
+  campaign: SwipeCampaign | null,
+  persona: SwipePersona,
+): string {
+  const who = [
+    persona.senderName
+      ? `Sender (sign off as this person): ${persona.senderName}`
+      : "",
+    persona.recipient
+      ? `Recipient (address this person): ${persona.recipient}`
+      : "",
+  ].filter(Boolean);
+
+  const whoBlock = who.length
+    ? `WHO THESE ARE FROM AND TO — use these names in every draft, never invent others:\n${wrapUntrusted(who.join("\n"))}`
+    : "No sender or recipient is given. Use neutral placeholders sparingly and never invent a named person.";
+
+  const campaignBlock = campaign
+    ? `THE CAMPAIGN THESE ARE FOR:\n${wrapUntrusted(
+        [
+          `Name: ${campaign.name}`,
+          `ICP: ${JSON.stringify(campaign.icp ?? {})}`,
+          `Offering: ${JSON.stringify(campaign.offering ?? {})}`,
+          `Positioning: ${JSON.stringify(campaign.positioning ?? {})}`,
+        ].join("\n"),
+      )}`
+    : "No campaign context is available. Write plausible but generic B2B cold emails, and do not invent specific claims about the recipient's company.";
+
+  return `${whoBlock}\n\n${campaignBlock}`;
+}
+
+// ── Prompt 1: generate a batch ──────────────────────────────────────────────
+
+const BATCH_SYSTEM = `You write cold emails that a founder or salesperson will judge one at a time, keeping the ones that sound like something they would have written themselves.
+
+You are not trying to write the best possible email. You are trying to find out how THIS person writes, and the only way to do that is to give them meaningfully different things to react to.
+
+## The variation rule — this is the whole job
+
+Every draft in a batch must differ from the others on at least two of these axes:
+
+- **opener** — signal (what they just shipped/announced) · problem · data · story · question · social proof · compliment · pitch
+- **tone** — blunt · warm · neutral · formal
+- **close** — bare question · explicit ask for a call · statement
+- **greeting** — first name alone · "Hi <name>" · "Dear <name>"
+- **signoff** — first name alone · no sign-off · "Best," · "Kind regards"
+
+A batch where every draft opens on the signal in slightly different words is a failed batch. The user's keep/pass then carries no information, because there is nothing for it to distinguish. Spread the batch across the space.
+
+Declare the axes you used for each draft honestly. Do not label a draft "blunt" and then write it warm — those labels are read back to the user as the reason a rule was written, and a wrong label produces a wrong rule.
+
+## Honouring what they have already told you
+
+Anything under "WHAT THEY HAVE TOLD YOU DIRECTLY" is binding on every draft in this batch. If they said no em dashes, use none. If they said never open with a compliment, do not produce a compliment opener — drop that axis value from your spread and vary on something else instead.
+
+Their instructions outrank the variation rule when the two conflict. Narrowing the space is exactly what should happen as they tell you more: early batches are wide, later ones converge.
+
+Read the KEPT and PASSED drafts the same way. If they have kept three signal-led openers and passed two compliments, stop writing compliments and start varying on the axes still in play. Keep some variation alive though — a batch of near-identical drafts stops teaching you anything, even when they are all good.
+
+A highlighted phrase with a note is the strongest signal available: they pointed at exact words. Treat it as a rule about those words and anything like them.
+
+## Writing the emails themselves
+
+- 30-90 words. These are cold emails; the user is judging voice, not admiring length.
+- Reference the campaign's real offering and audience. Never invent facts about the recipient's company beyond what the campaign context supports.
+- Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name] — write it as it would send.
+- No emojis.
+
+Return only the drafts.`;
+
+export function buildBatchSystem(
+  campaign: SwipeCampaign | null,
+  persona: SwipePersona = {},
+): string {
+  return `${BATCH_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderContext(campaign, persona)}`;
+}
+
+export function buildBatchPrompt(
+  transcript: SwipeTranscript,
+  count: number,
+): string {
+  return `${wrapUntrusted(renderTranscript(transcript))}
+
+Write ${count} drafts for the next batch. Vary them per the rules above, and honour everything the user has told you.`;
+}
+
+// ── Prompt 2: write the skill ───────────────────────────────────────────────
+
+const SKILL_SYSTEM = `You are writing the rule-set that a second model will follow every time it drafts cold email for this user.
+
+What you produce is not advice for them to read. It is instructions another model will act on, so everything has to be something that model can actually do.
+
+## Your evidence
+
+You have three kinds, and they are not equally reliable:
+
+1. **What they typed** — the strongest. They said it in their own words, unprompted. Quote their phrasing wherever you can; a rule carrying their words survives paraphrase better than one describing them. A phrase they highlighted with a comment is stronger still, because they pointed at the exact words.
+2. **What they kept** — strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
+3. **What they passed** — the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
+
+Where these conflict, what they typed wins. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
+
+## Writing the rules
+
+- Terse imperative lines a drafting model can follow. "Open on the signal, no greeting line" — not "she likes getting to the point".
+- Only what is specific to THIS user. A separate base prompt already covers body length, subject lines, one call to action, and avoiding AI tells. Repeating generic best practice wastes the drafting model's attention and buries what is actually about them.
+- Do not invent. If the run never established how they sign off, say nothing about sign-offs. An invented rule shows up in every email they send.
+- Do not pad. Six sharp rules beat fifteen soft ones. If two rules say the same thing, merge them.
+- If the evidence is genuinely thin — very few keeps, nothing typed — write fewer rules and say so in the summary rather than manufacturing confidence.
+
+\`summary\` is one human-readable sentence for the UI, e.g. "Blunt and signal-first, no pleasantries, always names a number."`;
+
+export function buildSkillSystem(
+  campaign: SwipeCampaign | null,
+  persona: SwipePersona = {},
+): string {
+  return `${SKILL_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderContext(campaign, persona)}`;
+}
+
+/**
+ * Drops blank and repeated rules.
+ *
+ * The prompt already says not to repeat itself and mostly obeys, but a run
+ * produced "Never use em dashes. Use a period or a comma instead." twice
+ * verbatim. These rules are read by a drafting model on every future email and
+ * shown to the user as their voice, so a duplicate is both wasted attention and
+ * visibly sloppy. Cheaper to guarantee here than to keep asking the prompt.
+ *
+ * Comparison ignores case, surrounding whitespace and trailing punctuation, so
+ * near-identical restatements collapse too. Order is preserved — the model puts
+ * the rules it weighted most first.
+ */
+export function normaliseInstructions(raw: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim().replace(/^[-•*]\s*/, "");
+    if (!trimmed) continue;
+    const key = trimmed
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/[.;,]+$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out.join("\n");
+}
+
+export function buildSkillPrompt(transcript: SwipeTranscript): string {
+  const kept = transcript.judged.filter((d) => d.kept).length;
+  return `${wrapUntrusted(renderTranscript(transcript))}
+
+They judged ${transcript.judged.length} drafts, keeping ${kept}, and typed ${transcript.instructions.length} instruction(s).
+
+Write their voice rules.`;
+}
