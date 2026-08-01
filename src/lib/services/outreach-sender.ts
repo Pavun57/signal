@@ -15,6 +15,7 @@ import {
   SEND_GATE_COLUMNS,
   type SendCandidate,
 } from "@/lib/services/affiliation";
+import { verifyAddressForSend } from "@/lib/services/send-verification";
 
 export interface EnrollmentForSend {
   id: string;
@@ -87,7 +88,58 @@ export async function claimAndSendDraft(
       };
     }
 
-    const check = canSendTo(person as unknown as SendCandidate);
+    // Just-in-time verification — the only place provider credits are spent.
+    // Discovery stored this address as a free, unchecked suggestion; now that
+    // an email is actually about to leave, prove it. The verdict is cached on
+    // the person, so this bills at most once per contact ever, and because it
+    // runs inside the daily-send-capped path, verification spend can never
+    // outrun sending.
+    let gated = person as unknown as SendCandidate & {
+      organization_id?: string | null;
+    };
+    const needsJit =
+      !!gated.work_email &&
+      gated.work_email_source !== "user_entered" &&
+      gated.work_email_source !== "send_confirmed" &&
+      gated.work_email_verification !== "deliverable" &&
+      gated.work_email_verification !== "undeliverable" &&
+      gated.work_email_verification !== "risky";
+
+    if (needsJit && gated.work_email) {
+      const jit = await verifyAddressForSend(supabase, {
+        personId: draft.person_id,
+        email: gated.work_email,
+        organizationId: gated.organization_id ?? null,
+      });
+
+      if (jit.outcome !== "verified") {
+        // blocked and unavailable both refuse; only `blocked` wrote a verdict.
+        // Unavailable is retryable — the next attempt re-checks for free.
+        return {
+          ok: false,
+          reason: `Not sending to ${draft.to_email}: ${jit.reason}.`,
+        };
+      }
+
+      // The service just wrote verification (and possibly an affiliation
+      // upgrade — a deliverable mailbox at the employer's domain is proof of
+      // employment). Re-read rather than patching fields by hand so the gate
+      // judges exactly what was persisted.
+      const { data: refreshed, error: refreshError } = await supabase
+        .from("people")
+        .select(SEND_GATE_COLUMNS)
+        .eq("id", draft.person_id)
+        .maybeSingle();
+      if (refreshError || !refreshed) {
+        return {
+          ok: false,
+          reason: `Not sending to ${draft.to_email}: could not re-read the contact after verification (${refreshError?.message ?? "no such person"}).`,
+        };
+      }
+      gated = refreshed as unknown as typeof gated;
+    }
+
+    const check = canSendTo(gated);
     if (!check.ok) {
       return {
         ok: false,
@@ -102,7 +154,7 @@ export async function claimAndSendDraft(
     // the remaining steps still carry the old one: without this comparison the
     // gate would approve on the new address's verdict and deliver to the very
     // address that just hard-bounced.
-    const personEmail = (person as unknown as SendCandidate).work_email;
+    const personEmail = gated.work_email;
     if (
       personEmail &&
       draft.to_email.toLowerCase() !== personEmail.toLowerCase()

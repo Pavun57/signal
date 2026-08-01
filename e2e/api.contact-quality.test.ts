@@ -109,7 +109,9 @@ test("a real mailbox verifies and becomes sendable", async () => {
   });
   await linkPersonToCampaign(personId, await createTestCampaign());
 
-  const res = await post("/api/find-email", { personId });
+  // revalidate forces paid verification now — a plain findEmail stores a free
+  // suggestion and leaves proof to the send gate.
+  const res = await post("/api/find-email", { personId, revalidate: true });
   expect(res.status).toBe(200);
   const body = await res.json();
 
@@ -151,7 +153,7 @@ test("an address proven dead is not written", async () => {
   });
   await linkPersonToCampaign(personId, await createTestCampaign());
 
-  const res = await post("/api/find-email", { personId });
+  const res = await post("/api/find-email", { personId, revalidate: true });
   expect(res.status).toBe(200);
   const body = await res.json();
 

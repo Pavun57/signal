@@ -89,24 +89,34 @@ function pushCandidate(
 }
 
 /**
- * Finds a work email for a person and, where a provider is configured, proves
- * it exists before writing it.
+ * Finds a work email for a person — for free, by default.
  *
- * The shape here matters. Every step used to write-and-return the instant it
- * produced a string, which meant the *first* strategy to guess something won,
- * regardless of whether the address was real — and the last strategy is a blind
- * {first}.{last}@domain. Now the strategies only nominate candidates; a
- * verifier decides. That inverts the ranking: proof of delivery outranks
- * provenance, so a pattern guess that verifies beats a scraped address that
- * doesn't.
+ * Discovery and proof are deliberately separated. The free strategies (org
+ * pattern, Exa scrape, inference, blind guess) produce a SUGGESTED address,
+ * stored as `unchecked` and badged that way in the UI. Proof costs provider
+ * credits, so it happens exactly once per address, at the moment it matters:
+ * just before a send (services/send-verification, invoked by the send gate) or
+ * on an explicit `revalidate`. The paid finder participates only in
+ * verification runs, as the best next candidate after a guess is proven dead.
+ * Net effect: enrichment can suggest addresses for an entire campaign without
+ * spending a credit, and the daily send cap naturally bounds what verification
+ * can ever cost.
  *
- * With no provider configured this degrades to the old behaviour — best
- * candidate by discovery order, marked `unchecked` — so a self-hosted instance
- * without a key keeps working exactly as before.
+ * When verification does run (verify/revalidate), strategies only nominate
+ * candidates and the verifier decides — proof of delivery outranks provenance,
+ * so a pattern guess that verifies beats a scraped address that doesn't.
  */
 export async function findEmailForPerson(
   personId: string,
-  opts: { revalidate?: boolean } = {},
+  opts: {
+    revalidate?: boolean;
+    /**
+     * Spend provider credits proving candidates. Off by default — discovery
+     * stores a free suggestion and proof happens at send time, so the daily
+     * send cap is what bounds verification spend. `revalidate` implies it.
+     */
+    verify?: boolean;
+  } = {},
 ): Promise<{
   email: string | null;
   source?: string;
@@ -177,6 +187,10 @@ export async function findEmailForPerson(
   const { first, last } = splitName(person.name);
   const provider = getEmailProvider();
   const candidates: EmailCandidate[] = [];
+  // Discovery is free by default; credits are spent only when explicitly asked
+  // (revalidate / the send gate's JIT path), so the daily send cap is the
+  // effective verification budget.
+  const wantVerify = opts.verify ?? opts.revalidate ?? false;
 
   // The domain has to be able to receive mail at all before any address at it
   // is worth proposing — one DNS lookup gates every domain-derived candidate.
@@ -222,9 +236,20 @@ export async function findEmailForPerson(
     }
   }
 
-  // ── 2) Paid finder. Placed above Exa because it returns a targeted answer
-  //       rather than whatever address happened to sit near the name on a page.
-  if (provider?.canFind && domainAcceptsMail && domain && first && last) {
+  // ── 2) Paid finder — verification runs only. Free discovery never bills:
+  //       the blind guess below guarantees a suggestion exists, and the send
+  //       gate proves it later. But when we ARE verifying (an explicit
+  //       revalidate after a guess was proven dead), the finder is the best
+  //       next candidate — a targeted answer, tried before burning a
+  //       verification credit on the blind guess.
+  if (
+    wantVerify &&
+    provider?.canFind &&
+    domainAcceptsMail &&
+    domain &&
+    first &&
+    last
+  ) {
     const hit = await provider.findEmail({
       firstName: first,
       lastName: last,
@@ -278,7 +303,8 @@ export async function findEmailForPerson(
   }
 
   // ── 5) Blind {first}.{last}. Last because it is a guess with no evidence
-  //       behind it — but a guess a verifier can now confirm or kill.
+  //       behind it — and under lazy verification, the suggestion of last
+  //       resort that the send gate will prove or kill.
   if (domainAcceptsMail && domain && first && last) {
     pushCandidate(
       candidates,
@@ -300,9 +326,12 @@ export async function findEmailForPerson(
     };
   }
 
-  // ── Verification. Without a provider we cannot check anything, so take the
-  //    best candidate as-is and mark it unchecked.
-  if (!provider?.canVerify) {
+  // ── Verification is OPT-IN. Discovery's job is to produce a good suggestion
+  //    for free; proof costs money, so it happens exactly once, at the moment
+  //    it matters — just before a send (see services/send-verification) or on
+  //    an explicit revalidate. This also means the daily send cap naturally
+  //    throttles verification spend: credits can never outrun sending.
+  if (!provider?.canVerify || !wantVerify) {
     const best = candidates[0];
     await writeEmailResult(supabase, personId, best, {
       confidence: best.discoveryConfidence,
@@ -650,7 +679,7 @@ async function inferPatternFromOrg(
 
 export const findEmail = tool({
   description:
-    "Find and verify a contact's email address. Returns the stored address if there is one. Pass revalidate: true to re-check an address that is stored but unverified — that is the way to unblock a contact the send gate is refusing.",
+    "Find a contact's email address for free (pattern, web search, team pages) and store it as a suggestion — verification happens automatically when a send is attempted, so this never spends provider credits on its own. Returns the stored address if there is one. Pass revalidate: true only to force a paid re-verification now, e.g. after a send was refused because the address was proven dead.",
   inputSchema: z.object({
     personId: z.string().uuid().describe("Person ID to find email for."),
     revalidate: z

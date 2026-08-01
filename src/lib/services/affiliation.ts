@@ -247,9 +247,51 @@ export function canSendTo(person: SendCandidate): SendCheck {
   return { ok: true };
 }
 
+/**
+ * Draft-stage predicate: is this contact worth spending a Claude call drafting
+ * for?
+ *
+ * Deliberately laxer than canSendTo on exactly one axis. An `unchecked` email
+ * is a fine reason to draft — verification is lazy, and the send gate proves
+ * the address just-in-time when the mail actually leaves. What still blocks a
+ * draft: no address at all, an address already proven dead or risky, and an
+ * unconfirmed employer (a personalised pitch about the wrong company is wasted
+ * whichever address it goes to).
+ */
+export function canDraftFor(person: SendCandidate): SendCheck {
+  if (!person.work_email) {
+    return {
+      ok: false,
+      reason: person.personal_email
+        ? "only a personal address is on file — outreach requires a work address"
+        : "no email address on file",
+    };
+  }
+
+  const humanEntered = person.work_email_source === "user_entered";
+  if (person.work_email_verification === "undeliverable") {
+    return { ok: false, reason: "this address hard-bounced" };
+  }
+  if (!humanEntered && person.work_email_verification === "risky") {
+    return { ok: false, reason: "address is on a catch-all domain" };
+  }
+
+  const confidence = person.affiliation_confidence ?? 0;
+  if (confidence < AFFILIATION_SEND_THRESHOLD) {
+    return {
+      ok: false,
+      reason: person.affiliation_source
+        ? `not confirmed to work at this company (evidence: ${person.affiliation_source})`
+        : "no evidence on file that this person works at this company",
+    };
+  }
+
+  return { ok: true };
+}
+
 /** Columns canSendTo needs — keep SELECTs and the predicate in step. */
 export const SEND_GATE_COLUMNS =
-  "work_email, personal_email, work_email_source, work_email_verification, affiliation_confidence, affiliation_source";
+  "work_email, personal_email, work_email_source, work_email_verification, affiliation_confidence, affiliation_source, organization_id";
 
 // ─── LinkedIn employer check ──────────────────────────────────────────────
 

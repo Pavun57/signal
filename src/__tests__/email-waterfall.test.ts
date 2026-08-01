@@ -193,6 +193,19 @@ beforeEach(() => {
 
 // ─── Verification decides what gets written ───────────────────────────────
 
+describe("findEmailForPerson discovery is free by default", () => {
+  it("stores a suggestion without spending a single provider credit", async () => {
+    // The lazy-verification contract: discovery suggests, the send gate
+    // proves. A default call must never bill.
+    const result = await findEmailForPerson("p1");
+
+    expect(result.email).toBe("jane.doe@acme.com");
+    expect(result.verification).toBe("unchecked");
+    expect(provider.verifyEmail).not.toHaveBeenCalled();
+    expect(provider.findEmail).not.toHaveBeenCalled();
+  });
+});
+
 describe("findEmailForPerson verification", () => {
   it("promotes a blind pattern guess to verified confidence when it deliverers", async () => {
     provider.verifyEmail.mockResolvedValue({
@@ -200,7 +213,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: false,
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBe("jane.doe@acme.com");
     expect(result.verification).toBe("deliverable");
@@ -215,7 +228,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: false,
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBeNull();
     expect(row().work_email).toBeNull();
@@ -234,7 +247,7 @@ describe("findEmailForPerson verification", () => {
         : { status: "deliverable", catchAll: false },
     );
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBe("jane.doe@acme.com");
     expect(result.confidence).toBe(0.95);
@@ -247,7 +260,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: true,
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.verification).toBe("risky");
     expect(result.confidence).toBeLessThanOrEqual(0.5);
@@ -263,7 +276,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: false,
     });
 
-    await findEmailForPerson("p1");
+    await findEmailForPerson("p1", { verify: true });
 
     expect(recordAffiliationMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -283,7 +296,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: true,
     });
 
-    await findEmailForPerson("p1");
+    await findEmailForPerson("p1", { verify: true });
 
     expect(recordAffiliationMock).not.toHaveBeenCalled();
   });
@@ -298,7 +311,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: false,
     }));
 
-    await findEmailForPerson("p1");
+    await findEmailForPerson("p1", { verify: true });
 
     expect(recordAffiliationMock).not.toHaveBeenCalled();
   });
@@ -309,7 +322,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: true,
     });
 
-    await findEmailForPerson("p1");
+    await findEmailForPerson("p1", { verify: true });
 
     expect(state.organizations[0].is_catch_all).toBe(true);
     expect(state.organizations[0].catch_all_checked_at).toBeTruthy();
@@ -323,7 +336,7 @@ describe("findEmailForPerson verification", () => {
       raw: "http_429",
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBe("jane.doe@acme.com");
     expect(result.verification).toBe("unknown");
@@ -343,7 +356,7 @@ describe("findEmailForPerson verification", () => {
       catchAll: false,
     });
 
-    await findEmailForPerson("p1");
+    await findEmailForPerson("p1", { verify: true });
 
     // Five candidates are available here (provider + three from Exa + the blind
     // guess), so an exact match on the cap proves it actually bit.
@@ -404,7 +417,7 @@ describe("candidate selection", () => {
       catchAll: false,
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBe("jdoe@acme.com");
     expect(result.source).toBe("provider_found");
@@ -417,7 +430,7 @@ describe("candidate selection", () => {
       catchAll: false,
     });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).not.toBe("info@acme.com");
     expect(provider.verifyEmail).not.toHaveBeenCalledWith("info@acme.com");
@@ -426,7 +439,7 @@ describe("candidate selection", () => {
   it("returns the existing address untouched when one is already stored", async () => {
     seed({ work_email: "known@acme.com", work_email_source: "user_entered" });
 
-    const result = await findEmailForPerson("p1");
+    const result = await findEmailForPerson("p1", { verify: true });
 
     expect(result.email).toBe("known@acme.com");
     expect(provider.verifyEmail).not.toHaveBeenCalled();

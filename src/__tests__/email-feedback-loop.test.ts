@@ -201,10 +201,11 @@ describe("send_confirmed", () => {
     expect(recordVerifiedMock).not.toHaveBeenCalled();
   });
 
-  it("refuses to send to a contact the data-quality gate blocks", async () => {
-    // Nothing tested this. Every other send test supplies a gate-passing
-    // fixture, so the suite proved the gate lets good contacts through and
-    // never that it stops bad ones — the entire reason the gate exists.
+  it("refuses an unchecked address when no verifier is available", async () => {
+    // Under lazy verification an unchecked suggestion reaching the sender
+    // triggers just-in-time verification. With no provider configured (as in
+    // this test env) that resolves "unavailable" and the send is refused —
+    // fail closed, nothing written, retryable once a provider exists.
     const blocked = {
       data: {
         work_email: "guess@acme.com",
@@ -220,7 +221,27 @@ describe("send_confirmed", () => {
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/never been verified/i);
+    if (!result.ok) expect(result.reason).toMatch(/no email provider/i);
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a proven-dead address without calling any verifier", async () => {
+    const blocked = {
+      data: {
+        work_email: "dead@acme.com",
+        work_email_source: "send_confirmed",
+        work_email_verification: "undeliverable",
+        affiliation_confidence: 0.9,
+        affiliation_source: "team_page",
+      },
+    };
+    const responses = sendResponses("per_1");
+    responses[3] = blocked;
+
+    const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/hard-bounced/i);
     expect(sendGmailMock).not.toHaveBeenCalled();
   });
 

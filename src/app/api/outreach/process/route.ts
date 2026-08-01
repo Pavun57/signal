@@ -4,7 +4,7 @@ import { verifyQStashSignature } from "@/lib/services/qstash";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { sendApprovedDraft } from "@/lib/services/outreach-sender";
 import {
-  canSendTo,
+  canDraftFor,
   SEND_GATE_COLUMNS,
   type SendCandidate,
 } from "@/lib/services/affiliation";
@@ -226,7 +226,9 @@ async function pickAndDraft(
     // outreach-sender re-checks this — that is the authoritative gate — but
     // filtering here means a signal fire doesn't quietly bill for a draft that
     // can never leave.
-    const gate = canSendTo(p as unknown as SendCandidate);
+    // Draft-stage check, deliberately NOT canSendTo: an unchecked address is
+    // draftable — the send gate verifies it just-in-time when the mail leaves.
+    const gate = canDraftFor(p as unknown as SendCandidate);
     if (!gate.ok) {
       blockedByGate.push(`${p.name ?? p.id}: ${gate.reason}`);
       continue;
