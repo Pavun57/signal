@@ -22,6 +22,10 @@ import { filterContactsByCompany } from "@/lib/services/contact-filter";
 import { recordAffiliation } from "@/lib/services/affiliation";
 import { runDataQualityAudit } from "@/lib/services/data-quality";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
+import { extractClaims } from "@/lib/services/claim-extractor";
+import { reconcileClaims } from "@/lib/services/claim-reconciler";
+import { tryScrapeHiringData } from "@/lib/services/hiring-scraper";
+import type { CompanyClaim } from "@/lib/types/claims";
 import { withTimeout } from "@/lib/utils/timeout";
 
 /** Ceiling for one company's full enrichment chain. */
@@ -1094,6 +1098,8 @@ export function summarizeCompanyEnrichment(
       if (cat) s[`${cat}Results`] = n;
     }
   }
+  s.claims = (data.claims as unknown[] | undefined)?.length ?? 0;
+  s.hiringScraped = Boolean(data.hiring);
   return s;
 }
 
@@ -1169,31 +1175,40 @@ async function enrichCompanyById(
   const companyDomain =
     org.domain || (companyUrl ? new URL(companyUrl).hostname : null);
 
-  const [websiteResult, productResult, fundingResult, teamResult] =
-    await Promise.allSettled([
-      companyUrl
-        ? extractor.extract(companyUrl, { includeLinks: false })
-        : Promise.resolve(null),
-      exa.search(
-        companyDomain
-          ? `${org.name} products services`
-          : `${specificName} product services offering`,
-        {
-          numResults: 5,
-          includeText: true,
-          ...(companyDomain ? { includeDomains: [companyDomain] } : {}),
-        },
-      ),
-      exa.search(`${specificName} funding news announcement`, {
-        numResults: 5,
-        includeText: true,
-        category: "news",
-      }),
-      exa.search(`${specificName} team employees company size`, {
-        numResults: 5,
-        includeText: true,
-      }),
-    ]);
+  const productQuery = companyDomain
+    ? `${org.name} products services`
+    : `${specificName} product services offering`;
+  const fundingQuery = `${specificName} funding news announcement`;
+  const teamQuery = `${specificName} team employees company size`;
+
+  const [
+    websiteResult,
+    productResult,
+    fundingResult,
+    teamResult,
+    hiringResult,
+  ] = await Promise.allSettled([
+    companyUrl
+      ? extractor.extract(companyUrl, { includeLinks: false })
+      : Promise.resolve(null),
+    exa.search(productQuery, {
+      numResults: 5,
+      includeText: true,
+      ...(companyDomain ? { includeDomains: [companyDomain] } : {}),
+    }),
+    exa.search(fundingQuery, {
+      numResults: 5,
+      includeText: true,
+      category: "news",
+    }),
+    exa.search(teamQuery, {
+      numResults: 5,
+      includeText: true,
+    }),
+    org.domain
+      ? tryScrapeHiringData(organizationId, org.domain as string)
+      : Promise.resolve(null),
+  ]);
 
   const enrichmentData: Record<string, unknown> = {
     enrichedAt: new Date().toISOString(),
@@ -1226,12 +1241,12 @@ async function enrichCompanyById(
   }> = [];
 
   const searchEntries = [
-    ["product", productResult],
-    ["funding", fundingResult],
-    ["team", teamResult],
+    ["product", productResult, productQuery],
+    ["funding", fundingResult, fundingQuery],
+    ["team", teamResult, teamQuery],
   ] as const;
 
-  for (const [label, result] of searchEntries) {
+  for (const [label, result, query] of searchEntries) {
     if (result.status === "fulfilled") {
       const mapped = result.value.results.map(
         (r: {
@@ -1253,13 +1268,53 @@ async function enrichCompanyById(
       );
       searches.push({
         category: label,
-        query: `${org.name} ${label}`,
+        query,
         results: filtered.slice(0, 3),
       });
     } else {
       errors.push(`Search (${label}): ${result.reason?.message || "Failed"}`);
     }
   }
+
+  // Typed claims: extract from raw pulls, then reconcile against the careers
+  // scrape (ground truth for hiring) and recency rules. Fail-open at every
+  // stage; a claims failure never blocks storing the raw enrichment.
+  const careers =
+    hiringResult.status === "fulfilled" && hiringResult.value
+      ? {
+          careersUrl: hiringResult.value.careersUrl,
+          jobs: hiringResult.value.jobs,
+          scrapedAt: new Date().toISOString(),
+        }
+      : null;
+
+  const extracted = await extractClaims({
+    companyName: org.name as string,
+    companyDomain,
+    websiteContent:
+      websiteResult.status === "fulfilled" && websiteResult.value?.success
+        ? websiteResult.value.data.content
+        : null,
+    searches,
+  });
+
+  // Scraped jobs become verified hiring claims directly; no LLM needed.
+  const hiringClaims: CompanyClaim[] = careers?.careersUrl
+    ? careers.jobs.map((j) => ({
+        type: "hiring_role" as const,
+        statement: `Hiring: ${j.title}${j.location ? ` (${j.location})` : ""}`,
+        sourceUrl: careers.careersUrl as string,
+        publishedDate: careers.scrapedAt,
+        confidence: 1,
+        extractedAt: careers.scrapedAt,
+        status: "verified" as const,
+      }))
+    : [];
+
+  enrichmentData.claims = [
+    ...reconcileClaims(extracted, { now: new Date(), careers }),
+    ...hiringClaims,
+  ];
 
   enrichmentData.searches = searches;
   if (errors.length > 0) enrichmentData.errors = errors;
@@ -1270,7 +1325,11 @@ async function enrichCompanyById(
     companyId: organizationId,
     companyName: org.name as string,
     domain: org.domain as string | null,
-    summary: summarizeCompanyEnrichment(enrichmentData),
+    // The scraper persists enrichment_data.hiring itself, so overlay the
+    // scrape result here so the thin summary reflects what this run got.
+    summary: summarizeCompanyEnrichment(
+      careers ? { ...enrichmentData, hiring: careers } : enrichmentData,
+    ),
     icp: icp || undefined,
     errors: errors.length > 0 ? errors : undefined,
   };

@@ -155,3 +155,21 @@ export async function scrapeHiringData(
     }
   }
 }
+
+/**
+ * Fail-open variant for use inside enrichment: a scrape failure returns
+ * null (raw enrichment proceeds without hiring data) instead of failing
+ * the whole company. The raw scrapeHiringData stays throwing for the
+ * agent tools, which surface errors to the model.
+ */
+export async function tryScrapeHiringData(
+  organizationId: string,
+  domain: string,
+): Promise<HiringScrapeResult | null> {
+  try {
+    return await scrapeHiringData(organizationId, domain);
+  } catch (err) {
+    console.error(`[hiring-scraper] scrape failed for ${domain}:`, err);
+    return null;
+  }
+}
