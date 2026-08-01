@@ -23,9 +23,21 @@ import { saveChat } from "@/lib/services/chat-history";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
 // Full-pipeline agent runs (enrich → score → find contacts) regularly exceed
-// two minutes; at 120 the platform killed the function mid-stream and the UI
-// looked stuck. Vercel fluid compute allows up to 300s on all current plans.
-export const maxDuration = 300;
+// two minutes; at 120 and again at 300 the platform killed the function
+// mid-stream, silently — no error event reaches the stream, onFinish never
+// runs, and the whole turn (and its chat history) is lost. 800 is the Vercel
+// Pro/Enterprise ceiling (GA). Hobby caps at 300 and fails the build above
+// it — self-hosters on Hobby should drop this to 300; the turn time budget
+// below keeps things working either way, just with more continuation turns.
+export const maxDuration = 800;
+
+// Stop the agent loop well before maxDuration so the turn ends CLEANLY:
+// the model's progress streams out, onFinish runs, and the chat is saved.
+// The gap covers the longest single step still in flight when the budget
+// trips (a 150s enrichment chunk plus model latency). When a turn is cut
+// short, the client sees a `data-turn-paused` part and auto-continues in a
+// fresh request, so long pipelines span windows instead of dying silently.
+const TURN_TIME_BUDGET_MS = 600_000;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -118,6 +130,8 @@ export async function POST(request: Request) {
     };
   }
 
+  const deadlineAt = Date.now() + TURN_TIME_BUDGET_MS;
+
   const profile = await getProfileForPrompt(campaignId);
   const signals = campaignId ? await getActiveSignals(campaignId) : null;
   const systemPrompt = buildSystemPrompt({
@@ -153,7 +167,9 @@ export async function POST(request: Request) {
         // Full-pipeline agent runs (enrich → score → find contacts → draft)
         // routinely take 20+ steps; at 15 the loop halted silently mid-batch
         // and the UI just looked stuck. 40 covers the longest observed runs.
-        stopWhen: stepCountIs(40),
+        // The time condition ends the turn before the platform would kill
+        // the function; the client auto-continues (see data-turn-paused).
+        stopWhen: [stepCountIs(40), () => Date.now() >= deadlineAt],
         // Without this, Stop / closing the tab leaves the server running the
         // whole remaining pipeline (and paying for it) invisibly.
         abortSignal: request.signal,
@@ -168,8 +184,25 @@ export async function POST(request: Request) {
           writer,
           userId: user.id,
           campaignId: campaignId ?? null,
+          // Batch tools (enrichCompanies/enrichContacts) check this before
+          // starting a chunk they can't finish inside the turn budget.
+          deadlineAt,
         },
-        onFinish({ usage }) {
+        onFinish({ usage, finishReason }) {
+          // "tool-calls" as the FINAL finish reason means the model still
+          // wanted to work but stopWhen ended the loop — tell the client so
+          // it can continue the pipeline in a fresh request. Transient: the
+          // part reaches onData but is never persisted into the message.
+          if (finishReason === "tool-calls") {
+            writer.write({
+              type: "data-turn-paused",
+              data: {
+                reason:
+                  Date.now() >= deadlineAt ? "time-budget" : "step-limit",
+              },
+              transient: true,
+            });
+          }
           trackUsage({
             service: "claude",
             operation: "chat",

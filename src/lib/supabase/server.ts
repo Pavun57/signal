@@ -36,8 +36,8 @@ function warnIfKeyless() {
 // Clerk's server-side getToken() with no options does NOT mint anything: it
 // returns the JWT that arrived on the request, verbatim, forever (see
 // createGetToken in @clerk/backend). Those tokens live ~60s, but our routes
-// run much longer — maxDuration is 120s on /api/chat and 300s on
-// /api/find-email/bulk, and one chat turn can take 15 tool steps. So any
+// run much longer — maxDuration is 300s on /api/chat and on
+// /api/find-email/bulk, and one chat turn can take dozens of tool steps. So any
 // Supabase call made past the ~60s mark used to fail with "JWT expired", and
 // stayed broken for the rest of the request, retries included.
 //
@@ -45,7 +45,11 @@ function warnIfKeyless() {
 // token through the Backend API. We only do that once the request's own token
 // is spent, so short requests behave exactly as before, with no extra calls.
 
-/** Comfortably longer than the longest route maxDuration (300s). */
+/**
+ * Doesn't need to outlive the longest route: the provider re-mints whenever
+ * the cached token is within REFRESH_SKEW_MS of expiry, so a request longer
+ * than the TTL just mints again mid-flight.
+ */
 const MINTED_TOKEN_TTL_SECONDS = 600;
 /**
  * Minting goes over the network to api.clerk.com, and every concurrent query

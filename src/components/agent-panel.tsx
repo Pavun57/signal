@@ -20,6 +20,11 @@ const MIN_WIDTH = 360;
 const MAX_WIDTH_RATIO = 0.6;
 const DEFAULT_WIDTH = 480;
 
+// When the server ends a turn early (turn time budget / step limit), the
+// client resumes the pipeline automatically. Bounded so a pathological loop
+// can't burn tokens forever; a manual message resets the counter.
+const MAX_AUTO_CONTINUES = 3;
+
 function getSuggestions(pathname: string, campaignId: string | null): string[] {
   if (campaignId && pathname.startsWith("/campaigns/")) {
     return [
@@ -151,10 +156,19 @@ function AgentPanelInner({
 
   const transport = useMemo(() => createChatTransport(), []);
 
+  // Set when the server cut the turn short (see data-turn-paused in the chat
+  // route); consumed in onFinish to fire an automatic continuation.
+  const turnPausedRef = useRef(false);
+  const autoContinuesRef = useRef(0);
+  const [continueTick, setContinueTick] = useState(0);
+
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     id: campaignId ? `campaign-${campaignId}` : `global-${chatId}`,
     messages: initialMessages,
     transport,
+    onData(part) {
+      if (part.type === "data-turn-paused") turnPausedRef.current = true;
+    },
     onFinish({ messages: allMessages }) {
       if (userId) {
         saveChat(
@@ -164,6 +178,13 @@ function AgentPanelInner({
           allMessages,
           campaignId ?? undefined,
         );
+      }
+      if (turnPausedRef.current) {
+        turnPausedRef.current = false;
+        if (autoContinuesRef.current < MAX_AUTO_CONTINUES) {
+          autoContinuesRef.current += 1;
+          setContinueTick((tick) => tick + 1);
+        }
       }
     },
   });
@@ -184,6 +205,17 @@ function AgentPanelInner({
     return { body };
   }, [campaignId, chatId, pathname]);
 
+  // Resume a turn the server paused for time/steps. Runs via effect (not
+  // inline in onFinish) so sendMessage/buildRequestOptions are initialized.
+  useEffect(() => {
+    if (continueTick === 0) return;
+    sendMessage(
+      { text: "Continue exactly where you left off." },
+      buildRequestOptions(),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continueTick]);
+
   // Auto-send any prompt that was queued via openAgentWith()
   useEffect(() => {
     if (didAutoSend.current) return;
@@ -196,11 +228,13 @@ function AgentPanelInner({
   }, []);
 
   const handleSuggestionClick = (text: string) => {
+    autoContinuesRef.current = 0;
     sendMessage({ text }, buildRequestOptions());
   };
 
   const onSubmit = () => {
     if (!input.trim()) return;
+    autoContinuesRef.current = 0;
     sendMessage({ text: input }, buildRequestOptions());
     setInput("");
   };

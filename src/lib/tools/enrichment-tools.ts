@@ -27,6 +27,20 @@ import { withTimeout } from "@/lib/utils/timeout";
 /** Ceiling for one company's full enrichment chain. */
 const PER_COMPANY_TIMEOUT_MS = 150_000;
 
+/** Rough worst case for one contact-enrichment chunk (Exa + socials). */
+const PER_CONTACT_CHUNK_ESTIMATE_MS = 120_000;
+
+/**
+ * The chat route puts its turn time budget on experimental_context so batch
+ * tools never start a chunk they can't finish before the turn is stopped.
+ * Absent outside chat (dedicated API routes, tests) — then no deadline.
+ */
+function deadlineFrom(experimental_context: unknown): number | null {
+  const deadlineAt = (experimental_context as { deadlineAt?: number } | null)
+    ?.deadlineAt;
+  return typeof deadlineAt === "number" ? deadlineAt : null;
+}
+
 export const searchPeople = tool({
   description:
     "Search for people at companies using Exa semantic search with LinkedIn-focused queries. Stores results in the shared knowledge base. When campaignId is provided, links results to the campaign and deduplicates against existing campaign contacts. When the search targets a known company, ALWAYS pass companyName (and companyDomain if known) so results are linked to that organization for the org chart and per-company views.",
@@ -666,18 +680,28 @@ export const enrichContacts = tool({
       .max(10)
       .describe("Array of person IDs to enrich (max 10)"),
   }),
-  execute: async (input) => {
+  execute: async (input, { experimental_context }) => {
+    const deadlineAt = deadlineFrom(experimental_context);
     const succeeded: Array<{
       contactId: string;
       status: string;
       skipped?: boolean;
     }> = [];
     const failed: Array<{ contactId: string; error: string }> = [];
+    let deferred: string[] = [];
 
     // Process in chunks of 3 to stay under Exa's 10 QPS limit
     // (each contact makes 3-4 Exa searches)
     const CHUNK_SIZE = 3;
     for (let i = 0; i < input.contactIds.length; i += CHUNK_SIZE) {
+      // Same turn-budget guard as enrichCompanies (see deadlineFrom).
+      if (
+        deadlineAt &&
+        deadlineAt - Date.now() < PER_CONTACT_CHUNK_ESTIMATE_MS
+      ) {
+        deferred = input.contactIds.slice(i);
+        break;
+      }
       const chunk = input.contactIds.slice(i, i + CHUNK_SIZE);
       const results = await Promise.allSettled(
         chunk.map((id) => enrichContactById(id)),
@@ -708,6 +732,11 @@ export const enrichContacts = tool({
       failed: failed.length,
       results: succeeded,
       errors: failed.length > 0 ? failed : undefined,
+      deferred: deferred.length > 0 ? deferred : undefined,
+      note:
+        deferred.length > 0
+          ? "Turn time budget ran out before these contacts were enriched. They were NOT processed. Call enrichContacts again with the `deferred` IDs to finish."
+          : undefined,
     };
   },
 });
@@ -1282,7 +1311,8 @@ export const enrichCompanies = tool({
       .optional()
       .describe("Campaign ID to load ICP context for scoring."),
   }),
-  execute: async (input) => {
+  execute: async (input, { experimental_context }) => {
+    const deadlineAt = deadlineFrom(experimental_context);
     const succeeded: Array<{
       companyId: string;
       companyName: string;
@@ -1290,11 +1320,18 @@ export const enrichCompanies = tool({
       skipped?: boolean;
     }> = [];
     const failed: Array<{ companyId: string; error: string }> = [];
+    let deferred: string[] = [];
 
     // Process in chunks of 3 to stay under Exa's 10 QPS limit
     // (each company makes 3-4 Exa searches)
     const CHUNK_SIZE = 3;
     for (let i = 0; i < input.companyIds.length; i += CHUNK_SIZE) {
+      // Don't start a chunk the turn budget can't absorb: a full batch can
+      // legally run CHUNKS × 150s, longer than the whole chat turn.
+      if (deadlineAt && deadlineAt - Date.now() < PER_COMPANY_TIMEOUT_MS) {
+        deferred = input.companyIds.slice(i);
+        break;
+      }
       const chunk = input.companyIds.slice(i, i + CHUNK_SIZE);
       // Bound each company. Every downstream call has its own timeout, but
       // one company chains enough of them (fetch → Browserbase fetch →
@@ -1337,6 +1374,11 @@ export const enrichCompanies = tool({
       failed: failed.length,
       results: succeeded,
       errors: failed.length > 0 ? failed : undefined,
+      deferred: deferred.length > 0 ? deferred : undefined,
+      note:
+        deferred.length > 0
+          ? "Turn time budget ran out before these companies were enriched. They were NOT processed. Call enrichCompanies again with the `deferred` IDs to finish."
+          : undefined,
     };
   },
 });
