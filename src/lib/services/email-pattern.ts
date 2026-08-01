@@ -96,7 +96,15 @@ function domainOf(email: string): string {
 }
 
 function alnum(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  // Fold accents to their base letter before stripping. Going straight to
+  // `[^a-z0-9]` deleted them outright, so "Clémentine" guessed as "clmentine"
+  // and "Ramírez" as "ramrez" — a wrong address for every name with a
+  // diacritic, which is a lot of them in European markets.
+  return s
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
 
 /** Split a person's name into first + last. Returns null parts if unknown. */

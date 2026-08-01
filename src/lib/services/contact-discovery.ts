@@ -45,10 +45,37 @@ export interface DiscoveredContact {
 /** Per-call ceiling on Exa searches. One search per title, so this bounds spend. */
 export const MAX_TITLES = 5;
 
+/**
+ * Ceiling on the `alreadyLinked` roster returned to the caller. This rides
+ * along on every search, unlike getContacts which the agent asks for
+ * deliberately, so an org with hundreds of stored people would otherwise put
+ * its whole roster in the model's context on each call. `alreadyLinkedTotal`
+ * always reports the true count so a truncated list never reads as complete.
+ */
+export const MAX_ALREADY_LINKED = 50;
+
+export interface ExistingContact {
+  id: string;
+  name: string;
+  title: string | null;
+  work_email: string | null;
+  personal_email: string | null;
+  linkedinUrl: string | null;
+}
+
 export interface ContactDiscoveryResult {
   organizationId: string;
   companyName: string;
   contacts: DiscoveredContact[];
+  /**
+   * People already attached to this organization before the search ran. Not
+   * newly found and not billed — surfaced so the caller can answer "add the
+   * people you already have" without searching again. Capped at
+   * MAX_ALREADY_LINKED; read `alreadyLinkedTotal` for the real count.
+   */
+  alreadyLinked: ExistingContact[];
+  /** How many people are attached to this org, ignoring the display cap. */
+  alreadyLinkedTotal: number;
   searchesRun: Array<{
     title: string;
     query: string;
@@ -97,6 +124,8 @@ export async function findContactsForOrganization(
     organizationId,
     companyName: org.name,
     contacts: [],
+    alreadyLinked: [],
+    alreadyLinkedTotal: 0,
     searchesRun: [],
     totalFound: 0,
     duplicatesSkipped: 0,
@@ -131,13 +160,32 @@ export async function findContactsForOrganization(
   // every already-known contact, then reported them all as newly added.
   const existingUrls = new Set<string>();
 
+  // Everyone already attached to this org, kept rather than counted. The agent
+  // used to see only `duplicatesSkipped: 10` and three new strangers, with no
+  // way to tell that the 10 skipped rows were the confirmed employees the user
+  // had just asked it to add — so "add them" triggered another search instead
+  // of resolving to people we already held.
   const { data: orgPeople } = await supabase
     .from("people")
-    .select("linkedin_url")
-    .eq("organization_id", organizationId)
-    .not("linkedin_url", "is", null);
+    .select("id, name, title, work_email, personal_email, linkedin_url")
+    .eq("organization_id", organizationId);
+  const alreadyLinked: ExistingContact[] = [];
+  let alreadyLinkedTotal = 0;
   for (const p of orgPeople ?? []) {
+    // Dedup is never capped — a truncated set of known URLs would re-fetch and
+    // re-bill people we already hold. Only the returned roster is bounded.
     if (p.linkedin_url) existingUrls.add(normalizeLinkedInUrl(p.linkedin_url));
+    alreadyLinkedTotal++;
+    if (alreadyLinked.length < MAX_ALREADY_LINKED) {
+      alreadyLinked.push({
+        id: p.id,
+        name: p.name,
+        title: p.title,
+        work_email: p.work_email,
+        personal_email: p.personal_email,
+        linkedinUrl: p.linkedin_url,
+      });
+    }
   }
 
   if (campaignId) {
@@ -294,7 +342,14 @@ export async function findContactsForOrganization(
 
       candidates.push({
         name: parsed.name,
-        title: parsed.title || search.title,
+        // Only a title we actually read off this person's headline. This used
+        // to fall back to `search.title` — the title we *queried* for — which
+        // stamped the ICP target title onto anyone whose headline didn't parse.
+        // The result was a 15-person startup showing three Heads of Growth and
+        // four Revenue Operations: the search list, replicated across people.
+        // A guess is worse than a blank here, because it is what outreach
+        // personalises against and what the judge below reads as evidence.
+        title: parsed.title,
         linkedinUrl,
         rawHeadline: result.title,
         searchTitle: search.title,
@@ -365,6 +420,8 @@ export async function findContactsForOrganization(
     organizationId,
     companyName: org.name,
     contacts,
+    alreadyLinked,
+    alreadyLinkedTotal,
     searchesRun: searchResults.map((s) => ({
       title: s.title,
       query: s.query,

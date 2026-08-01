@@ -570,7 +570,7 @@ async function enrichContactById(
             tweets?: Array<{ text: string }>;
           }
         | undefined;
-      const bio = await summarizePerson({
+      const summarized = await summarizePerson({
         name: contactName,
         title: person?.title ?? null,
         companyName,
@@ -588,11 +588,18 @@ async function enrichContactById(
           | Array<{ title: string; url: string; text: string | null }>
           | undefined,
       });
-      if (bio) {
-        await supabase
-          .from("people")
-          .update({ bio_summary: bio })
-          .eq("id", personId);
+      // Write the title back, not just the prose. Enrichment reads the real
+      // title off the profile and used to spend it entirely on `bio_summary`,
+      // so a person discovered with a wrong title kept it forever: the drawer
+      // said "Head of GTM / Revenue Ops" while the org chart, the scoring and
+      // any draft email all still read "Head of Growth" off `people.title`.
+      // Enrichment is the correcting step, so let it correct.
+      const update: { bio_summary?: string; title?: string } = {};
+      if (summarized?.summary) update.bio_summary = summarized.summary;
+      if (summarized?.currentTitle) update.title = summarized.currentTitle;
+
+      if (Object.keys(update).length > 0) {
+        await supabase.from("people").update(update).eq("id", personId);
       }
     } catch (err) {
       console.error("[enrichContact] bio summary failed:", err);
@@ -1432,6 +1439,8 @@ export const findContacts = tool({
       companyName: result.companyName,
       targetTitles,
       contacts: result.contacts,
+      alreadyLinked: result.alreadyLinked,
+      alreadyLinkedTotal: result.alreadyLinkedTotal,
       searchesRun: result.searchesRun,
       totalFound: result.totalFound,
       duplicatesSkipped: result.duplicatesSkipped,

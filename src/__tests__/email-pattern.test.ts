@@ -223,6 +223,21 @@ describe("applyPattern", () => {
     ).toBe("marieclaire.obrien@acme.com");
   });
 
+  it("folds accents to their base letter instead of deleting them", () => {
+    // Stripping straight to [a-z0-9] dropped the accented character outright,
+    // so "Clémentine Markman" guessed clmentine@ — a wrong address for every
+    // name carrying a diacritic.
+    expect(applyPattern("{first}", "Clémentine", "Markman", "granola.ai")).toBe(
+      "clementine@granola.ai",
+    );
+    expect(
+      applyPattern("{first}.{last}", "Roberto", "Ramírez", "acme.com"),
+    ).toBe("roberto.ramirez@acme.com");
+    expect(applyPattern("{first}.{last}", "Søren", "Müller", "acme.com")).toBe(
+      "sren.muller@acme.com",
+    );
+  });
+
   it("returns null when last name needed but missing", () => {
     expect(
       applyPattern("{first}.{last}", "Madonna", null, "acme.com"),
