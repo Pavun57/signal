@@ -157,13 +157,19 @@ export const searchPeople = tool({
     let duplicatesSkipped = 0;
 
     for (const result of searchResponse.results) {
+      // Same guards as contact-discovery — the two judge-and-store paths must
+      // not disagree on what counts as a person. A linkedin.com URL that is not
+      // an /in/ profile (/company/, /school/, /posts/) parses into a "person"
+      // named after the page, whose headline then names the target company, so
+      // the judge verifies it and a non-person clears the affiliation gate.
+      const isLinkedIn = /linkedin\.com/i.test(result.url);
+      const isProfile = /linkedin\.com\/in\//i.test(result.url);
+      if (isLinkedIn && !isProfile) continue;
+
       const { name, title } = parseLinkedInTitle(result.title);
-      const rawLinkedinUrl = result.url.includes("linkedin.com")
-        ? result.url
-        : null;
-      const linkedinUrl = rawLinkedinUrl
-        ? normalizeLinkedInUrl(rawLinkedinUrl)
-        : null;
+      if (!name || name === "Unknown") continue;
+
+      const linkedinUrl = isProfile ? normalizeLinkedInUrl(result.url) : null;
 
       if (linkedinUrl) {
         if (existingUrls.has(linkedinUrl) || seenUrls.has(linkedinUrl)) {
@@ -230,7 +236,16 @@ export const searchPeople = tool({
       if (!c) continue;
 
       // A rejected candidate is a real person who works somewhere else. Keep
-      // them, unattached, rather than filing them under this company.
+      // them, unattached, rather than filing them under this company — but
+      // only when we can identify them. findOrCreatePerson dedups by LinkedIn
+      // URL or by name-within-org; a rejected candidate has no org, so one
+      // without a profile URL matches neither path and would be INSERTED fresh
+      // on every run. Same rule as contact-discovery.
+      if (v.verdict === "rejected" && !c.linkedin_url) {
+        rejectedAsWrongCompany++;
+        continue;
+      }
+
       const attachTo = v.verdict === "rejected" ? null : organizationId;
 
       const person = await findOrCreatePerson({

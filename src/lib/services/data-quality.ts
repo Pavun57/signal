@@ -67,7 +67,10 @@ function capFindings(
       kind,
       severity: of[0].severity,
       summary: `…and ${dropped.length} more. ${describe(of.length)}`,
-      ids: dropped.flatMap((f) => f.ids),
+      // Bounded: shipping every dropped id would re-create the context
+      // blowout this cap exists to prevent, just as UUIDs instead of prose.
+      // The full set is reachable by re-running the underlying query.
+      ids: dropped.slice(0, 50).flatMap((f) => f.ids.slice(0, 1)),
     },
   ];
 }
@@ -237,6 +240,11 @@ export async function runDataQualityAudit(
     capped,
     "duplicate_company",
     (n) => `${n} company names are held by more than one organization.`,
+  );
+  capped = capFindings(
+    capped,
+    "unresolved_company_with_people",
+    (n) => `${n} companies with no domain are holding contacts.`,
   );
 
   const severityRank = { high: 0, medium: 1, low: 2 } as const;

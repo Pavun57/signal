@@ -65,13 +65,23 @@ let org: Record<string, unknown> = {};
 
 function client(): SupabaseClient {
   const chain = () => {
+    // The org-people dedup query selects a list; everything else in these
+    // tests resolves the single org row.
+    let wantsList = false;
     const c: Record<string, unknown> & PromiseLike<unknown> = {
-      select: () => c,
+      select: (cols?: string) => {
+        if (cols === "linkedin_url") wantsList = true;
+        return c;
+      },
       eq: () => c,
+      not: () => c,
       single: () => c,
       maybeSingle: () => c,
       then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
-        Promise.resolve({ data: org, error: null }).then(onF, onR),
+        Promise.resolve({ data: wantsList ? [] : org, error: null }).then(
+          onF,
+          onR,
+        ),
     } as unknown as Record<string, unknown> & PromiseLike<unknown>;
     return c;
   };

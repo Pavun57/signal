@@ -126,6 +126,44 @@ describe("canSendTo", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("blocks a user-entered address that hard-bounced", () => {
+    // The exception-flag cross-product that survived three review rounds
+    // untested: user_entered bypasses `risky` (catch-all noise a human can
+    // vouch past), but a bounce is recorded about the exact string the human
+    // typed — a typo. Nothing displaces user_entered (1.0), so exempting it
+    // here made the typo permanently sendable.
+    const result = canSendTo(
+      p({
+        work_email_source: "user_entered",
+        work_email_verification: "undeliverable",
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/hard-bounced/i);
+  });
+
+  it("lets a user-entered address through a catch-all risky verdict", () => {
+    // The narrow exemption that IS intended: on a catch-all domain every
+    // address verifies risky, so without this nothing at such a company could
+    // ever be emailed. A human vouching is the one signal a catch-all can't fake.
+    expect(
+      canSendTo(
+        p({
+          work_email_source: "user_entered",
+          work_email_verification: "risky",
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it("names the personal-only situation instead of claiming no address exists", () => {
+    const result = canSendTo(
+      p({ work_email: null, personal_email: "jane@gmail.com" }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/personal address/i);
+  });
+
   it("always explains the blockage rather than failing silently", () => {
     for (const person of [
       p({ work_email: null }),

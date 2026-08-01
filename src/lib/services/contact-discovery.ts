@@ -123,8 +123,23 @@ export async function findContactsForOrganization(
     description: org.description,
   };
 
-  // Dedup against contacts already on the campaign, by LinkedIn URL.
+  // Dedup against people we already hold — both the campaign's linked contacts
+  // and everyone already attached to this organization.
+  //
+  // The org half matters because the only caller with no campaignId is "Find
+  // more people": without it, every click re-fetched, re-judged and re-billed
+  // every already-known contact, then reported them all as newly added.
   const existingUrls = new Set<string>();
+
+  const { data: orgPeople } = await supabase
+    .from("people")
+    .select("linkedin_url")
+    .eq("organization_id", organizationId)
+    .not("linkedin_url", "is", null);
+  for (const p of orgPeople ?? []) {
+    if (p.linkedin_url) existingUrls.add(normalizeLinkedInUrl(p.linkedin_url));
+  }
+
   if (campaignId) {
     const { data: links } = await supabase
       .from("campaign_people")
@@ -134,7 +149,7 @@ export async function findContactsForOrganization(
       const url = (
         l.person as unknown as { linkedin_url: string | null } | null
       )?.linkedin_url;
-      if (url) existingUrls.add(url);
+      if (url) existingUrls.add(normalizeLinkedInUrl(url));
     }
   }
 
@@ -240,6 +255,18 @@ export async function findContactsForOrganization(
       // company, so the judge confirms it and the fake contact clears the
       // affiliation half of the send gate.
       const isProfile = /linkedin\.com\/in\//i.test(result.url);
+
+      // LinkedIn URLs that are not individual profiles — /company/, /school/,
+      // /posts/ — are skipped outright, not merely stripped of their URL. A
+      // company page parses into a "person" named after the company, whose
+      // headline then names the target company, so the judge verifies it and a
+      // fake contact clears the affiliation half of the send gate. Nulling the
+      // URL (the previous behaviour) made that worse: with no URL it also
+      // slipped every dedup.
+      if (!isProfile && /linkedin\.com/i.test(result.url)) {
+        continue;
+      }
+
       const linkedinUrl = isProfile ? normalizeLinkedInUrl(result.url) : null;
 
       // Dedup on the canonical form. Keying on the raw URL let the same profile
@@ -259,9 +286,9 @@ export async function findContactsForOrganization(
 
       const parsed = parseLinkedInTitle(result.title);
       // parseLinkedInTitle yields "Unknown" for anything it cannot split.
-      // Storing those creates contacts named "Unknown".
+      // Storing those creates contacts named "Unknown". Not counted as a
+      // duplicate — it isn't one, and inflating that number misleads the agent.
       if (!parsed.name || parsed.name === "Unknown") {
-        duplicatesSkipped++;
         continue;
       }
 

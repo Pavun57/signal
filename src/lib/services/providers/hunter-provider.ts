@@ -72,6 +72,15 @@ export class HunterProvider implements EmailProvider {
         console.warn(
           `[hunter] email-finder HTTP ${response.status} for ${args.domain}`,
         );
+        // Zero-cost row so a 429 storm is visible in the cost dashboard —
+        // without it, quota exhaustion looks like the spend flatlining while
+        // every contact quietly comes back unverified.
+        trackUsage({
+          service: "email_provider",
+          operation: "hunter-find-failed",
+          estimated_cost_usd: 0,
+          metadata: { httpStatus: response.status, domain: args.domain },
+        });
         return null;
       }
 
@@ -117,6 +126,12 @@ export class HunterProvider implements EmailProvider {
       // delete an otherwise good candidate.
       if (!response.ok) {
         console.warn(`[hunter] email-verifier HTTP ${response.status}`);
+        trackUsage({
+          service: "email_provider",
+          operation: "hunter-verify-failed",
+          estimated_cost_usd: 0,
+          metadata: { httpStatus: response.status },
+        });
         return {
           status: "unknown",
           catchAll: false,

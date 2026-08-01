@@ -237,6 +237,30 @@ describe("send_confirmed", () => {
     expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
+  it("refuses when the draft is addressed to a stale address", async () => {
+    // Sequence drafts freeze to_email at enrollment. After a bounce is fixed by
+    // verifying a NEW address onto the person, the remaining steps still carry
+    // the old one — without this check the gate approved on the new address's
+    // verdict and delivered to the very address that just hard-bounced.
+    const responses = sendResponses("per_1");
+    responses[3] = {
+      data: {
+        work_email: "corrected@example.com", // person was fixed…
+        work_email_source: "user_entered",
+        work_email_verification: null,
+        affiliation_confidence: 0.9,
+        affiliation_source: "team_page",
+      },
+    };
+    // …but the draft still says prospect@example.com.
+
+    const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/regenerate the draft/i);
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
   it("does not fail the send when the bookkeeping write throws", async () => {
     recordVerifiedMock.mockRejectedValueOnce(new Error("db down"));
 

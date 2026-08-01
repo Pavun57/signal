@@ -49,14 +49,9 @@ export async function POST(
   // straight to organization_id with no verification whatsoever. For a company
   // called "Signal", "Atlas" or "Ramp" that filled the org chart with
   // employees of entirely unrelated businesses.
-  const titles = [
-    "engineer",
-    "designer",
-    "sales",
-    "marketing",
-    "operations",
-    "leadership",
-  ];
+  // Exactly MAX_TITLES entries — the shared service slices to 5, and listing
+  // six meant the last one was silently never searched.
+  const titles = ["leadership", "engineer", "designer", "sales", "marketing"];
 
   return withAction(`Find more people: ${org.name}`, async () => {
     const result = await findContactsForOrganization(supabase, {

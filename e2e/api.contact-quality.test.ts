@@ -53,9 +53,12 @@ test.afterAll(async () => {
   setDefaultTestOwner(null);
 });
 
-test("an unverified contact is refused by the send gate", async () => {
-  // A pattern guess with no verification behind it is exactly what used to be
-  // emailed as though a human had typed it.
+test("findEmail reports a stored pattern guess as untrusted", async () => {
+  // This does NOT exercise the send gate (that would need a connected Gmail
+  // and a draft); the gate's refusal is covered by the unit tests in
+  // email-feedback-loop.test.ts. What this proves end to end is the
+  // prerequisite: a pattern guess with no verification behind it is returned
+  // with an explicit untrusted verification state, not presented as fact.
   const orgId = await createTestOrganization({ domain: "example.invalid" });
   const personId = await createTestPerson(orgId, {
     name: `${TEST_PREFIX} Jane Doe`,

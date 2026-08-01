@@ -55,6 +55,9 @@ async function main() {
   console.log(
     `  ${report.counts.organizations} companies · ${report.counts.people} people · ${report.counts.peopleWithOrg} attached to a company\n`,
   );
+  if (report.truncated) {
+    console.log(`  ⚠ ${report.truncated}\n`);
+  }
 
   if (sorted.length === 0) {
     console.log("  No problems found.\n");

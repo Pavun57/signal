@@ -142,6 +142,8 @@ export async function recordAffiliation(
 /** The fields the send gate reads. */
 export interface SendCandidate {
   work_email: string | null;
+  /** Read only to give an accurate refusal reason — never sendable itself. */
+  personal_email?: string | null;
   work_email_source: string | null;
   work_email_verification: string | null;
   affiliation_confidence: number | null;
@@ -165,7 +167,16 @@ export type SendCheck = { ok: true } | { ok: false; reason: string };
  */
 export function canSendTo(person: SendCandidate): SendCheck {
   if (!person.work_email) {
-    return { ok: false, reason: "no email address on file" };
+    return {
+      ok: false,
+      // Distinguish "nothing at all" from "only a personal address". saveDraft
+      // will happily address a draft to personal_email, so the old blanket
+      // "no email address on file" was factually wrong for those contacts and
+      // the agent relayed it to the user as fact.
+      reason: person.personal_email
+        ? "only a personal address is on file — outreach requires a work address (enter one to unblock)"
+        : "no email address on file",
+    };
   }
 
   // A human typing the address outranks any machine verdict, including a
@@ -174,20 +185,34 @@ export function canSendTo(person: SendCandidate): SendCheck {
   // address verifies `risky`, nothing could ever be sent at all.
   const humanEntered = person.work_email_source === "user_entered";
 
-  // A negative verdict otherwise disqualifies the address no matter how it was
-  // found. This has to be checked BEFORE the source shortcuts below:
-  // recordBounce marks a bounced address `undeliverable`, but every address
-  // that has ever been sent carries `send_confirmed` by definition — so
-  // trusting the source first meant a hard-bounced mailbox stayed sendable for
-  // the next campaign.
-  if (
-    !humanEntered &&
-    (person.work_email_verification === "undeliverable" ||
-      person.work_email_verification === "risky")
-  ) {
+  // `undeliverable` blocks unconditionally — including for user_entered.
+  //
+  // The human exemption must not cover this verdict: a bounce is recorded
+  // about the exact string currently stored, so a hand-typed address that hard
+  // bounced is a typo, and exempting it made that typo permanently sendable —
+  // nothing ever displaces user_entered (1.0), and findEmail refuses to
+  // re-check trusted sources. The way out is entering a *different* address,
+  // which clears the verdict.
+  //
+  // Checked BEFORE the source shortcuts below for the same reason as ever:
+  // every address that has been sent carries `send_confirmed` by definition,
+  // so trusting the source first kept hard-bounced mailboxes sendable.
+  if (person.work_email_verification === "undeliverable") {
     return {
       ok: false,
-      reason: `email verification came back "${person.work_email_verification}" — it is not confirmed deliverable`,
+      reason:
+        "this address hard-bounced — enter a corrected address for this contact",
+    };
+  }
+
+  // `risky` is different: it usually means a catch-all domain, where EVERY
+  // address verifies risky, so without a human exemption nothing at such a
+  // company could ever be emailed. A person vouching for the address is the
+  // one signal a catch-all cannot fake.
+  if (!humanEntered && person.work_email_verification === "risky") {
+    return {
+      ok: false,
+      reason: `email verification came back "risky" — it is not confirmed deliverable`,
     };
   }
 
@@ -224,7 +249,7 @@ export function canSendTo(person: SendCandidate): SendCheck {
 
 /** Columns canSendTo needs — keep SELECTs and the predicate in step. */
 export const SEND_GATE_COLUMNS =
-  "work_email, work_email_source, work_email_verification, affiliation_confidence, affiliation_source";
+  "work_email, personal_email, work_email_source, work_email_verification, affiliation_confidence, affiliation_source";
 
 // ─── LinkedIn employer check ──────────────────────────────────────────────
 

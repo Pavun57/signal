@@ -63,6 +63,27 @@ export async function POST(
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // The PERSON must also be in one of the caller's campaigns (same gate as
+  // /api/find-email). Checking only the target org let any user force-move any
+  // contact in the shared pool — including one another user had hand-assigned,
+  // since the user_entered override deliberately outranks every prior claim.
+  const { data: personOwnership } = await supabase
+    .from("campaign_people")
+    .select("campaign:campaigns!inner(user_id)")
+    .eq("person_id", personId)
+    .limit(1)
+    .maybeSingle();
+
+  const personOwnerId =
+    (personOwnership?.campaign as unknown as { user_id?: string } | null)
+      ?.user_id ?? null;
+  if (personOwnerId && personOwnerId !== user.id) {
+    return Response.json(
+      { error: "Forbidden: contact belongs to another user's campaign" },
+      { status: 403 },
+    );
+  }
+
   // If a campaignId was supplied, double-check the user owns it too.
   if (campaignId) {
     const { data: camp } = await supabase

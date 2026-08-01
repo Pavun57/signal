@@ -72,11 +72,18 @@ function pushCandidate(
   candidate: EmailCandidate | null,
   first: string | null,
   last: string | null,
+  opts: { skipNameCheck?: boolean } = {},
 ): void {
   if (!candidate) return;
   const email = candidate.email.toLowerCase();
   if (isRolePrefix(email.split("@")[0])) return;
-  if (!emailMatchesName(email, first, last)) return;
+  // The name check exists to stop a stranger's address scraped off a page from
+  // attaching to this person. It must NOT apply to the address already stored
+  // on the person — that address is the thing being re-checked, and a mailbox
+  // under a maiden name or nickname fails a legal-name comparison, which
+  // silently excluded it from revalidation and left the contact permanently
+  // stuck behind the send gate with "could not find an email address".
+  if (!opts.skipNameCheck && !emailMatchesName(email, first, last)) return;
   if (candidates.some((c) => c.email === email)) return;
   candidates.push({ ...candidate, email });
 }
@@ -189,6 +196,9 @@ export async function findEmailForPerson(
       ),
       first,
       last,
+      // The stored address is what is being checked — a nickname or maiden-name
+      // mailbox must not be excluded for failing a legal-name comparison.
+      { skipNameCheck: true },
     );
   }
 
@@ -329,7 +339,11 @@ export async function findEmailForPerson(
     if (
       orgIsCatchAll === null &&
       person.organization_id &&
-      candidateAtOrgDomain
+      candidateAtOrgDomain &&
+      // An `unknown` verdict is a failed or rate-limited call, and its
+      // catchAll:false is a default, not an answer. Caching it would pin
+      // "not catch-all" onto the org permanently off a provider outage.
+      result.status !== "unknown"
     ) {
       orgIsCatchAll = result.catchAll;
       await supabase
@@ -656,7 +670,12 @@ export const findEmails = tool({
   description:
     "Batch-discover email addresses for multiple contacts. Skips contacts that already have emails. Returns found and not-found lists.",
   inputSchema: z.object({
-    personIds: z.array(z.string().uuid()).describe("Array of person IDs."),
+    personIds: z
+      .array(z.string().uuid())
+      .max(25)
+      .describe(
+        "Array of person IDs (max 25 per call). Each unresolved contact can cost a provider find plus up to 3 verifications, so batch size is a spend bound — call again for the next batch.",
+      ),
   }),
   execute: async ({ personIds }) => {
     const found: Array<{ personId: string; email: string }> = [];

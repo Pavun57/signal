@@ -94,6 +94,24 @@ export async function claimAndSendDraft(
         reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
       };
     }
+
+    // The gate's verdict is about the person's address on file — but the mail
+    // goes to draft.to_email, which was frozen into the draft when it was
+    // written. Sequence drafts for every step are pre-created at enrollment,
+    // so after a bounce is fixed by verifying a NEW address onto the person,
+    // the remaining steps still carry the old one: without this comparison the
+    // gate would approve on the new address's verdict and deliver to the very
+    // address that just hard-bounced.
+    const personEmail = (person as unknown as SendCandidate).work_email;
+    if (
+      personEmail &&
+      draft.to_email.toLowerCase() !== personEmail.toLowerCase()
+    ) {
+      return {
+        ok: false,
+        reason: `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail} — regenerate the draft so it uses the current address.`,
+      };
+    }
   }
 
   // Atomically claim the draft before sending. Overlapping callers — the
