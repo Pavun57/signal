@@ -155,6 +155,8 @@ describe("appendAccountsToList", () => {
       failed: 0,
       peopleImported: 0,
     });
+    // Companies-only rows import zero people.
+    expect(findOrCreatePersonMock).not.toHaveBeenCalled();
     expect(findOrCreateOrgMock).toHaveBeenCalledTimes(2);
     expect(findOrCreateOrgMock).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Acme", source: "target_list" }),
@@ -252,6 +254,141 @@ describe("appendAccountsToList", () => {
     expect(findOrCreateOrgMock).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Acme", domain: "acme.com" }),
     );
+  });
+
+  it("imports one org and three people from contact-per-row rows", async () => {
+    const { client } = fakeSupabase([
+      { data: [{ id: "ta_1" }] }, // one account upsert for the shared company
+      { data: { row_count: 0 } },
+      {},
+    ]);
+
+    const rows: TargetAccountRow[] = [
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: {
+          name: "Ada Lovelace",
+          title: "CTO",
+          email: "ada@acme.com",
+          linkedin_url: "https://www.linkedin.com/in/ada",
+        },
+      },
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: {
+          name: "Grace Hopper",
+          title: "VP Eng",
+          email: "grace@acme.com",
+          linkedin_url: "https://www.linkedin.com/in/grace",
+        },
+      },
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: { name: "Alan Turing", title: null, email: null },
+      },
+    ];
+
+    const result = await appendAccountsToList(client, "list-1", rows);
+
+    expect(result).toEqual({
+      imported: 1,
+      skipped: 0,
+      failed: 0,
+      peopleImported: 3,
+    });
+    expect(findOrCreateOrgMock).toHaveBeenCalledTimes(1);
+
+    // People land via findOrCreatePerson with the org, title and source —
+    // and the caller's supabase client (knowledge-base convention).
+    expect(findOrCreatePersonMock).toHaveBeenCalledTimes(3);
+    expect(findOrCreatePersonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Ada Lovelace",
+        title: "CTO",
+        linkedin_url: "https://www.linkedin.com/in/ada",
+        work_email: "ada@acme.com",
+        organization_id: "org_acme.com",
+        source: "target_list",
+      }),
+      client,
+    );
+
+    // Affiliation provenance: the user's own upload names the employer.
+    expect(affiliations).toHaveLength(3);
+    for (const a of affiliations) {
+      expect(a).toMatchObject({
+        organizationId: "org_acme.com",
+        source: "user_entered",
+      });
+      expect(String(a.evidence)).toContain("csv_import");
+    }
+
+    // Imported addresses are free suggestions: recorded with a non-trusted
+    // source so the send gate's just-in-time verifier still proves them
+    // (data-quality convention — verification stays unchecked until send).
+    expect(verifiedEmails).toHaveLength(2);
+    expect(verifiedEmails[0]).toMatchObject({
+      email: "ada@acme.com",
+      source: "provider_found",
+    });
+  });
+
+  it("still imports people when the account already exists (linkedin-deduped downstream)", async () => {
+    // Re-import of the same file: the account upsert returns no rows.
+    const { client } = fakeSupabase([{ data: [] }]);
+
+    const result = await appendAccountsToList(client, "list-1", [
+      {
+        name: "Acme",
+        domain: "acme.com",
+        person: {
+          name: "Ada Lovelace",
+          linkedin_url: "https://www.linkedin.com/in/ada",
+        },
+      },
+    ]);
+
+    expect(result).toEqual({
+      imported: 0,
+      skipped: 1,
+      failed: 0,
+      peopleImported: 1,
+    });
+    // Dedup on re-import is by linkedin_url, inside findOrCreatePerson —
+    // the service must pass the URL through for that to hold.
+    expect(findOrCreatePersonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        linkedin_url: "https://www.linkedin.com/in/ada",
+      }),
+      client,
+    );
+  });
+
+  it("refuses to attach people to a domain-less org", async () => {
+    findOrCreateOrgMock.mockResolvedValue({
+      id: "org_nodomain",
+      domain: null,
+    } as never);
+    const { client } = fakeSupabase([
+      { data: [{ id: "ta_1" }] },
+      { data: { row_count: 0 } },
+      {},
+    ]);
+
+    const result = await appendAccountsToList(client, "list-1", [
+      {
+        name: "Acme",
+        person: { name: "Ada Lovelace", email: "ada@acme.com" },
+      },
+    ]);
+
+    // The account still imports; the person does not (canHoldPeople).
+    expect(result).toMatchObject({ imported: 1, peopleImported: 0 });
+    expect(findOrCreatePersonMock).not.toHaveBeenCalled();
+    expect(affiliations).toHaveLength(0);
   });
 
   it("skips the header mapper when no row carries extra", async () => {

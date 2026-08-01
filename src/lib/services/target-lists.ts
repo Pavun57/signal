@@ -1,9 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  canHoldPeople,
   findOrCreateOrganization,
+  findOrCreatePerson,
   normalizeDomain,
 } from "@/lib/services/knowledge-base";
+import { recordAffiliation } from "@/lib/services/affiliation";
+import { recordVerifiedEmail } from "@/lib/services/email-pattern";
 import {
   mapUnknownHeaders,
   type HeaderMapping,
@@ -24,6 +28,14 @@ export interface AppendAccountsResult {
   peopleImported: number;
 }
 
+/** A contact carried by a contact-per-row export (Apollo/Clay/CRM). */
+interface PersonRow {
+  name: string;
+  title: string | null;
+  email: string | null;
+  linkedin_url: string | null;
+}
+
 /** One company after in-batch grouping, ready to resolve + insert. */
 interface Candidate {
   name: string;
@@ -34,6 +46,8 @@ interface Candidate {
   description: string | null;
   /** Original row content, preserved verbatim on the target_accounts row. */
   raw: Record<string, string>;
+  /** Contacts from every row that grouped into this company. */
+  people: PersonRow[];
 }
 
 /**
@@ -44,6 +58,13 @@ interface Candidate {
  *
  * When rows carry unmapped headers in `extra`, the LLM header mapper runs once
  * for the whole batch and mapped fields are folded into empty canonical slots.
+ *
+ * Contact-per-row files (rows carrying `person`) additionally import people:
+ * one org + N contacts per company, deduped by linkedin_url / name+org inside
+ * findOrCreatePerson, with affiliation provenance (`user_entered`, the upload
+ * is the user's own claim) and the email stored as an unchecked suggestion the
+ * send gate verifies just-in-time. People are NOT linked to any campaign here
+ * — linkTargetListToCampaign owns that.
  */
 export async function appendAccountsToList(
   supabase: SupabaseClient,
@@ -81,8 +102,13 @@ export async function appendAccountsToList(
     if (domain) domain = normalizeDomain(domain);
 
     const key = domain ?? `name:${name.toLowerCase()}`;
-    if (groups.has(key)) {
-      skipped++;
+    const person = sanitizePerson(row.person);
+    const existing = groups.get(key);
+    if (existing) {
+      // Contact-per-row files legitimately repeat the company: later rows
+      // contribute their person to the group instead of counting as dups.
+      if (person) existing.people.push(person);
+      else skipped++;
       continue;
     }
 
@@ -94,6 +120,7 @@ export async function appendAccountsToList(
       location: folded.location?.trim() || null,
       description: folded.description?.trim() || null,
       raw: buildRaw(folded, row.extra),
+      people: person ? [person] : [],
     });
   }
 
@@ -102,7 +129,7 @@ export async function appendAccountsToList(
   // chunk-internal parallelism is safe.
   let imported = 0;
   let failed = 0;
-  const peopleImported = 0;
+  let peopleImported = 0;
   const candidates = [...groups.values()];
 
   for (let i = 0; i < candidates.length; i += CHUNK_SIZE) {
@@ -130,8 +157,53 @@ export async function appendAccountsToList(
           throw new Error(`Failed to insert target account: ${error.message}`);
         }
 
+        // People import runs even when the account already existed (a
+        // re-import should still pick up new contacts); dedup happens inside
+        // findOrCreatePerson via linkedin_url / name+org. Domain-less orgs
+        // never hold people (canHoldPeople) — two same-named companies are
+        // indistinguishable without a domain, so attaching contacts is how
+        // the wrong people end up pooled under the right name.
+        let people = 0;
+        if (candidate.people.length > 0 && canHoldPeople(org)) {
+          for (const p of candidate.people) {
+            const person = await findOrCreatePerson(
+              {
+                name: p.name,
+                title: p.title,
+                linkedin_url: p.linkedin_url,
+                work_email: p.email,
+                organization_id: org.id,
+                source: "target_list",
+              },
+              supabase,
+            );
+
+            // The user's own upload names this employer — that is a human
+            // assertion, same rank as assigning the contact by hand.
+            await recordAffiliation(supabase, {
+              personId: person.id,
+              organizationId: org.id,
+              source: "user_entered",
+              evidence: `csv_import: the user's uploaded target list places them at ${candidate.name}`,
+            });
+
+            // Imported addresses are free suggestions, not proof: record them
+            // with a non-trusted source so verification stays unchecked and
+            // the send gate's just-in-time verifier proves the mailbox before
+            // anything leaves (lazy-verification convention).
+            if (p.email) {
+              await recordVerifiedEmail(supabase, {
+                personId: person.id,
+                email: p.email,
+                source: "provider_found",
+              });
+            }
+            people++;
+          }
+        }
+
         // ignoreDuplicates returns no row when the account already existed.
-        return { inserted: (upserted?.length ?? 0) > 0 };
+        return { inserted: (upserted?.length ?? 0) > 0, people };
       }),
     );
 
@@ -139,6 +211,7 @@ export async function appendAccountsToList(
       if (r.status === "fulfilled") {
         if (r.value.inserted) imported++;
         else skipped++;
+        peopleImported += r.value.people;
       } else {
         failed++;
         console.error("[target-lists] row failed:", r.reason);
@@ -185,6 +258,18 @@ async function resolveExtraHeaders(
     ([header, samples]) => ({ header, samples }),
   );
   return mapUnknownHeaders(headerSamples, { userId });
+}
+
+/** Trim a row's person into a PersonRow, or null when there is no usable name. */
+function sanitizePerson(person: TargetAccountRow["person"]): PersonRow | null {
+  const name = person?.name?.trim();
+  if (!name) return null;
+  return {
+    name,
+    title: person?.title?.trim() || null,
+    email: person?.email?.trim() || null,
+    linkedin_url: person?.linkedin_url?.trim() || null,
+  };
 }
 
 /** Fold header-mapped extra values into canonical fields the row left empty. */
