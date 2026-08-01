@@ -154,6 +154,13 @@ export interface TargetAccountRow {
   industry?: string | null;
   location?: string | null;
   description?: string | null;
+  /** Present when the file is contact-per-row (e.g. Apollo/Clay exports). */
+  person?: {
+    name: string;
+    title?: string | null;
+    email?: string | null;
+    linkedin_url?: string | null;
+  } | null;
   /** Everything else from the original row, preserved verbatim. */
   extra?: Record<string, string>;
 }
@@ -171,7 +178,10 @@ Commit with Task 3 (no behavior yet).
 - Create: `src/lib/csv/header-mapper.ts` (server-side Haiku fallback for unrecognized headers)
 - Test: `src/__tests__/company-csv.test.ts`, `src/__tests__/header-mapper.test.ts`
 
-**Step 1: Failing tests for the extraction** — exercise `parseCSV` (quoted fields, commas inside quotes, CRLF), `mapColumns` (aliases: `company_name→name`, `website→domain`, `hq→location`; first-column fallback to name; unmapped headers land in `extra`). Note: `mapColumns` today drops unmapped columns — extend it to collect them into `extra` (that's the only behavior change; `csv-upload.tsx` ignores `extra`).
+**Step 1: Failing tests for the extraction** — exercise `parseCSV` (quoted fields, commas inside quotes, CRLF), `mapColumns` (aliases: `company_name→name`, `website→domain`, `hq→location`; first-column fallback to name; unmapped headers land in `extra`). Two behavior extensions vs today's component code:
+
+1. Unmapped columns are collected into `extra` (today they're dropped; `csv-upload.tsx` ignores `extra`).
+2. **Person-column detection** for contact-per-row exports (Apollo/Clay/CRM): aliases `first_name`+`last_name`/`full_name`/`contact name`→person.name, `title`/`job_title`/`role`→person.title, `email`/`work_email`/`contact email`→person.email, `linkedin`/`linkedin_url`/`person_linkedin`→person.linkedin_url. When person columns exist, each row carries `person`; company fields dedupe across rows at import. Disambiguation rule: a bare `name` column maps to the COMPANY when a separate company column exists, else to the company (companies-only files unchanged); a bare `email` column is the person's. Tests: contact-per-row file (3 rows, 2 companies) maps correctly; companies-only file yields `person: null` everywhere.
 
 **Step 2:** Red. **Step 3:** Move code + add `extra` collection. **Step 4:** Green, plus `pnpm test src/__tests__/import-csv-batching.test.ts` still green (component unchanged behaviorally).
 
@@ -230,6 +240,26 @@ Implementation notes for the executor: `findOrCreateOrganization` builds its own
 **Tests (fakeSupabase):** append dedups within batch by resolved org; upsert carries `onConflict: "list_id,organization_id"`; row_count updated; 413 shape.
 
 Commit: `feat(target-lists): create/append API with org resolution`
+
+---
+
+### Task 4b: Import people from contact-per-row files (TDD)
+
+**Files:**
+
+- Modify: `src/lib/services/target-lists.ts` (extend `appendAccountsToList`)
+- Test: extend `src/__tests__/target-lists-service.test.ts`
+
+When rows carry `person`, after resolving the org:
+
+- `findOrCreatePerson` (knowledge-base.ts — dedup by linkedin_url, fallback name+org) with `organization_id`, `title`, `source: "target_list"`.
+- Email: store on the person as the data-quality schema expects for a user-provided address — **`unchecked` verification status** (imported emails are free suggestions; Hunter proves at send). Executor: read `supabase/migrations/20260801000000_contact_data_quality.sql` and `src/lib/services/affiliation.ts` first and record affiliation provenance the same way the CSV/import path is expected to (`evidence: "csv_import"`-equivalent) — copy the convention, don't invent one.
+- Return shape gains `peopleImported`. Multiple rows for one company must produce one org + N people (test this).
+- NOT linked to any campaign yet — `linkTargetListToCampaign` (Task 6) additionally upserts `campaign_people` for imported people whose org is being linked (status `pending`, same ignore-duplicates pattern).
+
+Tests: contact-per-row batch → 1 org, 3 people, dedup by linkedin_url on re-import; companies-only rows skip people entirely; link tool upserts campaign_people.
+
+Commit: `feat(target-lists): import contacts from contact-per-row files`
 
 ---
 
@@ -331,7 +361,9 @@ Commit: `feat(agent): prioritize target accounts against campaign ICP`
 - Modify: `src/proxy.ts` (add `"/api/target-lists/process(.*)"` to public routes — explicit path, not a wildcard prefix)
 - Test: `src/__tests__/target-list-process.test.ts`
 
-**Tool** `enrichTargetAccounts({ listId, campaignId, organizationIds })`:
+**Tool** `enrichTargetAccounts({ listId, campaignId, organizationIds, skipContactFinding = false })`:
+
+- `skipContactFinding` is for accounts whose imported contacts already match the ICP — the agent decides per tranche (it can split accounts across two calls). The process route passes it through to skip `findContactsForOrganization` and only run company enrichment.
 
 - RLS-verify the list is mine and orgs belong to it; stamp `enrich_requested_at = now()` on those `target_accounts`; publish ONE QStash message `{ listId, campaignId, userId }` to `getBaseUrl() + "/api/target-lists/process"`; return `{ queued: n, note: "Enrichment runs in the background (~1 min/company). Ask me for progress." }`.
 - If QStash env is missing (`getQStashClient` throws), return a clear error naming the integration — don't fall back to inline enrichment.
@@ -417,7 +449,11 @@ When the user uploads a target account list (you'll see "list ID ..."):
    progress with getTargetList when asked; don't poll in a loop.
 4. After enrichment: contacts were auto-found for qualified accounts. Apply
    the coverage check (below) before drafting outreach.
-5. "Do more" = prioritize/enrich the next slice. Never enrich the whole list
+5. If the upload included contacts: compare imported titles to the ICP before
+   enriching. Skip contact-finding (skipContactFinding: true) for accounts
+   whose imported contacts already match — tell the user what that saves.
+   Apply the coverage check where imported contacts look thin.
+6. "Do more" = prioritize/enrich the next slice. Never enrich the whole list
    unprompted.
 ```
 
