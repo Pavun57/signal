@@ -31,7 +31,7 @@ export function backoffSeconds(attempts: number): number {
  * /api/jobs/tick and /api/jobs/run are public URLs that reach the admin
  * client and, transitively, the user's outbox — this shared secret is the
  * only thing standing between the internet and real email sends (the same
- * invariant the QStash signature used to carry). Vercel Cron sends the
+ * invariant the old webhook signature used to carry). Vercel Cron sends the
  * header automatically when CRON_SECRET is set; pg_cron and the tick's
  * self-invocation send it explicitly. An unset secret authorizes nothing —
  * the queue stays off rather than open.

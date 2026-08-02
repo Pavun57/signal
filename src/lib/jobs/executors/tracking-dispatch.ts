@@ -6,7 +6,7 @@ import type { Schedule } from "@/lib/types/tracking";
 /**
  * Finds due tracking configs and enqueues one tracking.run job per config
  * (recurring job, every 15 min). next_run_at advances at enqueue time, same
- * as the old QStash dispatch route, so a config is never double-dispatched
+ * as the old dispatch route, so a config is never double-dispatched
  * even if the run itself later fails.
  */
 export async function dispatchDueTracking(): Promise<{ dispatched: number }> {

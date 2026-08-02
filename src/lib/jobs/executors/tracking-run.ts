@@ -248,8 +248,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
         .eq("campaign_id", config.campaign_id)
         .eq(entityField, entityId);
 
-      // Enqueue the outreach job (replaces the signed QStash publish —
-      // /api/jobs/* auth now guards the outbox path).
+      // Enqueue the outreach job; /api/jobs/* auth guards the outbox path.
       // Fire-and-forget: don't block the tracking run on the dispatch.
       void enqueueJob({
         type: "outreach.process",

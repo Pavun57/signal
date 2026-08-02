@@ -5,7 +5,7 @@ let _client: SupabaseClient | null = null;
 /**
  * Supabase client that bypasses RLS. Lazily initialized on first call.
  * Use ONLY for:
- * - QStash webhook handlers (no user session)
+ * - Job runner handlers (no user session)
  * - Cost tracker fire-and-forget inserts (no cookie context)
  * - E2E test setup/teardown
  * Never expose this client to the browser.

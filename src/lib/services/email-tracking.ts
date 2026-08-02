@@ -6,9 +6,9 @@ import { recordBounce } from "@/lib/services/email-pattern";
 /**
  * Applying an inbound classification (replied / bounced) to a sent email.
  *
- * Lifted out of the tracking route so it can be tested without standing up
- * QStash signatures and an IMAP connection — the route keeps the IO, this owns
- * the decision, matching the split email-test.ts established.
+ * Lifted out of the tracking executor so it can be tested without standing up
+ * an IMAP connection: the executor keeps the IO, this owns the decision,
+ * matching the split email-test.ts established.
  */
 
 /** The columns the status application needs from a sent_emails row. */

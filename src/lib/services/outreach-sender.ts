@@ -49,7 +49,7 @@ export type SendResult =
  * sendEmail/sendBulkEmails tools — must go through here so that overlapping
  * callers can't double-email a prospect.
  *
- * Accepts any Supabase client: the admin client from QStash handlers, or the
+ * Accepts any Supabase client: the admin client from the job runner, or the
  * RLS-scoped client from agent tools (RLS restricts it to the caller's rows,
  * which is exactly right there).
  */

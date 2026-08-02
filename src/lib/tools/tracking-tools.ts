@@ -14,8 +14,8 @@ async function dispatchImmediateRun(trackingConfigId: string): Promise<void> {
       maxAttempts: 2,
     });
   } catch (err) {
-    // Non-fatal, same contract as the old QStash publish: the config exists
-    // and will run on its schedule even if the baseline enqueue fails.
+    // Non-fatal: the config exists and will run on its schedule even if
+    // the baseline enqueue fails.
     console.error("[tracking] Failed to enqueue baseline run:", err);
   }
 }
