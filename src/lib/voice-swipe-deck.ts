@@ -25,7 +25,7 @@ const RAW: Omit<SwipeEmail, "words">[] = [
     },
     body: `Hi Dana,
 
-Huge fan of what your team has been shipping — the metering work in last month's changelog was genuinely impressive, and it's clear Fernpath is thinking hard about developer experience.
+Huge fan of what your team has been shipping. The metering work in last month's changelog was genuinely impressive, and it's clear Fernpath is thinking hard about developer experience.
 
 We help API companies like yours turn usage data into billing without building it in-house. Teams usually save a quarter of engineering time.
 
@@ -86,7 +86,7 @@ Jay`,
     },
     body: `Dana,
 
-Across the API companies we work with, billing glue eats about a quarter of one engineer — permanently. It rarely lands on a roadmap because it never quite ships.
+Across the API companies we work with, billing glue eats about a quarter of one engineer, permanently. It rarely lands on a roadmap because it never quite ships.
 
 Arbor takes that piece off you.
 
@@ -106,7 +106,7 @@ Jay`,
     },
     body: `Dana,
 
-A VP Eng told me last month that billing had quietly become one engineer's entire job. Nobody decided that — it accumulated, one edge case at a time.
+A VP Eng told me last month that billing had quietly become one engineer's entire job. Nobody decided that; it accumulated, one edge case at a time.
 
 We built Arbor for exactly that drift. Metering to invoice, handled.
 
@@ -142,7 +142,7 @@ Arbor handles metering to invoice. Worth fifteen minutes?`,
     },
     body: `Dana,
 
-How are you handling the metering-to-invoice step today — built in-house, or still manual?
+How are you handling the metering-to-invoice step today: built in-house, or still manual?
 
 Asking because you shipped metering last month, and that's usually where it starts getting expensive.
 
@@ -178,7 +178,7 @@ Jay`,
     },
     body: `Hi Dana,
 
-Hope the metering launch went smoothly — those are never as clean as the changelog makes them look.
+Hope the metering launch went smoothly. Those are never as clean as the changelog makes them look.
 
 If the invoicing side is next on your list, that's the bit we do. Arbor turns metering into invoices without another quarter of engineering.
 
@@ -251,7 +251,7 @@ Saw the metering work. Did you build the invoicing side too, or is that still co
     },
     body: `Dana,
 
-Metering is the interesting problem. Invoicing is the tax you pay for having solved it — proration, credits, mid-cycle plan changes, all landing on whoever shipped the meter.
+Metering is the interesting problem. Invoicing is the tax you pay for having solved it: proration, credits, mid-cycle plan changes, all landing on whoever shipped the meter.
 
 Arbor is that tax, paid.
 
@@ -271,7 +271,7 @@ Jay`,
     },
     body: `Hi Dana,
 
-I wanted to introduce Arbor — we handle usage-based billing for API companies, from raw metering events through to invoices your finance team can actually reconcile.
+I wanted to introduce Arbor. We handle usage-based billing for API companies, from raw metering events through to invoices your finance team can actually reconcile.
 
 Given Fernpath shipped metering recently, the timing seemed worth a note.
 
@@ -312,7 +312,7 @@ Jay`,
     },
     body: `Hi Dana,
 
-Saw metering went out last month — that's a hard one to get right, so nice work.
+Saw metering went out last month, and that's a hard one to get right, so nice work.
 
 The invoicing half is what we do. Arbor turns those events into invoices without another quarter of engineering.
 
@@ -350,7 +350,7 @@ I'll leave it there.`,
     },
     body: `Hi Dana,
 
-Billing has a habit of landing in the gap between engineering and finance — everyone touches it, nobody owns it, and it quietly eats a roadmap slot every quarter.
+Billing has a habit of landing in the gap between engineering and finance: everyone touches it, nobody owns it, and it quietly eats a roadmap slot every quarter.
 
 Arbor takes that gap off the table for API companies like Fernpath.
 
@@ -371,7 +371,7 @@ Jay`,
     },
     body: `Dana,
 
-Who ends up owning invoicing at Fernpath — your team, or finance?
+Who ends up owning invoicing at Fernpath: your team, or finance?
 
 Metering shipped last month, so it's about to matter.
 

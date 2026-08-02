@@ -167,7 +167,7 @@ const CAP_FALLBACK = {
   instructions:
     "No user-specific voice rules were captured. Draft using the base rules alone.",
   summary:
-    "The interview hit its turn limit before a voice emerged — rebuild to try again.",
+    "The interview hit its turn limit before a voice emerged. Rebuild to try again.",
 };
 
 // ── Prompts ────────────────────────────────────────────────────────────────
@@ -180,14 +180,14 @@ What you produce is not advice for the user to read. It is a rule-set a second m
 
 - Ask ONE thing per move. Never bundle two questions into a single prompt.
 - Adapt. Read the last answer before choosing the next move and follow up on whatever was specific or surprising in it, rather than marching through a script. When an answer is vague ("I keep it casual"), push for the concrete version: what they'd actually type.
-- Use \`request_samples\` early — first or second move — whenever the user might have real emails they have sent. Their own writing is the highest-fidelity voice signal available; every question after that becomes a check on something you have already read instead of a guess.
+- Use \`request_samples\` early, in the first or second move, whenever the user might have real emails they have sent. Their own writing is the highest-fidelity voice signal available; every question after that becomes a check on something you have already read instead of a guess.
 - Prefer \`compare\` whenever a preference is easier to show than to describe. Self-reported style is unreliable: people describe how they wish they wrote, not how they write. A reaction to concrete copy can be trusted in a way that "I'm pretty direct" cannot.
-- Aim to finish in 8-14 moves. Stop as soon as another question would not change the rules you are about to write — a longer interview spends the user's patience and buys nothing.
+- Aim to finish in 8-14 moves. Stop as soon as another question would not change the rules you are about to write. A longer interview spends the user's patience and buys nothing.
 
 ## \`compare\` moves
 
 - The two samples must differ in EXACTLY ONE dimension, and \`dimension\` must name it: "story-led vs data-led opener", "warm vs blunt", "signal-first vs problem-first", "question close vs statement close". If they differ in two things, a pick tells you nothing about which one was picked.
-- Both samples must be genuinely good. Never pair a strong email against a strawman — a user rejecting an obviously bad email teaches you nothing about their voice.
+- Both samples must be genuinely good. Never pair a strong email against a strawman: a user rejecting an obviously bad email teaches you nothing about their voice.
 - Hold everything else steady: same rough length, same offer, same ask. Anything that varies by accident becomes a confound.
 - Write them about the user's real campaign when one is given below. People react honestly to copy about their own product and politely to filler.
 
@@ -195,11 +195,12 @@ What you produce is not advice for the user to read. It is a rule-set a second m
 
 \`instructions\` is the deliverable. Terse imperative rules, one per line, that a drafting model can follow:
 
-- Rules about writing, not observations about the person. "Open on the signal, no greeting line" — not "she likes getting to the point".
+- Rules about writing, not observations about the person. "Open on the signal, no greeting line", not "she likes getting to the point".
 - Only what is specific to THIS user: their register, phrasings they reuse, what they refuse to say, how they open, how they ask, how they sign off, what they are willing to admit.
 - Do NOT restate generic cold-email best practice. A separate base prompt already covers body length, subject lines, one call to action, and avoiding AI tells. Repeating it wastes the drafting model's attention and buries the parts that are actually about this user.
 - Quote the user's own wording wherever you have it. A rule carrying their phrases survives paraphrase better than one describing them.
 - If the interview never established something, leave it out. An invented rule is worse than a missing one: it shows up in every email they send.
+- Never use an em dash (\u2014) in your own text, in \`instructions\`, \`summary\`, questions, or \`compare\` samples. Use a comma, colon, semicolon, parentheses, or a full stop. The user reads this copy and the drafting model imitates it.
 
 \`summary\` is one human-readable sentence for the UI, e.g. "Blunt and signal-first, no pleasantries, always names a number."`;
 
@@ -210,10 +211,10 @@ What you produce is not advice for the user to read. It is a rule-set a second m
  */
 function buildInterviewSystemPrompt(campaign: CampaignContext | null): string {
   const context = campaign
-    ? `THE USER'S CAMPAIGN — write \`compare\` samples about this offer:\n${wrapUntrusted(
+    ? `THE USER'S CAMPAIGN. Write \`compare\` samples about this offer:\n${wrapUntrusted(
         `Name: ${campaign.name}\nICP: ${JSON.stringify(campaign.icp ?? {})}\nOffering: ${JSON.stringify(campaign.offering ?? {})}\nPositioning: ${JSON.stringify(campaign.positioning ?? {})}`,
       )}`
-    : `The user has no campaign yet, so you have no real offer to write about: keep \`compare\` samples plausible but generic. Do not interview them about their ICP or offering — that is captured elsewhere, and this interview is only about voice.`;
+    : `The user has no campaign yet, so you have no real offer to write about: keep \`compare\` samples plausible but generic. Do not interview them about their ICP or offering; that is captured elsewhere, and this interview is only about voice.`;
 
   return `${INTERVIEW_SYSTEM_PROMPT}\n\n---\n${UNTRUSTED_NOTICE}\n\n${context}`;
 }
@@ -227,7 +228,7 @@ function buildTranscriptPrompt(transcript: InterviewTurn[]): string {
   if (transcript.length === 0) {
     return "The interview has not started. Return your opening move.";
   }
-  return `INTERVIEW SO FAR — move ${transcript.length + 1} of at most ${MAX_INTERVIEW_TURNS}:\n${wrapUntrusted(
+  return `INTERVIEW SO FAR, move ${transcript.length + 1} of at most ${MAX_INTERVIEW_TURNS}:\n${wrapUntrusted(
     JSON.stringify(transcript, null, 2),
   )}\n\nReturn your next move.`;
 }
@@ -423,7 +424,7 @@ export async function POST(request: Request) {
     return Response.json(
       {
         error:
-          "The interview ran long and the final summary could not be written. Nothing was saved — try again, or exit and rebuild.",
+          "The interview ran long and the final summary could not be written. Nothing was saved. Try again, or exit and rebuild.",
       },
       { status: 503 },
     );

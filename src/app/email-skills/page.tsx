@@ -248,8 +248,8 @@ function BuildPrompt({
         description={
           scopeLabel
             ? hasDefault
-              ? "This campaign will use your default voice, which was interviewed against a different audience — so it may reach for the wrong kind of signal."
-              : "Until you build one, the agent writes to generic best-practice rules — correct, and identical to everybody else's."
+              ? "This campaign will use your default voice, which was interviewed against a different audience, so it may reach for the wrong kind of signal."
+              : "Until you build one, the agent writes to generic best-practice rules: correct, and identical to everybody else's."
             : "The fallback for any campaign without its own voice. Until you build one, those campaigns write to generic best-practice rules."
         }
         action={
@@ -270,8 +270,7 @@ function BuildPrompt({
             <span className="text-foreground font-medium">
               The agent interviews you.
             </span>{" "}
-            Short questions about how you actually write — not a form to fill
-            in.
+            Short questions about how you actually write, not a form to fill in.
           </li>
           <li>
             <span className="text-foreground font-medium">
@@ -376,7 +375,7 @@ function PageShell({
       <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
         <div>
           <h1 className="type-title">
-            {scopeLabel ? `Email voice — ${scopeLabel}` : "Email voice"}
+            {scopeLabel ? `Email voice: ${scopeLabel}` : "Email voice"}
           </h1>
           <p className="text-muted-foreground text-sm">
             {scopeLabel

@@ -359,7 +359,7 @@ export function canSendTo(person: SendCandidate): SendCheck {
       // "no email address on file" was factually wrong for those contacts and
       // the agent relayed it to the user as fact.
       reason: person.personal_email
-        ? "only a personal address is on file — outreach requires a work address (enter one to unblock)"
+        ? "only a personal address is on file; outreach requires a work address (enter one to unblock)"
         : "no email address on file",
     };
   }
@@ -386,7 +386,7 @@ export function canSendTo(person: SendCandidate): SendCheck {
     return {
       ok: false,
       reason:
-        "this address hard-bounced — enter a corrected address for this contact",
+        "this address hard-bounced; enter a corrected address for this contact",
     };
   }
 
@@ -397,7 +397,7 @@ export function canSendTo(person: SendCandidate): SendCheck {
   if (!humanEntered && person.work_email_verification === "risky") {
     return {
       ok: false,
-      reason: `email verification came back "risky" — it is not confirmed deliverable`,
+      reason: `email verification came back "risky", so it is not confirmed deliverable`,
     };
   }
 
@@ -414,8 +414,8 @@ export function canSendTo(person: SendCandidate): SendCheck {
       ok: false,
       reason:
         state === "unchecked"
-          ? "email has never been verified — run findEmail with an email provider configured, or enter the address manually"
-          : `email verification came back "${state}" — it is not confirmed deliverable`,
+          ? "email has never been verified; run findEmail with an email provider configured, or enter the address manually"
+          : `email verification came back "${state}", so it is not confirmed deliverable`,
     };
   }
 
@@ -456,7 +456,7 @@ export function canDraftFor(person: SendCandidate): SendCheck {
     return {
       ok: false,
       reason: person.personal_email
-        ? "only a personal address is on file — outreach requires a work address"
+        ? "only a personal address is on file; outreach requires a work address"
         : "no email address on file",
     };
   }

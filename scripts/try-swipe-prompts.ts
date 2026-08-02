@@ -64,7 +64,7 @@ async function generate<T>(
 
 /** The measurement that matters: how much of the axis space did the batch use? */
 function report(drafts: Draft[], label: string) {
-  console.log(`\n${"─".repeat(72)}\n${label} — ${drafts.length} drafts\n`);
+  console.log(`\n${"─".repeat(72)}\n${label}: ${drafts.length} drafts\n`);
 
   for (const d of drafts) {
     const axes = AXES.map((a) => `${a}:${d.axes[a]}`).join("  ");
@@ -106,7 +106,7 @@ async function loadCampaign(id?: string): Promise<SwipeCampaign | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
-    console.log("No Supabase env — running without campaign context.\n");
+    console.log("No Supabase env. Running without campaign context.\n");
     return null;
   }
   const { createClient } = await import("@supabase/supabase-js");
@@ -118,7 +118,7 @@ async function loadCampaign(id?: string): Promise<SwipeCampaign | null> {
     ? await q.eq("id", id).maybeSingle()
     : await q.order("updated_at", { ascending: false }).limit(1).maybeSingle();
   if (!data) {
-    console.log("No campaign found — running without context.\n");
+    console.log("No campaign found. Running without context.\n");
     return null;
   }
   return data as SwipeCampaign;
@@ -158,7 +158,7 @@ async function run() {
     8_000,
   );
   console.log(`\n(batch 1 took ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-  report(first.drafts, "BATCH 1 — cold start");
+  report(first.drafts, "BATCH 1: cold start");
 
   // ── Simulate a picky user: keeps blunt/signal, passes the rest ────────────
   const judged: JudgedDraft[] = first.drafts.map((d) => ({
@@ -198,9 +198,13 @@ async function run() {
     6_000,
   );
   console.log(`\n(batch 2 took ${((Date.now() - t1) / 1000).toFixed(1)}s)`);
-  report(second.drafts, "BATCH 2 — after keeps + instructions");
+  report(second.drafts, "BATCH 2: after keeps + instructions");
 
-  const emDash = second.drafts.filter((d) => d.body.includes("—")).length;
+  // This measures whether the model obeyed the no-em-dash rule, so it is the
+  // one place that has to contain the character. The escape is not enough:
+  // the lint rule matches a Literal's cooked value, not its source text.
+  // eslint-disable-next-line no-restricted-syntax
+  const emDash = second.drafts.filter((d) => d.body.includes("\u2014")).length;
   const formal = second.drafts.filter((d) => d.axes.tone === "formal").length;
   const blunt = second.drafts.filter((d) => d.axes.tone === "blunt").length;
   console.log("\n  INSTRUCTION COMPLIANCE");

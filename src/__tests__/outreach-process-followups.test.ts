@@ -83,7 +83,7 @@ beforeEach(() => {
   getAdminClientMock.mockReset();
 });
 
-describe("followups handler — approved waiting enrollments", () => {
+describe("followups handler: approved waiting enrollments", () => {
   it("sends a waiting enrollment whose current-step draft is approved", async () => {
     const { client } = fakeSupabase([
       { data: [] }, // active enrollments due

@@ -186,7 +186,7 @@ export async function summarizePerson(
           .string()
           .nullable()
           .describe(
-            "The person's current job title, read from the source material — e.g. 'Head of GTM / Revenue Ops'. Just the role, without the company name. Null if the source material does not state it.",
+            "The person's current job title, read from the source material, e.g. 'Head of GTM / Revenue Ops'. Just the role, without the company name. Null if the source material does not state it.",
           ),
         sourcesConflict: z
           .boolean()

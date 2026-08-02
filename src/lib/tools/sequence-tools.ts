@@ -259,7 +259,7 @@ export const draftSequenceEmails = tool({
         "(1) call getContactDetail(personId) to fetch that contact's enrichment; " +
         "(2) optionally call getCompanyDetail(organizationId) if you need deep company context; " +
         "(3) call writeEmail with the personalized content, passing sequenceId, sequenceStepId, enrollmentId, and ai_reasoning; " +
-        "(4) then move on to the next contact — do NOT preload enrichment for all contacts up front. " +
+        "(4) then move on to the next contact. Do NOT preload enrichment for all contacts up front. " +
         "Step 1 is the initial cold email. Follow-ups reference the prior email and add urgency. The final step is a polite breakup. " +
         `After all drafts are created, tell the user to review them at /outreach/review?sequence=${sequenceId}`,
     };
@@ -276,11 +276,11 @@ export const draftEmailsForSequence = tool({
     "Draft ALL personalized emails for a sequence in parallel, server-side. " +
     "Loads each contact's enrichment, composes emails via a focused sub-agent " +
     "per contact × step, and saves drafts to the database. This is the " +
-    "preferred way to draft sequence emails — the main agent does not need " +
+    "preferred way to draft sequence emails; the main agent does not need " +
     "to loop through contacts or call writeEmail itself. Use writeEmail only " +
     "for ad-hoc single-draft flows outside a sequence. " +
     "If the campaign has no email voice yet this returns needsVoice instead of " +
-    "drafting — offer the user the interview or an explicit skip, then call " +
+    "drafting; offer the user the interview or an explicit skip, then call " +
     "again with voiceChoice.",
   inputSchema: z.object({
     sequenceId: z.string().uuid().describe("Sequence ID to draft emails for."),
@@ -555,7 +555,7 @@ export const draftEmailsForSequence = tool({
           ? ""
           : voice
             ? "Written in the user's default voice, not one built for this campaign. "
-            : "Written from the base rules only — no personal voice. ") +
+            : "Written from the base rules only, no personal voice. ") +
         `Tell the user to review at /outreach/review?sequence=${sequenceId}.`,
     };
   },

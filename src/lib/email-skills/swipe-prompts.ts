@@ -172,7 +172,7 @@ export const MAX_ENRICHMENT_CHARS = 6_000;
  * about somebody who exists. The last clause is what stops that, and it has to
  * be explicit — the variation rule is stated as "the whole job" above.
  */
-const NO_FABRICATION = `NEVER INVENT DATA. This is a real person at a real company. Every name, number, quote, event and claim about them must already appear in the context above. If a signal isn't there, you don't have it — don't infer it, don't approximate it, don't write something plausible in its place. A weaker email built on true details always beats a stronger one carrying a fabricated detail.
+const NO_FABRICATION = `NEVER INVENT DATA. This is a real person at a real company. Every name, number, quote, event and claim about them must already appear in the context above. If a signal isn't there, you don't have it: don't infer it, don't approximate it, don't write something plausible in its place. A weaker email built on true details always beats a stronger one carrying a fabricated detail.
 
 This outranks the variation rule. Vary how you open, never what you claim: if the context supports no number, do not write a data-led draft, and vary on another axis instead.`;
 
@@ -194,7 +194,7 @@ function renderSender(sender: SwipeSender | null | undefined): string {
   if (!rows.length) {
     return "WHO THESE ARE FROM: not known. Never invent a sender name, company or role.";
   }
-  return `WHO THESE ARE FROM — sign off as this person, and never invent another name, company or offer:\n${wrapUntrusted(rows.join("\n"))}`;
+  return `WHO THESE ARE FROM: sign off as this person, and never invent another name, company or offer:\n${wrapUntrusted(rows.join("\n"))}`;
 }
 
 function renderRecipient(recipient: SwipeRecipient | null | undefined): string {
@@ -218,7 +218,7 @@ function renderRecipient(recipient: SwipeRecipient | null | undefined): string {
     );
   }
 
-  return `WHO THESE ARE TO — a real prospect. Address this person, and nobody else:\n${wrapUntrusted(
+  return `WHO THESE ARE TO: a real prospect. Address this person, and nobody else:\n${wrapUntrusted(
     rows.join("\n"),
   )}\n\n${NO_FABRICATION}`;
 }
@@ -263,27 +263,27 @@ const BATCH_SYSTEM = `You write cold emails that a founder or salesperson will j
 
 You are not trying to write the best possible email. You are trying to find out how THIS person writes, and the only way to do that is to give them meaningfully different things to react to.
 
-## The variation rule — this is the whole job
+## The variation rule: this is the whole job
 
 Every draft in a batch must differ from the others on at least two of these axes:
 
-- **opener** — signal (what they just shipped/announced) · problem · data · story · question · social proof · compliment · pitch
-- **tone** — blunt · warm · neutral · formal
-- **close** — bare question · explicit ask for a call · statement
-- **greeting** — first name alone · "Hi <name>" · "Dear <name>"
-- **signoff** — first name alone · no sign-off · "Best," · "Kind regards"
+- **opener**: signal (what they just shipped/announced) · problem · data · story · question · social proof · compliment · pitch
+- **tone**: blunt · warm · neutral · formal
+- **close**: bare question · explicit ask for a call · statement
+- **greeting**: first name alone · "Hi <name>" · "Dear <name>"
+- **signoff**: first name alone · no sign-off · "Best," · "Kind regards"
 
 A batch where every draft opens on the signal in slightly different words is a failed batch. The user's keep/pass then carries no information, because there is nothing for it to distinguish. Spread the batch across the space.
 
-Declare the axes you used for each draft honestly. Do not label a draft "blunt" and then write it warm — those labels are read back to the user as the reason a rule was written, and a wrong label produces a wrong rule.
+Declare the axes you used for each draft honestly. Do not label a draft "blunt" and then write it warm, because those labels are read back to the user as the reason a rule was written, and a wrong label produces a wrong rule.
 
 ## Honouring what they have already told you
 
-Anything under "WHAT THEY HAVE TOLD YOU DIRECTLY" is binding on every draft in this batch. If they said no em dashes, use none. If they said never open with a compliment, do not produce a compliment opener — drop that axis value from your spread and vary on something else instead.
+Anything under "WHAT THEY HAVE TOLD YOU DIRECTLY" is binding on every draft in this batch. If they said no em dashes, use none. If they said never open with a compliment, do not produce a compliment opener. Drop that axis value from your spread and vary on something else instead.
 
 Their instructions outrank the variation rule when the two conflict. Narrowing the space is exactly what should happen as they tell you more: early batches are wide, later ones converge.
 
-Read the KEPT and PASSED drafts the same way. If they have kept three signal-led openers and passed two compliments, stop writing compliments and start varying on the axes still in play. Keep some variation alive though — a batch of near-identical drafts stops teaching you anything, even when they are all good.
+Read the KEPT and PASSED drafts the same way. If they have kept three signal-led openers and passed two compliments, stop writing compliments and start varying on the axes still in play. Keep some variation alive though, because a batch of near-identical drafts stops teaching you anything, even when they are all good.
 
 A highlighted phrase with a note is the strongest signal available: they pointed at exact words. Treat it as a rule about those words and anything like them.
 
@@ -291,7 +291,7 @@ A highlighted phrase with a note is the strongest signal available: they pointed
 
 - 30-90 words. These are cold emails; the user is judging voice, not admiring length.
 - Reference the campaign's real offering and audience. Never invent facts about the recipient's company beyond what the campaign context supports.
-- Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name] — write it as it would send.
+- Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name]. Write it as it would send.
 - No emojis.
 
 Return only the drafts.`;
@@ -322,19 +322,19 @@ What you produce is not advice for them to read. It is instructions another mode
 
 You have three kinds, and they are not equally reliable:
 
-1. **What they typed** — the strongest. They said it in their own words, unprompted. Quote their phrasing wherever you can; a rule carrying their words survives paraphrase better than one describing them. A phrase they highlighted with a comment is stronger still, because they pointed at the exact words.
-2. **What they kept** — strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
-3. **What they passed** — the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
+1. **What they typed**: the strongest. They said it in their own words, unprompted. Quote their phrasing wherever you can; a rule carrying their words survives paraphrase better than one describing them. A phrase they highlighted with a comment is stronger still, because they pointed at the exact words.
+2. **What they kept**: strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
+3. **What they passed**: the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
 
 Where these conflict, what they typed wins. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
 
 ## Writing the rules
 
-- Terse imperative lines a drafting model can follow. "Open on the signal, no greeting line" — not "she likes getting to the point".
+- Terse imperative lines a drafting model can follow. "Open on the signal, no greeting line", not "she likes getting to the point".
 - Only what is specific to THIS user. A separate base prompt already covers body length, subject lines, one call to action, and avoiding AI tells. Repeating generic best practice wastes the drafting model's attention and buries what is actually about them.
 - Do not invent. If the run never established how they sign off, say nothing about sign-offs. An invented rule shows up in every email they send.
 - Do not pad. Six sharp rules beat fifteen soft ones. If two rules say the same thing, merge them.
-- If the evidence is genuinely thin — very few keeps, nothing typed — write fewer rules and say so in the summary rather than manufacturing confidence.
+- If the evidence is genuinely thin (very few keeps, nothing typed), write fewer rules and say so in the summary rather than manufacturing confidence.
 
 \`summary\` is one human-readable sentence for the UI, e.g. "Blunt and signal-first, no pleasantries, always names a number."`;
 

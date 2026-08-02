@@ -51,7 +51,7 @@ async function main() {
     (a, b) => rank[a.severity] - rank[b.severity],
   );
 
-  console.log("\nData quality audit (read-only — nothing was changed)\n");
+  console.log("\nData quality audit (read-only, nothing was changed)\n");
   console.log(
     `  ${report.counts.organizations} companies · ${report.counts.people} people · ${report.counts.peopleWithOrg} attached to a company\n`,
   );
@@ -68,7 +68,7 @@ async function main() {
     console.log(`  [${f.severity.toUpperCase().padEnd(6)}] ${f.summary}`);
   }
   console.log(
-    `\n  ${sorted.length} finding(s). Review before acting — repairs are not automatic.\n`,
+    `\n  ${sorted.length} finding(s). Review before acting; repairs are not automatic.\n`,
   );
 }
 

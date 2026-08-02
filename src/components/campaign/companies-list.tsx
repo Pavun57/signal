@@ -674,7 +674,7 @@ export function CompaniesList({
                                   title={
                                     company.organization_id
                                       ? "Org chart"
-                                      : "Chart unavailable — company has no organization id"
+                                      : "Chart unavailable: company has no organization id"
                                   }
                                 >
                                   Org chart

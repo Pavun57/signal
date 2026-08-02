@@ -142,7 +142,7 @@ export const INTEGRATIONS: Integration[] = [
     severity: "optional",
     feature: "Outbound email via each user's own Gmail + reply tracking",
     consequence:
-      "Outreach sequences can be drafted but not sent — users can't connect a mailbox in Settings > Email.",
+      "Outreach sequences can be drafted but not sent; users can't connect a mailbox in Settings > Email.",
     envVars: ["EMAIL_CREDENTIALS_KEY"],
     fixHint:
       "Generate with `openssl rand -base64 32` and add `EMAIL_CREDENTIALS_KEY=...` to .env.local, then connect a mailbox in Settings > Email",
@@ -182,7 +182,7 @@ export const INTEGRATIONS: Integration[] = [
     feature:
       "Mailbox verification before sending, and email lookup when the free path finds nothing",
     consequence:
-      "Emails fall back to free discovery only — team-page scraping, Exa, and pattern guessing — and no address is ever confirmed to exist. Unverified addresses are blocked from outreach, so most contacts will not be sendable.",
+      "Emails fall back to free discovery only (team-page scraping, Exa, and pattern guessing), and no address is ever confirmed to exist. Unverified addresses are blocked from outreach, so most contacts will not be sendable.",
     envVars: ["EMAIL_PROVIDER", "HUNTER_API_KEY"],
     signupUrl: "https://hunter.io",
     keysUrl: "https://hunter.io/api-keys",

@@ -13,7 +13,7 @@ import type { EmailSample, InterviewMove } from "@/lib/types/email-voice";
  */
 const PREFER_A = "Prefers option A.";
 const PREFER_B = "Prefers option B.";
-const NO_PREFERENCE = "No strong feeling either way — neither stands out.";
+const NO_PREFERENCE = "No strong feeling either way, neither stands out.";
 const NO_SAMPLES = "Has no email samples to share.";
 
 interface InterviewMoveViewProps {
@@ -144,7 +144,7 @@ function QuestionMove({
         rows={3}
         autoFocus
         disabled={disabled}
-        placeholder="Answer in your own words — a sentence is plenty."
+        placeholder="Answer in your own words. A sentence is plenty."
       />
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-xs">
@@ -201,7 +201,7 @@ function CompareMove({
           disabled={disabled}
           onClick={() => onAnswer(NO_PREFERENCE)}
         >
-          Neither — no strong feeling
+          Neither, no strong feeling
         </Button>
       </div>
     </MoveCard>
@@ -295,7 +295,7 @@ function SamplesMove({
         {/* Most people have nothing to hand. Skipping is a normal path, so it is
             stated as one rather than buried as a way out. */}
         <p className="text-muted-foreground text-xs">
-          Nothing to paste? Skip it — the questions on their own are enough.
+          Nothing to paste? Skip it. The questions on their own are enough.
         </p>
         <div className="flex gap-2">
           <Button

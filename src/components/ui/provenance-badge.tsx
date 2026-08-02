@@ -99,7 +99,7 @@ export function EmailProvenanceBadge({
     return (
       <Pill
         tone="blocked"
-        title="Accepted by a catch-all domain, which accepts every address — this says nothing about whether this particular mailbox exists."
+        title="Accepted by a catch-all domain, which accepts every address, so this says nothing about whether this particular mailbox exists."
         className={className}
       >
         catch-all

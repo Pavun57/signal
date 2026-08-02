@@ -52,7 +52,7 @@ async function run() {
       expectPersonId: "raj",
       input: {
         reason:
-          "Added 3 senior engineering/DevOps roles — Senior Backend Engineer, Staff SRE, Principal DevOps Engineer — matching the 'scaling engineering' criterion.",
+          "Added 3 senior engineering/DevOps roles (Senior Backend Engineer, Staff SRE, Principal DevOps Engineer) matching the 'scaling engineering' criterion.",
         signalName: "Hiring Activity",
         signalCategory: "hiring",
         candidates: [

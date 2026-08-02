@@ -247,7 +247,7 @@ export const searchCompanies = tool({
       const summary = result.summary || result.text?.slice(0, 500) || null;
       const description =
         result.title && summary && !summary.includes(result.title)
-          ? `${result.title} — ${summary}`
+          ? `${result.title}: ${summary}`
           : summary || result.title || null;
 
       const org = await findOrCreateOrganization({

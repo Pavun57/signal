@@ -82,7 +82,7 @@ function preflight() {
   const node = process.versions.node.split(".")[0];
   if (Number(node) < 20) {
     log.fail(
-      `Node ${process.versions.node} — need 20+. See https://nodejs.org.`,
+      `Node ${process.versions.node}, need 20+. See https://nodejs.org.`,
     );
     failed = true;
   } else {
@@ -100,7 +100,7 @@ function preflight() {
 
   if (!has("docker")) {
     log.warn(
-      "docker not found — local Supabase won't work. Install Docker Desktop.",
+      "docker not found. Local Supabase won't work. Install Docker Desktop.",
     );
   } else {
     log.ok("docker available");
@@ -108,7 +108,7 @@ function preflight() {
 
   if (!has("supabase")) {
     log.warn(
-      "supabase CLI not found — you'll need it for `supabase start`. Install: brew install supabase/tap/supabase",
+      "supabase CLI not found. You'll need it for `supabase start`. Install: brew install supabase/tap/supabase",
     );
   } else {
     log.ok("supabase CLI available");
@@ -145,7 +145,7 @@ async function bootstrapEnv() {
   log.header("Env file");
   if (RESET) {
     copyFileSync(ENV_EXAMPLE, ENV_PATH);
-    log.warn(".env.local reset — overwritten from .env.example.");
+    log.warn(".env.local reset, overwritten from .env.example.");
     return;
   }
   try {
@@ -153,7 +153,7 @@ async function bootstrapEnv() {
     log.ok(".env.local created from .env.example");
   } catch (err) {
     if (err.code !== "EEXIST") throw err;
-    log.ok(".env.local already exists — will update in place.");
+    log.ok(".env.local already exists, will update in place.");
   }
 }
 
@@ -196,7 +196,7 @@ async function promptClerk() {
   log.plain(
     "  [2] Set up Clerk now            → opens dashboard, walks through",
   );
-  log.plain("  [3] Skip — Keyless mode         → ephemeral dev app, dashboard");
+  log.plain("  [3] Skip: Keyless mode          → ephemeral dev app, dashboard");
   log.plain(
     "                                    will be empty (see warning later)",
   );
@@ -232,7 +232,7 @@ async function promptClerk() {
         { stdio: "ignore" },
       );
     } catch {
-      log.info(`(Couldn't open browser — visit ${url} manually.)`);
+      log.info(`(Couldn't open browser. Visit ${url} manually.)`);
     }
     log.plain("");
     log.plain("  In the Clerk dashboard:");
@@ -310,7 +310,7 @@ function enableSupabaseClerkAuth() {
   );
   if (updated === original) {
     log.warn(
-      "Couldn't auto-enable Clerk in supabase/config.toml — flip\n" +
+      "Couldn't auto-enable Clerk in supabase/config.toml. Flip\n" +
         "  `enabled = false` to `true` under [auth.third_party.clerk] manually.",
     );
     return;
@@ -323,14 +323,14 @@ async function askValidated(label, regex, opts = {}) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const value = (await ask(label, opts)).trim();
     if (!value) {
-      log.warn("Empty value — try again or rerun setup later.");
+      log.warn("Empty value, try again or rerun setup later.");
       continue;
     }
     if (regex.test(value)) return value;
-    log.warn("Format looks off — try again.");
+    log.warn("Format looks off, try again.");
   }
   // Fall through: accept whatever they typed last on the third try.
-  log.warn("Saving anyway — couldn't validate format after 3 tries.");
+  log.warn("Saving anyway, couldn't validate format after 3 tries.");
   return (await ask(label, opts)).trim();
 }
 
@@ -408,7 +408,7 @@ async function promptOptional() {
 function installDeps() {
   log.header("Dependencies");
   if (existsSync(join(ROOT, "node_modules"))) {
-    log.ok("node_modules already present — skipping install.");
+    log.ok("node_modules already present, skipping install.");
     return;
   }
   run("pnpm", ["install"]);
@@ -419,7 +419,7 @@ async function startSupabase() {
   log.header("Supabase");
   if (!has("supabase")) {
     log.warn(
-      "supabase CLI missing — skipping DB setup. Run `supabase start && supabase db reset` manually later.",
+      "supabase CLI missing, skipping DB setup. Run `supabase start && supabase db reset` manually later.",
     );
     return;
   }
@@ -447,7 +447,7 @@ async function writeLocalSupabaseKeys() {
   const urlMatch = existing.match(/^NEXT_PUBLIC_SUPABASE_URL=(.+)$/m);
   if (urlMatch && urlMatch[1].trim()) {
     log.info(
-      "Hosted Supabase URL already set in .env.local — leaving env untouched.",
+      "Hosted Supabase URL already set in .env.local, leaving env untouched.",
     );
     return;
   }
@@ -457,9 +457,7 @@ async function writeLocalSupabaseKeys() {
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.status !== 0) {
-    log.warn(
-      "Could not read `supabase status` — populate .env.local manually.",
-    );
+    log.warn("Could not read `supabase status`. Populate .env.local manually.");
     return;
   }
 
@@ -474,7 +472,7 @@ async function writeLocalSupabaseKeys() {
 
   if (!apiUrl || !anonKey || !serviceRoleKey) {
     log.warn(
-      "`supabase status` output missing expected keys — populate .env.local manually.",
+      "`supabase status` output missing expected keys. Populate .env.local manually.",
     );
     return;
   }
@@ -497,7 +495,7 @@ function typecheck() {
   log.header("Typecheck");
   const result = run("npx", ["tsc", "--noEmit"], { check: false });
   if (result.status === 0) log.ok("Clean typecheck.");
-  else log.warn("Typecheck had errors — investigate before opening a PR.");
+  else log.warn("Typecheck had errors, investigate before opening a PR.");
 }
 
 function summary() {
@@ -524,7 +522,7 @@ function summary() {
     );
   } else {
     log.info(
-      "Visit http://localhost:3000 — Clerk's themed sign-in form is ready.\n" +
+      "Visit http://localhost:3000. Clerk's themed sign-in form is ready.\n" +
         "Free tier covers 10k MAU. See docs/setup.md if anything didn't work.",
     );
   }

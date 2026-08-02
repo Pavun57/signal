@@ -238,7 +238,7 @@ export async function POST(request: Request) {
     // Saving an empty rule-set would overwrite a good profile with nothing and
     // leave the composer reporting a voice that does not exist.
     return Response.json(
-      { error: "No usable rules came back. Nothing was saved — try again." },
+      { error: "No usable rules came back. Nothing was saved. Try again." },
       { status: 503 },
     );
   }

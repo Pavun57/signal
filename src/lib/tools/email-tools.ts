@@ -682,7 +682,7 @@ async function inferPatternFromOrg(
 
 export const findEmail = tool({
   description:
-    "Find a contact's email address for free (pattern, web search, team pages) and store it as a suggestion — verification happens automatically when a send is attempted, so this never spends provider credits on its own. Returns the stored address if there is one. Pass revalidate: true only to force a paid re-verification now, e.g. after a send was refused because the address was proven dead.",
+    "Find a contact's email address for free (pattern, web search, team pages) and store it as a suggestion; verification happens automatically when a send is attempted, so this never spends provider credits on its own. Returns the stored address if there is one. Pass revalidate: true only to force a paid re-verification now, e.g. after a send was refused because the address was proven dead.",
   inputSchema: z.object({
     personId: z.string().uuid().describe("Person ID to find email for."),
     revalidate: z
@@ -706,7 +706,7 @@ export const findEmails = tool({
       .array(z.string().uuid())
       .max(25)
       .describe(
-        "Array of person IDs (max 25 per call). Each unresolved contact can cost a provider find plus up to 3 verifications, so batch size is a spend bound — call again for the next batch.",
+        "Array of person IDs (max 25 per call). Each unresolved contact can cost a provider find plus up to 3 verifications, so batch size is a spend bound. Call again for the next batch.",
       ),
   }),
   execute: async ({ personIds }) => {
@@ -965,7 +965,7 @@ export const discardDraft = tool({
 
 export const sendBulkEmails = tool({
   description:
-    "Send multiple email drafts at once. Only APPROVED drafts are sent — sequence drafts awaiting review or rejected in the review queue are excluded and reported back. If no draftIds provided, sends all approved unsent drafts for the campaign. Only call after user confirms sending.",
+    "Send multiple email drafts at once. Only APPROVED drafts are sent; sequence drafts awaiting review or rejected in the review queue are excluded and reported back. If no draftIds provided, sends all approved unsent drafts for the campaign. Only call after user confirms sending.",
   inputSchema: z.object({
     campaignId: z.string().uuid().describe("Campaign ID."),
     draftIds: z
@@ -1070,7 +1070,7 @@ export const sendBulkEmails = tool({
         `Sent ${sent} of ${approvedIds.length} approved drafts.` +
         (failed > 0 ? ` ${failed} failed.` : "") +
         (skippedHeld > 0
-          ? ` ${awaitingReview} held for review and ${rejected} rejected — not sent.`
+          ? ` ${awaitingReview} held for review and ${rejected} rejected, not sent.`
           : ""),
     };
   },

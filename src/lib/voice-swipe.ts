@@ -111,7 +111,7 @@ export function readSeconds(words: number): number {
 
 const RULE_FOR: Record<AttrKey, Record<string, string>> = {
   opener: {
-    signal: "Open on the signal itself — what they just shipped or announced.",
+    signal: "Open on the signal itself: what they just shipped or announced.",
     problem: "Open on the problem, not the product.",
     data: "Open with a number, not a claim.",
     story: "Open with a short anecdote from another team.",

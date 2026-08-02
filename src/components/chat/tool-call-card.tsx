@@ -211,7 +211,7 @@ function CollapsibleToolResult({
                 <tr key={i} className="border-border/50 border-b last:border-0">
                   <td className="py-1 pr-3">{c.name}</td>
                   <td className="text-muted-foreground py-1 pr-3">
-                    {c.domain || "\u2014"}
+                    {c.domain || "-"}
                   </td>
                 </tr>
               ))}
