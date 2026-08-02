@@ -24,6 +24,7 @@ import {
 } from "@/lib/services/contact-filter";
 import {
   recordAffiliation,
+  AFFILIATION_SEND_THRESHOLD,
   type AffiliationSource,
 } from "@/lib/services/affiliation";
 import { runDataQualityAudit } from "@/lib/services/data-quality";
@@ -684,11 +685,21 @@ async function enrichContactById(
   // If the contact has no email after enrichment, try to find one.
   const { data: personAfter } = await supabase
     .from("people")
-    .select("work_email, personal_email")
+    .select("work_email, personal_email, affiliation_confidence")
     .eq("id", personId)
     .single();
 
-  if (!personAfter?.work_email && !personAfter?.personal_email) {
+  // Email discovery costs a provider credit and, more importantly, mints a
+  // company-domain address that the user reads as proof of employment. Six
+  // people who never worked at Browserbase each acquired a plausible
+  // firstname@browserbase.com this way. Neither cost is justified below the
+  // send threshold: those contacts are blocked from outreach anyway, so the
+  // address could not be used even if it happened to be right. A null reads as
+  // unconfirmed, which is the safe way round.
+  const confirmed =
+    (personAfter?.affiliation_confidence ?? 0) >= AFFILIATION_SEND_THRESHOLD;
+
+  if (confirmed && !personAfter?.work_email && !personAfter?.personal_email) {
     try {
       const { findEmailForPerson } = await import("@/lib/tools/email-tools");
       const emailResult = await findEmailForPerson(personId);
