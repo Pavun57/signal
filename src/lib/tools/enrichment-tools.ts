@@ -17,9 +17,21 @@ import {
   isRecentlyEnriched,
   normalizeLinkedInUrl,
 } from "@/lib/services/knowledge-base";
-import { findContactsForOrganization } from "@/lib/services/contact-discovery";
-import { filterContactsByCompany } from "@/lib/services/contact-filter";
-import { recordAffiliation } from "@/lib/services/affiliation";
+import {
+  findContactsForOrganization,
+  affiliationNotes,
+  AFFILIATION_UNCHANGED,
+  unchangedEvidence,
+} from "@/lib/services/contact-discovery";
+import {
+  filterContactsByCompany,
+  type VerifiedContact,
+} from "@/lib/services/contact-filter";
+import {
+  recordAffiliation,
+  AFFILIATION_SEND_THRESHOLD,
+  type AffiliationSource,
+} from "@/lib/services/affiliation";
 import { runDataQualityAudit } from "@/lib/services/data-quality";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
 import { extractClaims } from "@/lib/services/claim-extractor";
@@ -172,6 +184,8 @@ export const searchPeople = tool({
       linkedin_url: string | null;
       rawTitle: string;
       text: string | null;
+      /** When the scraped page was published. Null when the source is undated. */
+      publishedDate: string | null;
     }
     const candidates: SearchCandidate[] = [];
     const seenUrls = new Set<string>();
@@ -206,6 +220,7 @@ export const searchPeople = tool({
         linkedin_url: linkedinUrl,
         rawTitle: result.title,
         text: result.text ?? null,
+        publishedDate: result.publishedDate ?? null,
       });
     }
 
@@ -218,7 +233,7 @@ export const searchPeople = tool({
     // removed because it hard-required the company name in the headline, which
     // deletes real employees at small companies; the three-way verdict exists
     // precisely so we no longer have to choose between those two failures.
-    const judged = organizationId
+    const judged: VerifiedContact[] = organizationId
       ? await filterContactsByCompany(
           {
             name: orgContext?.name ?? input.companyName ?? "",
@@ -232,6 +247,13 @@ export const searchPeople = tool({
             title: c.title,
             linkedinUrl: c.linkedin_url,
             rawHeadline: c.rawTitle,
+            // The search already pays for this text (includeText above) and it
+            // usually carries a dated experience section. Capturing it and then
+            // dropping it before the judge is why people who had never worked
+            // at the target company were stored as staff: a headline that names
+            // no employer is the weakest evidence available.
+            pageText: c.text,
+            pageDate: c.publishedDate,
           })),
         )
       : candidates.map((_, index) => ({
@@ -248,26 +270,49 @@ export const searchPeople = tool({
       title: string | null;
       linkedin_url: string | null;
       verdict: string;
+      /** Why they are labelled that, so `unchanged` is explicable. */
+      evidence: string;
     }> = [];
     let rejectedAsWrongCompany = 0;
     let uncertainCount = 0;
+    let departedCount = 0;
+    let affiliationUnchanged = 0;
 
     for (const v of judged) {
       const c = candidates[v.index];
       if (!c) continue;
 
-      // A rejected candidate is a real person who works somewhere else. Keep
-      // them, unattached, rather than filing them under this company — but
-      // only when we can identify them. findOrCreatePerson dedups by LinkedIn
-      // URL or by name-within-org; a rejected candidate has no org, so one
-      // without a profile URL matches neither path and would be INSERTED fresh
-      // on every run. Same rule as contact-discovery.
-      if (v.verdict === "rejected" && !c.linkedin_url) {
-        rejectedAsWrongCompany++;
+      const detaching =
+        v.verdict === "rejected" || v.verdict === "former_employee";
+
+      // A detached candidate is a real person who works somewhere else, or
+      // used to work here. Keep them, unattached, rather than filing them under
+      // this company, but only when we can identify them. findOrCreatePerson
+      // dedups by LinkedIn URL or by name-within-org; a detached candidate has
+      // no org, so one without a profile URL matches neither path and would be
+      // INSERTED fresh on every run. Same rule as contact-discovery.
+      if (detaching && !c.linkedin_url) {
+        if (v.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
 
-      const attachTo = v.verdict === "rejected" ? null : organizationId;
+      const attachTo = detaching ? null : organizationId;
+      const source: AffiliationSource =
+        v.verdict === "verified"
+          ? "llm_verified"
+          : v.verdict === "former_employee"
+            ? "former_employee"
+            : v.verdict === "rejected"
+              ? "employer_mismatch"
+              : "search_stamp";
+
+      // Fold what the judge saw into the stored evidence. Without it the row
+      // says "profile names a different employer" and the user has to go and
+      // look up which one.
+      const evidence = v.employerSeen
+        ? `${v.evidence} (saw: ${v.employerSeen}${v.datesSeen ? `, ${v.datesSeen}` : ""})`
+        : v.evidence;
 
       const person = await findOrCreatePerson({
         name: v.name,
@@ -277,13 +322,27 @@ export const searchPeople = tool({
         source: "exa",
       });
 
+      // With no organization there is nothing to affiliate anyone to, so no
+      // write is attempted and there is nothing to refuse.
+      let refused = false;
+      let refusedReason: string | undefined;
+      let notAtJudgedOrg = false;
       if (organizationId) {
-        await recordAffiliation(supabase, {
+        const write = await recordAffiliation(supabase, {
           personId: person.id,
           organizationId: attachTo,
-          source: v.verdict === "verified" ? "llm_verified" : "search_stamp",
-          evidence: v.evidence,
+          source,
+          evidence,
+          // The judge was asked about THIS company and answered about it.
+          // Without saying so, a detaching write means "detach from wherever
+          // you are", so correctly rejecting someone here unlinks them from the
+          // unrelated company they actually work at. Same rule as
+          // contact-discovery, deliberately.
+          detachedFrom: detaching ? organizationId : null,
         });
+        refused = !write.written;
+        refusedReason = write.reason;
+        notAtJudgedOrg = write.notAtJudgedOrg === true;
       }
 
       if (person.enrichment_status === "pending") {
@@ -299,13 +358,41 @@ export const searchPeople = tool({
           .eq("id", person.id);
       }
 
-      if (v.verdict === "rejected") {
-        rejectedAsWrongCompany++;
+      // The verdict is what the judge concluded; the write is what actually
+      // happened to the row. They diverge whenever the stored evidence outranks
+      // this search, and counting the verdict regardless produced two opposite
+      // lies: a refused attach reported as a verified contact (organization_id
+      // still null, blocked at the send gate), and a refused detach reported as
+      // departed and dropped from the list while the person stayed attached and
+      // fully sendable. Same rule as contact-discovery, deliberately.
+      //
+      // The one refusal that does NOT mean "leave them in the list": the person
+      // is filed under a different company, so nothing here was ever about
+      // them. They are not a contact at this company, and reporting them as an
+      // unchanged one is the same lie in a quieter voice.
+      if (notAtJudgedOrg) {
+        if (v.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
-      if (v.verdict === "uncertain") uncertainCount++;
 
-      if (input.campaignId) {
+      if (refused) {
+        affiliationUnchanged++;
+      } else if (v.verdict === "rejected") {
+        rejectedAsWrongCompany++;
+        continue;
+      } else if (v.verdict === "former_employee") {
+        departedCount++;
+        continue;
+      } else if (v.verdict === "uncertain") {
+        uncertainCount++;
+      }
+
+      // Only ever link someone this search meant to keep. A refused detach
+      // still belongs in the contact list (they are attached, and hiding that
+      // is the bug), but adding them to the campaign would act on the
+      // judgement the write just refused.
+      if (input.campaignId && !detaching) {
         await linkPersonToCampaign(person.id, input.campaignId);
       }
 
@@ -314,9 +401,21 @@ export const searchPeople = tool({
         name: person.name,
         title: person.title,
         linkedin_url: person.linkedin_url,
-        verdict: v.verdict,
+        verdict: refused ? AFFILIATION_UNCHANGED : v.verdict,
+        evidence: refused
+          ? unchangedEvidence(refusedReason, evidence)
+          : evidence,
       });
     }
+
+    // These counts describe people the agent will not find in `contacts`, so
+    // saying nothing about them reads as "the search found fewer people" rather
+    // than "some of what it found was not staff here".
+    const note = affiliationNotes({
+      uncertainCount,
+      departedCount,
+      affiliationUnchanged,
+    });
 
     return {
       contacts: storedContacts.map((c) => ({
@@ -325,6 +424,7 @@ export const searchPeople = tool({
         title: c.title,
         linkedinUrl: c.linkedin_url,
         affiliation: c.verdict,
+        affiliationEvidence: c.evidence,
       })),
       organizationId,
       totalFound: searchResponse.resultCount,
@@ -332,11 +432,10 @@ export const searchPeople = tool({
       duplicatesSkipped,
       uncertainCount,
       rejectedAsWrongCompany,
+      departedCount,
+      affiliationUnchanged,
       query: input.query,
-      note:
-        uncertainCount > 0
-          ? `${uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed.`
-          : undefined,
+      note,
     };
   },
 });
@@ -353,6 +452,18 @@ export function summarizeContactEnrichment(
   if (data.discoveredEmail) s.discoveredEmail = true;
   return s;
 }
+
+/**
+ * A scraped search result as the person summarizer needs it. The date is the
+ * load-bearing field: it is what lets the summarizer tell a live page from a
+ * year-old archive that still says "Present".
+ */
+type SummarySource = {
+  title: string;
+  url: string;
+  publishedDate: string | null;
+  text: string | null;
+};
 
 async function enrichContactById(
   personId: string,
@@ -486,14 +597,8 @@ async function enrichContactById(
       }
     }
 
-    const dedup = (
-      results: Array<{
-        title: string;
-        url: string;
-        publishedDate: string | null;
-        text: string | null;
-      }>,
-    ) => results.filter((r) => !companyUrls.has(r.url));
+    const dedup = (results: SummarySource[]) =>
+      results.filter((r) => !companyUrls.has(r.url));
 
     promises.push(
       (async () => {
@@ -599,15 +704,11 @@ async function enrichContactById(
         twitterBio: twitter?.user?.description ?? null,
         linkedinPosts: linkedin?.posts,
         tweets: twitter?.tweets,
-        news: enrichmentData.news as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
-        articles: enrichmentData.articles as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
-        background: enrichmentData.background as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
+        // publishedDate rides along: the summarizer orders the sources by it,
+        // and casting it away here is what left it with undated blobs.
+        news: enrichmentData.news as SummarySource[] | undefined,
+        articles: enrichmentData.articles as SummarySource[] | undefined,
+        background: enrichmentData.background as SummarySource[] | undefined,
       });
       // Write the title back, not just the prose. Enrichment reads the real
       // title off the profile and used to spend it entirely on `bio_summary`,
@@ -615,9 +716,17 @@ async function enrichContactById(
       // said "Head of GTM / Revenue Ops" while the org chart, the scoring and
       // any draft email all still read "Head of Growth" off `people.title`.
       // Enrichment is the correcting step, so let it correct.
+      //
+      // The one exception is a conflict: when the freshest source names a
+      // different employer than an older one, `currentTitle` is a guess
+      // between two stories, and the guess it used to make was the wrong one
+      // (an archived snapshot saying "Present" beat a live headline). Keep the
+      // prose, which now says the sources disagree, and leave the stored title
+      // alone rather than trading a stale title for a different stale title.
       const update: { bio_summary?: string; title?: string } = {};
       if (summarized?.summary) update.bio_summary = summarized.summary;
-      if (summarized?.currentTitle) update.title = summarized.currentTitle;
+      if (summarized?.currentTitle && !summarized.sourcesConflict)
+        update.title = summarized.currentTitle;
 
       if (Object.keys(update).length > 0) {
         await supabase.from("people").update(update).eq("id", personId);
@@ -631,11 +740,21 @@ async function enrichContactById(
   // If the contact has no email after enrichment, try to find one.
   const { data: personAfter } = await supabase
     .from("people")
-    .select("work_email, personal_email")
+    .select("work_email, personal_email, affiliation_confidence")
     .eq("id", personId)
     .single();
 
-  if (!personAfter?.work_email && !personAfter?.personal_email) {
+  // Email discovery costs a provider credit and, more importantly, mints a
+  // company-domain address that the user reads as proof of employment. Six
+  // people who never worked at Browserbase each acquired a plausible
+  // firstname@browserbase.com this way. Neither cost is justified below the
+  // send threshold: those contacts are blocked from outreach anyway, so the
+  // address could not be used even if it happened to be right. A null reads as
+  // unconfirmed, which is the safe way round.
+  const confirmed =
+    (personAfter?.affiliation_confidence ?? 0) >= AFFILIATION_SEND_THRESHOLD;
+
+  if (confirmed && !personAfter?.work_email && !personAfter?.personal_email) {
     try {
       const { findEmailForPerson } = await import("@/lib/tools/email-tools");
       const emailResult = await findEmailForPerson(personId);
@@ -1563,6 +1682,20 @@ export const findContacts = tool({
       verifiedCount: result.verifiedCount,
       uncertainCount: result.uncertainCount,
       rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+      departedCount: result.departedCount,
+      // People this search did not change. They are in `contacts` marked
+      // "unchanged", and describing them as verified or departed would be
+      // describing a write that was refused.
+      affiliationUnchanged: result.affiliationUnchanged,
+      // The same prose searchPeople returns. Without it this path handed the
+      // agent bare numbers and left it to guess what "affiliationUnchanged: 2"
+      // meant, which it got wrong in exactly the direction that flatters the
+      // result.
+      note: affiliationNotes({
+        uncertainCount: result.uncertainCount,
+        departedCount: result.departedCount,
+        affiliationUnchanged: result.affiliationUnchanged,
+      }),
       error: result.error,
     };
   },

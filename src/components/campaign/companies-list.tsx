@@ -11,12 +11,14 @@ import {
   Sparkles,
   UserSearch,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { CompanyDetail } from "@/components/campaign/company-detail";
 import { ContactDetail } from "@/components/campaign/contact-detail";
 import { EmbeddedOrgChart } from "@/components/company/embedded-org-chart";
 import { TogglePill } from "@/components/ui/toggle-pill";
 import { ReadinessBadge } from "@/components/tracking/readiness-badge";
+import { AffiliationBadge } from "@/components/ui/provenance-badge";
 import { Button } from "@/components/ui/button";
 import { EditableEmail } from "@/components/ui/editable-email";
 import { ScoreBadge } from "@/components/ui/score-badge";
@@ -47,6 +49,9 @@ interface CompaniesListProps {
   ) => void;
   onDataChanged: () => void;
 }
+
+/** Mirrors AFFILIATION_SEND_THRESHOLD in services/affiliation.ts. */
+const AFFILIATION_THRESHOLD = 0.6;
 
 function linkedInUrl(raw: string) {
   return raw.startsWith("http")
@@ -91,6 +96,20 @@ export function CompaniesList({
     Set<string>
   >(new Set());
   const [page, setPage] = useState(0);
+  // Review-queue rows with a request in flight. The row holds its place and
+  // both its buttons go disabled until the request resolves, because a confirm
+  // is permanent and a row that moves on the click takes the buttons with it.
+  const [reviewPendingIds, setReviewPendingIds] = useState<Set<string>>(
+    new Set(),
+  );
+  // Rows the user has acted on successfully. Applied as soon as the response
+  // lands, which is ahead of the refetch, so the table settles without a wait.
+  const [confirmedContactIds, setConfirmedContactIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [removedContactIds, setRemovedContactIds] = useState<Set<string>>(
+    new Set(),
+  );
   // Companies in this set use the flat-table view; everyone else defaults
   // to chart. Keeping this per-company so toggling one row doesn't reset
   // every other expanded row.
@@ -109,6 +128,10 @@ export function CompaniesList({
 
   const contactsByOrgId = new Map<string | null, CampaignContact[]>();
   for (const contact of contacts) {
+    // "Not here" unlinks the person from the campaign, so drop the row once the
+    // delete lands rather than leaving it sitting there until the refetch
+    // returns.
+    if (removedContactIds.has(contact.id)) continue;
     const key = contact.organization_id;
     if (!contactsByOrgId.has(key)) contactsByOrgId.set(key, []);
     contactsByOrgId.get(key)!.push(contact);
@@ -231,20 +254,141 @@ export function CompaniesList({
     if (!organizationId) return;
     setFindingEmailsCompanyIds((prev) => new Set(prev).add(organizationId));
     try {
-      await apiFetch("/api/find-email/bulk", {
+      const res = await apiFetch("/api/find-email/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId, organizationId }),
       });
+      // apiFetch returns the Response unchanged and never throws on a non-2xx,
+      // so without this an error body reads as a run that found nobody, and a
+      // 401 stacks a green "Found 0 emails." on top of the session-expired
+      // toast apiFetch already raised.
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      // The route skips contacts below the affiliation threshold and caps each
+      // batch, so the count it found can be lower than the button promised and
+      // there may be more still waiting. Its own summary says both; the local
+      // string is only a fallback for a response that predates it.
+      const data = (await res.json().catch(() => null)) as {
+        found?: unknown[];
+        skipped?: number;
+        remaining?: number;
+        summary?: string;
+      } | null;
+      const found = data?.found?.length ?? 0;
+      const skipped = data?.skipped ?? 0;
+      const remaining = data?.remaining ?? 0;
+      toast.success(
+        data?.summary ??
+          `Found ${found} ${found === 1 ? "email" : "emails"}.` +
+            (remaining > 0 ? ` ${remaining} more pending, click again.` : "") +
+            (skipped > 0
+              ? ` ${skipped} skipped, not confirmed at this company.`
+              : ""),
+      );
       onDataChanged();
     } catch (err) {
       console.error(`[find-email/bulk] Failed:`, err);
+      toast.error(err instanceof Error ? err.message : "Failed to find emails");
     } finally {
       setFindingEmailsCompanyIds((prev) => {
         const next = new Set(prev);
         next.delete(organizationId);
         return next;
       });
+    }
+  };
+
+  const markPending = (contactId: string, pending: boolean) => {
+    setReviewPendingIds((prev) => {
+      const next = new Set(prev);
+      if (pending) next.add(contactId);
+      else next.delete(contactId);
+      return next;
+    });
+  };
+
+  /**
+   * Record the user's own judgement that this person works here.
+   *
+   * Writes `user_entered` at confidence 1.0, which outranks every machine
+   * source, so nothing we learn later can move them back out. That is the
+   * point (it is the manual escape hatch when the evidence cannot settle it)
+   * and also why the button says so.
+   *
+   * The row stays exactly where it is until the request resolves. Moving it on
+   * the click looked like the responsive choice, but it took the buttons with
+   * it and pulled the next person up under a stationary cursor, so the second
+   * half of a double-click confirmed somebody else, permanently.
+   */
+  const confirmAffiliation = async (
+    contact: CampaignContact,
+    organizationId: string,
+  ) => {
+    if (reviewPendingIds.has(contact.id)) return;
+    markPending(contact.id, true);
+    try {
+      const res = await apiFetch(
+        `/api/people/${contact.person_id}/to-company`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ organizationId, campaignId }),
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      // Applied here rather than up front so the table only moves once we know
+      // the write landed. There is nothing to roll back on failure.
+      setConfirmedContactIds((prev) => new Set(prev).add(contact.id));
+      toast.success(`Confirmed ${contact.name} works here.`);
+      onDataChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to confirm");
+    } finally {
+      markPending(contact.id, false);
+    }
+  };
+
+  /**
+   * Record the user's judgement that this person does NOT work here, and drop
+   * them from the campaign.
+   *
+   * Names the company the row was drawn under rather than letting the endpoint
+   * read it off the person. The two can disagree: the tab may have been open a
+   * while, and `people` is a shared pool, so someone else may have moved this
+   * person since. A rejection aimed at a company they are no longer filed under
+   * is refused rather than applied to whichever company they are at now.
+   */
+  const detachContact = async (
+    contact: CampaignContact,
+    organizationId: string,
+  ) => {
+    if (reviewPendingIds.has(contact.id)) return;
+    markPending(contact.id, true);
+    try {
+      const res = await apiFetch(
+        `/api/people/${contact.person_id}/from-company?campaignId=${encodeURIComponent(campaignId)}&organizationId=${encodeURIComponent(organizationId)}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      // Same as Confirm: drop the row once the delete is known to have landed,
+      // not before, so a failed request never has to put it back and the row
+      // under the cursor is still the one the user was looking at.
+      setRemovedContactIds((prev) => new Set(prev).add(contact.id));
+      toast.success(`Removed ${contact.name} from this company.`);
+      onDataChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove");
+    } finally {
+      markPending(contact.id, false);
     }
   };
 
@@ -567,8 +711,19 @@ export function CompaniesList({
                               onEnrich={enrichContact}
                               onFindEmail={findEmailForContact}
                               onEmailEdit={updateContactEmail}
-                              columnSpan={6}
+                              columnSpan={7}
                               showOutreach
+                              review={
+                                company.organization_id
+                                  ? {
+                                      organizationId: company.organization_id,
+                                      pendingIds: reviewPendingIds,
+                                      confirmedIds: confirmedContactIds,
+                                      onConfirm: confirmAffiliation,
+                                      onNotHere: detachContact,
+                                    }
+                                  : undefined
+                              }
                             />
                           )}
                         </>
@@ -653,6 +808,22 @@ export function CompaniesList({
   );
 }
 
+/**
+ * Turns the table into a review queue: contacts we cannot place at the company
+ * are grouped separately and get Confirm / Not here buttons. Left undefined for
+ * the unassigned-leads table, where there is no company to confirm them at.
+ */
+interface ContactsReview {
+  /** The company the Confirm button attaches them to. */
+  organizationId: string;
+  /** Rows with a request in flight. */
+  pendingIds: Set<string>;
+  /** Rows confirmed in this session, before the refetch lands. */
+  confirmedIds: Set<string>;
+  onConfirm: (contact: CampaignContact, organizationId: string) => void;
+  onNotHere: (contact: CampaignContact, organizationId: string) => void;
+}
+
 interface ContactsTableProps {
   contacts: CampaignContact[];
   expandedContactIds: Set<string>;
@@ -665,6 +836,7 @@ interface ContactsTableProps {
   onEmailEdit: (contact: CampaignContact, next: string) => Promise<void>;
   columnSpan: number;
   showOutreach: boolean;
+  review?: ContactsReview;
 }
 
 function ContactsTable({
@@ -679,7 +851,55 @@ function ContactsTable({
   onEmailEdit,
   columnSpan,
   showOutreach,
+  review,
 }: ContactsTableProps) {
+  // One table, two groups, not two tables. The columns, the expand row and the
+  // email editor are all shared, and duplicating them is how the two contact
+  // tables in this codebase drifted apart in the first place.
+  const groups: Array<{
+    key: string;
+    label: string | null;
+    rows: CampaignContact[];
+    needsReview: boolean;
+  }> = [];
+
+  if (!review) {
+    groups.push({
+      key: "all",
+      label: null,
+      rows: contacts,
+      needsReview: false,
+    });
+  } else {
+    const confirmed: CampaignContact[] = [];
+    const needsReview: CampaignContact[] = [];
+    for (const contact of contacts) {
+      const confidence = review.confirmedIds.has(contact.id)
+        ? 1
+        : (contact.affiliation_confidence ?? 0);
+      if (confidence >= AFFILIATION_THRESHOLD) confirmed.push(contact);
+      else needsReview.push(contact);
+    }
+    // An empty group gets no header. The needs-review tail is normally two or
+    // three people, and often nobody at all.
+    if (confirmed.length > 0) {
+      groups.push({
+        key: "confirmed",
+        label: `Confirmed (${confirmed.length})`,
+        rows: confirmed,
+        needsReview: false,
+      });
+    }
+    if (needsReview.length > 0) {
+      groups.push({
+        key: "needs-review",
+        label: `Needs review (${needsReview.length})`,
+        rows: needsReview,
+        needsReview: true,
+      });
+    }
+  }
+
   return (
     <table className="border-border w-full border-t text-sm">
       <thead>
@@ -708,153 +928,204 @@ function ContactsTable({
         </tr>
       </thead>
       <tbody>
-        {contacts.map((contact) => {
-          const isContactExpanded = expandedContactIds.has(contact.id);
-          const enrichment =
-            enrichmentStatusStyles[
-              contact.enrichment_status as EnrichmentStatus
-            ] ?? enrichmentStatusStyles.pending;
-          const isContactHighlighted = highlightedIds?.has(contact.id);
+        {groups.map((group) => (
+          <Fragment key={group.key}>
+            {group.label && (
+              <tr className="bg-muted/30 border-border border-t">
+                <td
+                  colSpan={columnSpan}
+                  className="text-muted-foreground px-3 py-1.5 text-xs font-medium uppercase tracking-wide"
+                >
+                  {group.label}
+                </td>
+              </tr>
+            )}
+            {group.rows.map((contact) => {
+              const isContactExpanded = expandedContactIds.has(contact.id);
+              const enrichment =
+                enrichmentStatusStyles[
+                  contact.enrichment_status as EnrichmentStatus
+                ] ?? enrichmentStatusStyles.pending;
+              const isContactHighlighted = highlightedIds?.has(contact.id);
 
-          return (
-            <Fragment key={contact.id}>
-              <tr
-                className={cn(
-                  "border-border hover:bg-muted/30 border-t transition-colors",
-                  isContactHighlighted && "bg-primary/5",
-                )}
-              >
-                <td className="px-3 py-2">
-                  <button
-                    type="button"
-                    onClick={() => onToggle(contact.id)}
-                    aria-expanded={isContactExpanded}
-                    aria-label={`${isContactExpanded ? "Collapse" : "Expand"} ${contact.name}`}
+              return (
+                <Fragment key={contact.id}>
+                  <tr
                     className={cn(
-                      "hover:bg-muted/50 rounded p-0.5 transition-colors",
-                      ROW_FOCUS,
+                      "border-border hover:bg-muted/30 border-t transition-colors",
+                      isContactHighlighted && "bg-primary/5",
                     )}
                   >
-                    <ChevronRight
-                      className={cn(
-                        "text-muted-foreground h-3.5 w-3.5 transition-transform",
-                        isContactExpanded && "rotate-90",
-                      )}
-                    />
-                  </button>
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-medium">{contact.name}</span>
-                    {contact.linkedin_url && (
-                      <a
-                        href={linkedInUrl(contact.linkedin_url)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label={`${contact.name} on LinkedIn`}
+                    <td className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => onToggle(contact.id)}
+                        aria-expanded={isContactExpanded}
+                        aria-label={`${isContactExpanded ? "Collapse" : "Expand"} ${contact.name}`}
                         className={cn(
-                          "text-muted-foreground hover:text-foreground rounded",
+                          "hover:bg-muted/50 rounded p-0.5 transition-colors",
                           ROW_FOCUS,
                         )}
                       >
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    )}
-                  </div>
-                </td>
-                <td className="text-muted-foreground hidden px-3 py-2 sm:table-cell">
-                  {contact.title || "--"}
-                </td>
-                <td className="text-muted-foreground hidden px-3 py-2 md:table-cell">
-                  <EditableEmail
-                    value={contact.work_email || contact.personal_email}
-                    onSave={(next) => onEmailEdit(contact, next)}
-                    allowEmpty
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <div className="inline-flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs">
-                      <span
-                        className={cn(
-                          "h-1.5 w-1.5 rounded-full",
-                          enrichment.className,
-                        )}
-                      />
-                      {enrichment.label}
-                    </span>
-                    {(contact.enrichment_status === "pending" ||
-                      contact.enrichment_status === "failed") &&
-                      !enrichingIds.has(contact.id) && (
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label="Enrich contact"
-                          onClick={() => onEnrich(contact.id)}
-                        >
-                          <Sparkles className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    {enrichingIds.has(contact.id) && (
-                      <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
-                    )}
-                    {!contact.work_email &&
-                      !findingEmailIds.has(contact.id) && (
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label={`Find email for ${contact.name}`}
-                          title="Find email"
-                          onClick={() => onFindEmail(contact)}
-                        >
-                          <Mail className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    {findingEmailIds.has(contact.id) && (
-                      <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
-                    )}
-                  </div>
-                </td>
-                {showOutreach && (
-                  <>
-                    <td className="hidden px-3 py-2 text-center sm:table-cell">
-                      <ScoreBadge score={contact.priority_score} />
+                        <ChevronRight
+                          className={cn(
+                            "text-muted-foreground h-3.5 w-3.5 transition-transform",
+                            isContactExpanded && "rotate-90",
+                          )}
+                        />
+                      </button>
                     </td>
-                    <td className="hidden px-3 py-2 md:table-cell">
-                      {contact.outreach_status &&
-                        contact.outreach_status !== "not_contacted" &&
-                        outreachStatusStyles[
-                          contact.outreach_status as OutreachStatus
-                        ] && (
-                          <span
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium">{contact.name}</span>
+                        {contact.linkedin_url && (
+                          <a
+                            href={linkedInUrl(contact.linkedin_url)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`${contact.name} on LinkedIn`}
                             className={cn(
-                              "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-                              outreachStatusStyles[
-                                contact.outreach_status as OutreachStatus
-                              ].className,
+                              "text-muted-foreground hover:text-foreground rounded",
+                              ROW_FOCUS,
                             )}
                           >
-                            {
-                              outreachStatusStyles[
-                                contact.outreach_status as OutreachStatus
-                              ].label
-                            }
-                          </span>
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
                         )}
+                        {/* Renders only below the threshold, so the confirmed
+                            group stays quiet. Its tooltip carries the evidence
+                            the review decision rests on. */}
+                        <AffiliationBadge person={contact} />
+                      </div>
                     </td>
-                  </>
-                )}
-              </tr>
-              {isContactExpanded && (
-                <tr className="border-border border-t">
-                  <td colSpan={columnSpan} className="bg-muted/30 px-4">
-                    <ContactDetail contact={contact} onRetry={onEnrich} />
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-          );
-        })}
+                    <td className="text-muted-foreground hidden px-3 py-2 sm:table-cell">
+                      {contact.title || "--"}
+                    </td>
+                    <td className="text-muted-foreground hidden px-3 py-2 md:table-cell">
+                      <EditableEmail
+                        value={contact.work_email || contact.personal_email}
+                        onSave={(next) => onEmailEdit(contact, next)}
+                        allowEmpty
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="inline-flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs">
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 rounded-full",
+                              enrichment.className,
+                            )}
+                          />
+                          {enrichment.label}
+                        </span>
+                        {(contact.enrichment_status === "pending" ||
+                          contact.enrichment_status === "failed") &&
+                          !enrichingIds.has(contact.id) && (
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              aria-label="Enrich contact"
+                              onClick={() => onEnrich(contact.id)}
+                            >
+                              <Sparkles className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        {enrichingIds.has(contact.id) && (
+                          <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
+                        )}
+                        {!contact.work_email &&
+                          !findingEmailIds.has(contact.id) && (
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              aria-label={`Find email for ${contact.name}`}
+                              title="Find email"
+                              onClick={() => onFindEmail(contact)}
+                            >
+                              <Mail className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        {findingEmailIds.has(contact.id) && (
+                          <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
+                        )}
+                        {review && group.needsReview && (
+                          // Both buttons stay mounted and go disabled for the
+                          // duration of the request. Swapping them for a
+                          // spinner moved the rows below up under the cursor,
+                          // and a confirm is permanent.
+                          <>
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={review.pendingIds.has(contact.id)}
+                              title={`Record that ${contact.name} works here. Your word outranks every later check, so this cannot be undone by new evidence.`}
+                              onClick={() =>
+                                review.onConfirm(contact, review.organizationId)
+                              }
+                            >
+                              Confirm employer
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              disabled={review.pendingIds.has(contact.id)}
+                              title={`Remove ${contact.name} from this company and this campaign. You can add them back later.`}
+                              onClick={() =>
+                                review.onNotHere(contact, review.organizationId)
+                              }
+                            >
+                              Not here
+                            </Button>
+                            {review.pendingIds.has(contact.id) && (
+                              <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </td>
+                    {showOutreach && (
+                      <>
+                        <td className="hidden px-3 py-2 text-center sm:table-cell">
+                          <ScoreBadge score={contact.priority_score} />
+                        </td>
+                        <td className="hidden px-3 py-2 md:table-cell">
+                          {contact.outreach_status &&
+                            contact.outreach_status !== "not_contacted" &&
+                            outreachStatusStyles[
+                              contact.outreach_status as OutreachStatus
+                            ] && (
+                              <span
+                                className={cn(
+                                  "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
+                                  outreachStatusStyles[
+                                    contact.outreach_status as OutreachStatus
+                                  ].className,
+                                )}
+                              >
+                                {
+                                  outreachStatusStyles[
+                                    contact.outreach_status as OutreachStatus
+                                  ].label
+                                }
+                              </span>
+                            )}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                  {isContactExpanded && (
+                    <tr className="border-border border-t">
+                      <td colSpan={columnSpan} className="bg-muted/30 px-4">
+                        <ContactDetail contact={contact} onRetry={onEnrich} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </Fragment>
+        ))}
       </tbody>
     </table>
   );

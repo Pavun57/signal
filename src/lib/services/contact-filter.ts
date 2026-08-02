@@ -29,19 +29,36 @@ export interface CandidateContact {
   title: string | null;
   linkedinUrl: string | null;
   rawHeadline: string | null;
+  /**
+   * Text scraped from the result page. Exa returns this on every people search
+   * we already run (measured: 39 of 39 candidates on Browserbase), and it
+   * usually carries a dated experience section. Judging without it is why every
+   * candidate at a company whose staff do not name their employer in their
+   * headline came back `uncertain`.
+   */
+  pageText?: string | null;
+  /** When the scraped page was published. Null when the source is undated. */
+  pageDate?: string | null;
 }
 
 /**
- * Three outcomes, not two.
+ * Four outcomes, not three.
  *
  * The binary version forced every candidate into "employee" or "not", and the
  * honest answer for a large share of them is "the evidence does not say". On
  * the dev database, 19 of 41 contacts at one company had a headline that never
- * mentions their employer — common at small startups — so a filter that must
- * choose either keeps provably-wrong people or deletes real ones. `uncertain`
- * is what lets us keep them, visibly unproven, and resolve them later.
+ * mentions their employer, so a filter that must choose either keeps
+ * provably-wrong people or deletes real ones.
+ *
+ * `former_employee` is separate from `rejected` because the two mean different
+ * things to a salesperson and to the org chart: one is a person who really did
+ * work here and left, the other was never here at all. Both detach.
  */
-export type ContactVerdict = "verified" | "uncertain" | "rejected";
+export type ContactVerdict =
+  | "verified"
+  | "former_employee"
+  | "uncertain"
+  | "rejected";
 
 export interface VerifiedContact {
   index: number;
@@ -50,7 +67,22 @@ export interface VerifiedContact {
   verdict: ContactVerdict;
   /** One line explaining the call, stored as affiliation_evidence. */
   evidence: string;
+  /** The employer the evidence actually named, so a human can audit the call. */
+  employerSeen?: string | null;
+  /** The date range the evidence gave for that employer, when it gave one. */
+  datesSeen?: string | null;
 }
+
+/**
+ * How old a scraped page may be and still support a `verified` call.
+ *
+ * A snapshot saying "Present" only proves where someone worked on the day it
+ * was taken. Measured on Browserbase, 38 of 39 pages were within three weeks
+ * and the one outlier at four months was the single wrong `verified` in the
+ * batch, so this threshold costs almost nothing and catches exactly the case
+ * it is aimed at.
+ */
+export const STALE_PROFILE_DAYS = 120;
 
 export interface DomainPerson {
   name: string;
@@ -274,11 +306,41 @@ function headlineMentionsCompany(
 
 // ── LLM-based LinkedIn result filtering ──────────────────────────────────
 
+/** Milliseconds in the staleness window, computed once. */
+const STALE_PROFILE_MS = STALE_PROFILE_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * A `verified` call resting on an old snapshot is downgraded to `uncertain`.
+ *
+ * Only `verified` is affected. "They worked somewhere else in January" is still
+ * evidence they were not here in January, and re-running the search will not
+ * produce a fresher page, so downgrading a rejection would just re-admit the
+ * stranger it correctly excluded.
+ */
+function downgradeStale(
+  verdict: VerifiedContact,
+  pageDate: string | null | undefined,
+  now: number,
+): VerifiedContact {
+  if (verdict.verdict !== "verified" || !pageDate) return verdict;
+  const t = Date.parse(pageDate);
+  if (Number.isNaN(t)) return verdict;
+  const age = now - t;
+  if (age <= STALE_PROFILE_MS) return verdict;
+
+  const months = Math.round(age / (30 * 24 * 60 * 60 * 1000));
+  return {
+    ...verdict,
+    verdict: "uncertain",
+    evidence: `${verdict.evidence} (evidence is ${months} months old, so it does not prove they are still there)`,
+  };
+}
+
 /**
  * Judge which search results genuinely work at the target company.
  *
  * The headline check used to be a hard pre-filter, and anything that failed it
- * was dropped before the LLM ever saw it — returning `[]` outright when nothing
+ * was dropped before the LLM ever saw it, returning `[]` outright when nothing
  * matched. That is why searchPeople stopped calling this at all: at small
  * companies most people's LinkedIn headline never names their employer, so the
  * filter deleted real employees in bulk. Measured on the dev database, it would
@@ -287,6 +349,11 @@ function headlineMentionsCompany(
  * So the headline match is now a *hint passed to the LLM*, not a gate. Every
  * candidate is judged, and the ones the evidence cannot settle come back
  * `uncertain` rather than being silently dropped or silently trusted.
+ *
+ * The judge also reads the scraped page text, which usually carries a dated
+ * experience section. A headline alone cannot tell a current employee from
+ * someone who left two years ago, and on Browserbase it left all 39 candidates
+ * `uncertain` because not one headline names the company.
  */
 export async function filterContactsByCompany(
   company: CompanyContext,
@@ -307,14 +374,18 @@ export async function filterContactsByCompany(
   );
 
   const summaries = indexed
-    .map(
-      (c, i) =>
-        `[${i}] ${c.rawHeadline || c.name}${c.title ? ` (parsed: ${c.title})` : ""}` +
-        ` — headline names the target company: ${
+    .map((c, i) => {
+      const text = (c.pageText ?? "").replace(/\s+/g, " ").slice(0, 1800);
+      return [
+        `[${i}] headline: ${c.rawHeadline || c.name}${c.title ? ` (parsed role: ${c.title})` : ""}`,
+        `    headline names the target company: ${
           headlineMentionsCompany(c.rawHeadline, company.name) ? "yes" : "no"
         }`,
-    )
-    .join("\n");
+        `    page dated: ${c.pageDate ?? "unknown"}`,
+        `    page text: ${text || "(none)"}`,
+      ].join("\n");
+    })
+    .join("\n\n");
 
   try {
     const { object, usage } = await generateObject({
@@ -333,14 +404,24 @@ export async function filterContactsByCompany(
               .nullable()
               .describe("Cleaned job title without company name"),
             verdict: z
-              .enum(["verified", "uncertain", "rejected"])
+              .enum(["verified", "former_employee", "uncertain", "rejected"])
               .describe(
-                "verified = evidence says they work at the target company; rejected = evidence says they work somewhere else; uncertain = the evidence does not settle it",
+                "verified = evidence says they work there now; former_employee = they worked there and the role has an end date; rejected = evidence places them at a different company; uncertain = the evidence does not settle it",
               ),
             evidence: z
               .string()
               .describe(
                 "One short sentence citing what decided it, e.g. \"headline reads 'Wafer'\" or 'headline names no employer'",
+              ),
+            employerSeen: z
+              .string()
+              .nullable()
+              .describe("The employer the evidence actually names, if any"),
+            datesSeen: z
+              .string()
+              .nullable()
+              .describe(
+                "The date range the evidence gives for that employer, e.g. 'May 2024 - Present'",
               ),
           }),
         ),
@@ -358,15 +439,22 @@ Target company:
 Candidates (scraped from LinkedIn results):
 ${wrapUntrusted(summaries)}
 
-Return a verdict for EVERY candidate. Use exactly three verdicts:
+Today's date: ${new Date().toISOString().slice(0, 10)}
 
-- "verified" — the evidence positively places them at the target company, e.g. the headline names it.
-- "rejected" — the evidence positively places them somewhere ELSE. Similarly-named but different companies belong here ("Dixons Carphone" is NOT "Dixons Estate Agents"; "Miller Rose" is NOT "Miller & Carter"). Use the domain and industry to disambiguate — if the target is an estate agent, a retail-electronics employee with a similar company name is rejected.
-- "uncertain" — the evidence does not settle it either way. A headline that names no employer at all is UNCERTAIN, not rejected: at small companies most people never mention their employer in their headline. Reserve "rejected" for a positive signal pointing elsewhere.
+Each candidate gives you a headline plus whatever text was scraped from their profile page. The text usually contains a dated experience section. Read it: the headline is the weakest evidence available and often names no employer at all.
 
-Do not guess in order to avoid "uncertain". An honest "uncertain" is more useful than a confident mistake in either direction — uncertain contacts are kept and flagged for review, while rejected ones are detached from the company.
+Return a verdict for EVERY candidate. Use exactly four verdicts:
 
-Also clean up the display fields:
+- "verified": the evidence places them at the target company with no end date, or an explicit Present or Current.
+- "former_employee": the evidence places them at the target company with an END DATE in the past, or the text says prev or ex. They really did work there, and they do not now.
+- "rejected": the evidence positively places them at a DIFFERENT employer and never mentions the target company. A full experience listing that names other companies and never names the target is positive evidence of absence, not missing evidence. Similarly-named but different companies belong here ("Dixons Carphone" is NOT "Dixons Estate Agents"). Use the domain and industry to disambiguate.
+- "uncertain": the evidence does not settle it. Use this when the page text is "(none)" or is only a headline naming no employer. Do not reach for "rejected" on thin evidence: at small companies most people never mention their employer anywhere we can see.
+
+When the page shows several roles, prefer the most recent. If the headline names one employer and a dated block names another, the one marked Present or Current wins.
+
+Do not guess in order to avoid "uncertain". An honest "uncertain" is more useful than a confident mistake in either direction: uncertain contacts are kept and queued for human review, while rejected ones are detached from the company.
+
+Also report which employer you actually saw and what dates, so a human can audit the call, and clean up the display fields:
 - names: remove LinkedIn suffixes, emoji, excessive credentials
 - titles: extract just the role ("Branch Manager", not "Branch Manager at Dixons")`,
     });
@@ -383,6 +471,9 @@ Also clean up the display fields:
         candidateCount: indexed.length,
         verifiedCount: object.judged.filter((v) => v.verdict === "verified")
           .length,
+        formerEmployeeCount: object.judged.filter(
+          (v) => v.verdict === "former_employee",
+        ).length,
         uncertainCount: object.judged.filter((v) => v.verdict === "uncertain")
           .length,
         rejectedCount: object.judged.filter((v) => v.verdict === "rejected")
@@ -403,6 +494,8 @@ Also clean up the display fields:
         title: v.title,
         verdict: v.verdict,
         evidence: v.evidence,
+        employerSeen: v.employerSeen ?? null,
+        datesSeen: v.datesSeen ?? null,
       });
     }
 
@@ -419,7 +512,17 @@ Also clean up the display fields:
       });
     }
 
-    return judged;
+    // `judged[].index` is the caller's originalIndex, which happens to equal
+    // the position in `indexed` only because nothing reorders that array. Look
+    // the candidate up by originalIndex so a future reordering cannot silently
+    // pair a verdict with someone else's page date.
+    const byOriginalIndex = new Map(
+      indexed.map((c) => [c.originalIndex, c] as const),
+    );
+    const now = Date.now();
+    return judged.map((v) =>
+      downgradeStale(v, byOriginalIndex.get(v.index)?.pageDate, now),
+    );
   } catch (err) {
     console.error(
       "[contact-filter] LLM judge failed; returning all candidates as uncertain:",

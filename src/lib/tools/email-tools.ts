@@ -28,7 +28,10 @@ import {
   type EmailVerification,
   type VerifyResult,
 } from "@/lib/services/email-provider";
-import { recordAffiliation } from "@/lib/services/affiliation";
+import {
+  recordAffiliation,
+  AFFILIATION_SEND_THRESHOLD,
+} from "@/lib/services/affiliation";
 
 // ── Shared findEmail logic ─────────────────────────────────────────────────
 
@@ -697,7 +700,7 @@ export const findEmail = tool({
 
 export const findEmails = tool({
   description:
-    "Batch-discover email addresses for multiple contacts. Skips contacts that already have emails. Returns found and not-found lists.",
+    "Batch-discover email addresses for multiple contacts. Skips contacts that already have emails, and contacts not confirmed to work at their company. Returns found, not-found and skipped lists.",
   inputSchema: z.object({
     personIds: z
       .array(z.string().uuid())
@@ -707,10 +710,37 @@ export const findEmails = tool({
       ),
   }),
   execute: async ({ personIds }) => {
+    const supabase = await createClient();
+    const { data: rows } = await supabase
+      .from("people")
+      .select("id, affiliation_confidence")
+      .in("id", personIds);
+
+    const confidence = new Map<string, number | null>(
+      (
+        (rows ?? []) as Array<{
+          id: string;
+          affiliation_confidence: number | null;
+        }>
+      ).map((r) => [r.id, r.affiliation_confidence]),
+    );
+
     const found: Array<{ personId: string; email: string }> = [];
     const notFound: string[] = [];
+    const skipped: string[] = [];
 
     for (const personId of personIds) {
+      // A firstname@company.com address reads to the user as proof of
+      // employment, so guessing one for a contact we cannot place at the
+      // company manufactures that proof. They are blocked from outreach
+      // anyway, so the address could not be used even if it were right. A
+      // missing row or a null confidence reads as unconfirmed, which is the
+      // safe way round. The single findEmail tool is deliberately not gated:
+      // that is an explicit request for one named person.
+      if ((confidence.get(personId) ?? 0) < AFFILIATION_SEND_THRESHOLD) {
+        skipped.push(personId);
+        continue;
+      }
       try {
         const result = await findEmailForPerson(personId);
         if (result.email) {
@@ -723,10 +753,17 @@ export const findEmails = tool({
       }
     }
 
+    // Named in the summary so the agent can explain the gap rather than
+    // reporting a batch that quietly found nothing.
+    const skippedNote = skipped.length
+      ? ` ${skipped.length} skipped: not confirmed to work at this company, so a company-domain guess would be misleading.`
+      : "";
+
     return {
       found,
       notFound,
-      summary: `Found emails for ${found.length} of ${personIds.length} contacts. ${notFound.length} not found.`,
+      skipped,
+      summary: `Found emails for ${found.length} of ${personIds.length} contacts. ${notFound.length} not found.${skippedNote}`,
     };
   },
 });

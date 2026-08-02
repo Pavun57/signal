@@ -151,6 +151,8 @@ const AFFILIATION_LABEL: Record<string, string> = {
   linkedin_profile: "their LinkedIn profile names this company",
   llm_verified: "checked against their profile",
   search_stamp: "only appeared in a search for this company",
+  former_employee: "their profile shows they have left this company",
+  employer_mismatch: "their profile names a different employer",
 };
 
 export function AffiliationBadge({

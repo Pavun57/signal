@@ -125,6 +125,7 @@ function gatePasses() {
       work_email_verification: "deliverable",
       affiliation_confidence: 0.9,
       affiliation_source: "team_page",
+      organization_id: "org_1",
     },
   };
 }
@@ -271,6 +272,7 @@ describe("send_confirmed", () => {
         work_email_verification: null,
         affiliation_confidence: 0.9,
         affiliation_source: "team_page",
+        organization_id: "org_1",
       },
     };
     // …but the draft still says prospect@example.com.

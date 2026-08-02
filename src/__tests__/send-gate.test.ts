@@ -22,6 +22,7 @@ const base: SendCandidate = {
   work_email_verification: "deliverable",
   affiliation_confidence: AFFILIATION_WEIGHT.team_page,
   affiliation_source: "team_page",
+  organization_id: "org-1",
 };
 
 const p = (over: Partial<SendCandidate> = {}): SendCandidate => ({

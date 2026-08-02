@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { createSupabaseFake } from "./helpers/supabase-fake";
 
 /**
  * The affiliation half of contact discovery: who gets attached to a company,
@@ -18,7 +19,14 @@ vi.mock("@/lib/services/contact-filter", () => ({
   findPeopleOnDomain: vi.fn().mockResolvedValue([]),
 }));
 
-const exaResults = { results: [] as Array<{ url: string; title: string }> };
+const exaResults = {
+  results: [] as Array<{
+    url: string;
+    title: string;
+    text?: string | null;
+    publishedDate?: string | null;
+  }>,
+};
 vi.mock("@/lib/services/exa-service", () => ({
   ExaService: class {
     async search() {
@@ -49,9 +57,20 @@ vi.mock("@/lib/services/knowledge-base", async (importOriginal) => {
 });
 
 const affiliations: Array<Record<string, unknown>> = [];
+/**
+ * What recordAffiliation reports back. It is monotonic on the source weight, so
+ * refusing a write is a normal outcome, not an error, and the storage loop has
+ * to read it rather than assume the verdict landed.
+ */
+const writeResult: {
+  current: { written: boolean; reason?: string; notAtJudgedOrg?: boolean };
+} = {
+  current: { written: true },
+};
 vi.mock("@/lib/services/affiliation", () => ({
   recordAffiliation: vi.fn(async (_c: unknown, a: Record<string, unknown>) => {
     affiliations.push(a);
+    return writeResult.current;
   }),
 }));
 
@@ -64,41 +83,54 @@ import {
   MAX_ALREADY_LINKED,
 } from "@/lib/services/contact-discovery";
 
+/** The organization under test. */
 let org: Record<string, unknown> = {};
-/** Rows the people-list queries resolve to (org dedup / campaign links). */
+/** People already attached to `org`. */
 let orgPeople: Array<Record<string, unknown>> = [];
 
-function client(): SupabaseClient {
-  const chain = () => {
-    // The people queries (org dedup, campaign links) select a list; everything
-    // else in these tests resolves the single org row. Keyed on the presence of
-    // linkedin_url rather than an exact column string — matching the whole
-    // string meant widening the select silently handed back a non-iterable org
-    // row instead of a list.
-    let wantsList = false;
-    const c: Record<string, unknown> & PromiseLike<unknown> = {
-      select: (cols?: string) => {
-        if (cols?.includes("linkedin_url")) wantsList = true;
-        return c;
-      },
-      eq: () => c,
-      not: () => c,
-      single: () => c,
-      maybeSingle: () => c,
-      then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
-        Promise.resolve({
-          data: wantsList ? orgPeople : org,
-          error: null,
-        }).then(onF, onR),
-    } as unknown as Record<string, unknown> & PromiseLike<unknown>;
-    return c;
-  };
-  return { from: () => chain() } as unknown as SupabaseClient;
-}
+/**
+ * A second company, and someone who works at it.
+ *
+ * Both queries in this path are scoped: the org read by `.eq("id", ...)` and the
+ * roster by `.eq("organization_id", ...)`. With one organization and one set of
+ * people in the fixtures, deleting either predicate changed nothing and the
+ * whole suite stayed green. These rows are what make an unscoped query return
+ * the wrong answer instead of the same one.
+ */
+const OTHER_ORG = {
+  id: "org-2",
+  name: "Chronicle Labs",
+  domain: "chroniclelabs.com",
+  industry: "developer tools",
+  location: "NYC",
+  description: null,
+};
+
+const otherOrgPerson = {
+  id: "elsewhere-1",
+  name: "Stranger S",
+  title: "Engineer",
+  work_email: null,
+  personal_email: null,
+  linkedin_url: "https://www.linkedin.com/in/stranger",
+  organization_id: OTHER_ORG.id,
+};
+
+const client = () =>
+  createSupabaseFake({
+    tables: {
+      organizations: () => [org, OTHER_ORG],
+      people: () => [...orgPeople, otherOrgPerson],
+      // Only read when a campaignId is passed, which these tests do not do.
+      campaign_people: () => [],
+    },
+    relations: { campaign_people: { person: { localKey: "person_id" } } },
+  });
 
 beforeEach(() => {
   created.length = 0;
   affiliations.length = 0;
+  writeResult.current = { written: true };
   exaResults.results = [];
   orgPeople = [];
   judged.mockReset().mockResolvedValue([]);
@@ -190,6 +222,7 @@ describe("alreadyLinked", () => {
     work_email: null,
     personal_email: null,
     linkedin_url: `https://www.linkedin.com/in/ex${i}`,
+    organization_id: "org-1",
   });
 
   it("returns people already attached to the org", async () => {
@@ -197,6 +230,9 @@ describe("alreadyLinked", () => {
 
     const result = await run();
 
+    // Two, not three: someone at another company is in the table and must not
+    // be rostered here. The roster is what the agent reads back as "everyone at
+    // this company", so an unscoped query pools unrelated businesses.
     expect(result.alreadyLinkedTotal).toBe(2);
     expect(result.alreadyLinked.map((p) => p.name)).toEqual([
       "Existing 1",
@@ -344,5 +380,254 @@ describe("verdict handling", () => {
       rejectedAsWrongCompany: 1,
       uncertainCount: 1,
     });
+  });
+});
+
+describe("evidence handed to the judge", () => {
+  it("passes the page text and date Exa returned", async () => {
+    // includeText is already set on the search, so this text is paid for
+    // whether or not we read it. Dropping it is why every candidate at a
+    // company whose staff do not name their employer came back uncertain.
+    exaResults.results = [
+      {
+        url: "https://www.linkedin.com/in/a",
+        title: "Ann A - Engineer",
+        text: "Experience: Software Engineer, Browserbase, May 2025 - Present",
+        publishedDate: "2026-07-23",
+      },
+    ];
+
+    await run();
+
+    const candidates = judged.mock.calls[0][1] as Array<{
+      pageText: string | null;
+      pageDate: string | null;
+    }>;
+    expect(candidates[0].pageText).toContain("May 2025 - Present");
+    expect(candidates[0].pageDate).toBe("2026-07-23");
+  });
+});
+
+describe("acting on the verdicts", () => {
+  const oneCandidate = () => {
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/a", title: "Ann A - Engineer" },
+    ];
+  };
+
+  it("detaches someone the evidence says has left", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        employerSeen: "Browserbase",
+        datesSeen: "Oct 2024 - Mar 2026",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    const result = await run();
+
+    const last = affiliations[affiliations.length - 1];
+    expect(last.source).toBe("former_employee");
+    expect(last.organizationId).toBeNull();
+    expect(result.departedCount).toBe(1);
+    // Reporting them as a contact at this company one line after detaching
+    // them is how a caller ends up drafting for someone who left.
+    expect(result.contacts).toHaveLength(0);
+  });
+
+  it("detaches someone the evidence places elsewhere", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        employerSeen: "Chronicle Labs",
+        datesSeen: "May 2024 - Present",
+        evidence: "profile names Chronicle Labs",
+      },
+    ]);
+
+    const result = await run();
+
+    const last = affiliations[affiliations.length - 1];
+    expect(last.source).toBe("employer_mismatch");
+    expect(last.organizationId).toBeNull();
+    expect(last.evidence).toContain("Chronicle Labs");
+    // The verdict is about THIS company. Without saying which, the write means
+    // "detach from wherever you are", so a correct rejection here detaches the
+    // person from the unrelated company they really do work at.
+    expect(last.detachedFrom).toBe("org-1");
+    expect(result.rejectedAsWrongCompany).toBe(1);
+  });
+
+  it("scopes a departure to the company that was judged", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    await run();
+
+    expect(affiliations[affiliations.length - 1].detachedFrom).toBe("org-1");
+  });
+
+  it("still keeps uncertain people attached and flagged", async () => {
+    // The whole point of `uncertain` is that we keep them. This must not
+    // regress into the old hard filter that deleted real employees.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "uncertain",
+        evidence: "page text unavailable",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.contacts).toHaveLength(1);
+    expect(result.uncertainCount).toBe(1);
+    expect(affiliations[affiliations.length - 1].source).toBe("search_stamp");
+  });
+});
+
+describe("when the write is refused", () => {
+  const oneCandidate = () => {
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/a", title: "Ann A - Engineer" },
+    ];
+  };
+
+  beforeEach(() => {
+    writeResult.current = { written: false, reason: "weaker_than_existing" };
+  });
+
+  it("does not report a verified contact the write refused", async () => {
+    // A person already on file at team_page (0.9): the judge says verified
+    // (0.6) and recordAffiliation correctly refuses. Counting the verdict
+    // anyway is how "8 verified contacts" gets reported for rows the send gate
+    // then blocks.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "verified",
+        evidence: "headline names Browserbase",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+  });
+
+  it("does not drop someone whose detach was refused", async () => {
+    // The inverse failure: the write is refused, so they are still attached and
+    // still sendable, but they were reported as departed and dropped from the
+    // list the caller works from.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.departedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+    // Labelled for what actually happened, not for what the judge wanted.
+    expect(result.contacts[0].affiliation).toBe("unchanged");
+  });
+
+  it("does not report a rejection the write refused", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        evidence: "profile names Chronicle Labs",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.rejectedAsWrongCompany).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+  });
+
+  it("does not list a stranger as a contact here when the detach did not apply", async () => {
+    // The other refusal, and it means the opposite thing. "You are not at the
+    // company that was judged" leaves the row untouched AND leaves the person
+    // filed under someone else, so putting them in this company's contact list
+    // as "unchanged" is the same lie in a quieter voice.
+    writeResult.current = {
+      written: false,
+      reason: "not_attached_to_judged_org",
+      notAtJudgedOrg: true,
+    };
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        employerSeen: "Box",
+        evidence: "profile names Box",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.contacts).toHaveLength(0);
+    expect(result.affiliationUnchanged).toBe(0);
+    expect(result.rejectedAsWrongCompany).toBe(1);
+  });
+
+  it("counts a refused team page write as unchanged, not verified", async () => {
+    // Phase 1 has the same bug: verifiedCount++ regardless of the write.
+    const { findPeopleOnDomain } =
+      await import("@/lib/services/contact-filter");
+    vi.mocked(findPeopleOnDomain).mockResolvedValueOnce([
+      {
+        name: "Dee D",
+        title: "Engineer",
+        linkedinUrl: "https://www.linkedin.com/in/dee",
+        email: null,
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
   });
 });

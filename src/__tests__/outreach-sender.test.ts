@@ -109,6 +109,7 @@ function gatePasses() {
       work_email_verification: "deliverable",
       affiliation_confidence: 0.9,
       affiliation_source: "team_page",
+      organization_id: "org_1",
     },
   };
 }

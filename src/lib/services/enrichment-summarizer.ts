@@ -21,6 +21,12 @@ interface SearchResultLike {
   title: string;
   url: string;
   text: string | null;
+  /**
+   * When the page was published. Without it every source reads as equally
+   * current, which is how a four-month-old archive snapshot saying "Present"
+   * outranked a headline scraped the same day.
+   */
+  publishedDate?: string | null;
 }
 
 /**
@@ -101,18 +107,32 @@ export interface PersonSummary {
   summary: string | null;
   /** Read off the enrichment material, not carried over from what we stored. */
   currentTitle: string | null;
+  /**
+   * The freshest source names a different employer than an older one, so
+   * `currentTitle` is a guess between two stories rather than a reading of
+   * one. Callers must not write it over a stored title on the strength of it.
+   */
+  sourcesConflict: boolean;
 }
 
 export async function summarizePerson(
   input: PersonSummaryInput,
 ): Promise<PersonSummary | null> {
   const sections: string[] = [];
+  const today = new Date().toISOString().slice(0, 10);
 
   if (input.title) sections.push(`Current title: ${input.title}`);
   if (input.companyName) sections.push(`Company: ${input.companyName}`);
+  // The headline is the one source we know is current, so say so. Handed over
+  // undated it looks no fresher than an archive page next to it.
   if (input.linkedinHeadline)
-    sections.push(`LinkedIn headline: ${input.linkedinHeadline}`);
-  if (input.twitterBio) sections.push(`Twitter bio: ${input.twitterBio}`);
+    sections.push(
+      `LinkedIn headline (live, scraped today, ${today}): ${input.linkedinHeadline}`,
+    );
+  if (input.twitterBio)
+    sections.push(
+      `Twitter bio (live, scraped today, ${today}): ${input.twitterBio}`,
+    );
 
   const posts = (input.linkedinPosts ?? [])
     .slice(0, 3)
@@ -128,10 +148,16 @@ export async function summarizePerson(
     .join("\n---\n");
   if (tweets) sections.push(`Recent tweets:\n${tweets}`);
 
+  // Every block carries its date, and an undated one says "undated" out loud.
+  // A silently missing field reads to the model as "not applicable", which
+  // leaves it ordering sources by nothing at all.
   const formatResults = (results?: SearchResultLike[]) =>
     (results ?? [])
       .slice(0, 3)
-      .map((r) => `${r.title}\n${r.text?.slice(0, 600) ?? ""}`)
+      .map(
+        (r) =>
+          `${r.title} (published: ${r.publishedDate || "undated"})\n${r.text?.slice(0, 600) ?? ""}`,
+      )
       .filter(Boolean)
       .join("\n---\n");
 
@@ -162,10 +188,21 @@ export async function summarizePerson(
           .describe(
             "The person's current job title, read from the source material — e.g. 'Head of GTM / Revenue Ops'. Just the role, without the company name. Null if the source material does not state it.",
           ),
+        sourcesConflict: z
+          .boolean()
+          .describe(
+            "true when the freshest source names a different employer than an older one",
+          ),
       }),
       prompt: `Summarize this person for a sales researcher who needs a quick read on who they are. Target: 2-3 sentences, plain prose, no markdown, no bullets. Cover their role and one or two notable threads from their background or recent activity. Skip generic platitudes ("results-driven leader") -- if the source material is thin, keep the summary short rather than padding it.
 
 Also extract their current job title. The "Current title" line below, if present, is what we have on file and may be wrong -- it is often a guess carried over from a search query. Trust the profile, headline and background material over it. Return null rather than guessing when the material does not state a title.
+
+Today's date: ${today}
+
+Every source below is dated. The LinkedIn headline and Twitter bio were scraped today; each news, article and background block says when its page was published, or says "undated". When two sources name different employers, the freshest source wins: an archived page saying "Present" or "Current" only proves where they worked on the day it was taken, not where they work now.
+
+Set sourcesConflict to true when that happens, and when it does, open the summary by saying the sources disagree and naming both employers with their dates. A conflict is the most useful thing you can tell the researcher about this person, so do not smooth it over by quietly picking a side.
 
 ${UNTRUSTED_NOTICE}
 
@@ -187,6 +224,7 @@ ${wrapUntrusted(body)}`,
     return {
       summary: object.summary.trim() || null,
       currentTitle: object.currentTitle?.trim() || null,
+      sourcesConflict: object.sourcesConflict === true,
     };
   } catch (err) {
     console.error("[summarize-person] failed:", err);

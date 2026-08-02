@@ -110,12 +110,26 @@ export async function POST(
   // human saying so is the strongest source there is, which also means this is
   // the one action that can override a machine verdict — the manual escape
   // hatch when the LLM cannot confirm a real employee.
-  await recordAffiliation(supabase, {
+  const write = await recordAffiliation(supabase, {
     personId,
     organizationId,
     source: "user_entered",
     evidence: "assigned by the user",
   });
+
+  // `user_entered` is a human override, so the monotonic guard never refuses
+  // it: a refusal here is the person having vanished, or the update itself
+  // failing. Both used to return 200 with the row untouched, which told the
+  // user their assignment had been saved when nothing had been written.
+  if (!write.written) {
+    if (write.reason === "person_not_found") {
+      return Response.json({ error: "Person not found" }, { status: 404 });
+    }
+    return Response.json(
+      { error: `Could not assign this contact: ${write.reason}` },
+      { status: 500 },
+    );
+  }
 
   const { data: updated, error: updErr } = await supabase
     .from("people")

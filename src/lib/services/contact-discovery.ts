@@ -37,9 +37,30 @@ export interface DiscoveredContact {
   personal_email: string | null;
   linkedinUrl: string | null;
   source: string;
-  /** Why we believe they work here, and how strongly. */
-  affiliation: AffiliationSource;
+  /**
+   * Why we believe they work here, and how strongly. `unchanged` means the
+   * write this search wanted to make was refused because the stored evidence
+   * outranks it, so the affiliation on file is whatever it already was.
+   */
+  affiliation: AffiliationSource | "unchanged";
   affiliationEvidence: string;
+}
+
+/**
+ * How a contact whose affiliation write was refused is described.
+ *
+ * Both judge-and-store paths use these, so the two cannot drift on how they
+ * report a refusal. The person is kept in the returned list either way: a
+ * refused detach leaves them attached and sendable, and dropping them while
+ * reporting them as departed is the failure this replaces.
+ */
+export const AFFILIATION_UNCHANGED = "unchanged" as const;
+
+export function unchangedEvidence(
+  reason: string | undefined,
+  judgedEvidence: string,
+): string {
+  return `affiliation left as it was (${reason ?? "write refused"}); this search saw: ${judgedEvidence}`;
 }
 
 /** Per-call ceiling on Exa searches. One search per title, so this bounds spend. */
@@ -88,9 +109,56 @@ export interface ContactDiscoveryResult {
   verifiedCount: number;
   /** Kept but unproven — surfaced to the user, blocked from outreach. */
   uncertainCount: number;
-  /** Positively placed at a different company; stored unattached. */
+  /**
+   * Positively placed at a different company, so not a contact here. Detached
+   * from this company if they were filed under it, and left exactly as they
+   * were if they were already filed under someone else.
+   */
   rejectedAsWrongCompany: number;
+  /** Worked here once, and the evidence shows the role has ended. Detached. */
+  departedCount: number;
+  /**
+   * People whose affiliation this search did NOT change, because what is
+   * already on file outranks what it found. Counted separately from every
+   * verdict counter above: none of those describe what happened to these rows,
+   * and reporting them under one is how the agent came to describe writes that
+   * never landed.
+   */
+  affiliationUnchanged: number;
   error?: string;
+}
+
+/**
+ * Prose for the three counters that describe people the agent will NOT find in
+ * the returned contact list.
+ *
+ * A bare `affiliationUnchanged: 2` reads as "two more were fine" when it means
+ * "two writes were refused", and a bare `uncertainCount: 6` invites the agent
+ * to go and fix it with a tool that cannot. Shared by both discovery paths so
+ * the same number is never described two different ways.
+ */
+export function affiliationNotes(counts: {
+  uncertainCount: number;
+  departedCount: number;
+  affiliationUnchanged: number;
+}): string | undefined {
+  const notes: string[] = [];
+  if (counts.uncertainCount > 0) {
+    notes.push(
+      `${counts.uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed. Enrichment cannot settle this: confirming them is a human action in the campaign UI.`,
+    );
+  }
+  if (counts.departedCount > 0) {
+    notes.push(
+      `${counts.departedCount} contact(s) have left this company: their profile shows a stint here that has already ended, so they were detached from it and are not in the contact list.`,
+    );
+  }
+  if (counts.affiliationUnchanged > 0) {
+    notes.push(
+      `${counts.affiliationUnchanged} contact(s) already have stronger evidence on file than this search found, so their affiliation was left exactly as it was and is shown as "unchanged". Do not describe them as verified or as departed: nothing about them changed.`,
+    );
+  }
+  return notes.length > 0 ? notes.join(" ") : undefined;
 }
 
 export async function findContactsForOrganization(
@@ -132,6 +200,8 @@ export async function findContactsForOrganization(
     verifiedCount: 0,
     uncertainCount: 0,
     rejectedAsWrongCompany: 0,
+    departedCount: 0,
+    affiliationUnchanged: 0,
     error,
   });
 
@@ -206,6 +276,8 @@ export async function findContactsForOrganization(
   let verifiedCount = 0;
   let uncertainCount = 0;
   let rejectedAsWrongCompany = 0;
+  let departedCount = 0;
+  let affiliationUnchanged = 0;
 
   // ── Phase 1: the company's own website ──────────────────────────────────
   // Strongest routine evidence there is: the company published these people as
@@ -232,7 +304,11 @@ export async function findContactsForOrganization(
         });
 
         const evidence = `listed on ${org.domain}`;
-        await recordAffiliation(supabase, {
+        // Even here the write can be refused: someone already on file at
+        // email_domain (0.95) or user_entered (1.0) outranks a team page, and
+        // so does anyone attached elsewhere at 0.9 or better. Counting them as
+        // verified would be reporting a write that did not happen.
+        const write = await recordAffiliation(supabase, {
           personId: person.id,
           organizationId,
           source: "team_page",
@@ -250,7 +326,9 @@ export async function findContactsForOrganization(
         if (campaignId) await linkPersonToCampaign(person.id, campaignId);
         if (linkedinUrl) existingUrls.add(linkedinUrl);
 
-        verifiedCount++;
+        if (write.written) verifiedCount++;
+        else affiliationUnchanged++;
+
         contacts.push({
           id: person.id,
           name: person.name,
@@ -259,8 +337,10 @@ export async function findContactsForOrganization(
           personal_email: person.personal_email,
           linkedinUrl: person.linkedin_url,
           source: "website",
-          affiliation: "team_page",
-          affiliationEvidence: evidence,
+          affiliation: write.written ? "team_page" : AFFILIATION_UNCHANGED,
+          affiliationEvidence: write.written
+            ? evidence
+            : unchangedEvidence(write.reason, evidence),
         });
       }
     } catch (err) {
@@ -352,6 +432,8 @@ export async function findContactsForOrganization(
         title: parsed.title,
         linkedinUrl,
         rawHeadline: result.title,
+        pageText: result.text ?? null,
+        pageDate: result.publishedDate ?? null,
         searchTitle: search.title,
       });
     }
@@ -362,21 +444,39 @@ export async function findContactsForOrganization(
       const candidate = candidates[judged.index];
       if (!candidate) continue;
 
-      // Rejected means the evidence positively placed them somewhere else.
-      // Keep them, unattached, rather than pretending they are an employee —
-      // but only when we can actually identify them. findOrCreatePerson dedups
-      // by LinkedIn URL, or by name within an organization; a rejected
-      // candidate has no organization, so one with no profile URL matches
-      // neither path and would be INSERTED fresh on every run, leaving the
-      // mis-filed original untouched and adding an orphan each time.
-      if (judged.verdict === "rejected" && !candidate.linkedinUrl) {
-        rejectedAsWrongCompany++;
+      const detaching =
+        judged.verdict === "rejected" || judged.verdict === "former_employee";
+
+      // A detached candidate is a real person who works somewhere else, or
+      // used to work here. Keep them, unattached, rather than pretending they
+      // are an employee, but only when we can actually identify them.
+      // findOrCreatePerson dedups by LinkedIn URL, or by name within an
+      // organization; a detached candidate has no organization, so one with no
+      // profile URL matches neither path and would be INSERTED fresh on every
+      // run, leaving the mis-filed original untouched and adding an orphan
+      // each time.
+      if (detaching && !candidate.linkedinUrl) {
+        if (judged.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
 
-      const attachTo = judged.verdict === "rejected" ? null : organizationId;
+      const attachTo = detaching ? null : organizationId;
       const source: AffiliationSource =
-        judged.verdict === "verified" ? "llm_verified" : "search_stamp";
+        judged.verdict === "verified"
+          ? "llm_verified"
+          : judged.verdict === "former_employee"
+            ? "former_employee"
+            : judged.verdict === "rejected"
+              ? "employer_mismatch"
+              : "search_stamp";
+
+      // Fold what the judge saw into the stored evidence. Without it the row
+      // says "profile names a different employer" and the user has to go and
+      // look up which one.
+      const evidence = judged.employerSeen
+        ? `${judged.evidence} (saw: ${judged.employerSeen}${judged.datesSeen ? `, ${judged.datesSeen}` : ""})`
+        : judged.evidence;
 
       const person = await findOrCreatePerson({
         name: judged.name,
@@ -386,21 +486,57 @@ export async function findContactsForOrganization(
         source: "exa",
       });
 
-      await recordAffiliation(supabase, {
+      const write = await recordAffiliation(supabase, {
         personId: person.id,
         organizationId: attachTo,
         source,
-        evidence: judged.evidence,
+        evidence,
+        // The judge was asked about THIS company and answered about it. Without
+        // saying so, a detaching write means "detach from wherever you are", so
+        // correctly rejecting someone here unlinks them from the unrelated
+        // company they actually work at.
+        detachedFrom: detaching ? organizationId : null,
       });
 
-      if (judged.verdict === "rejected") {
-        rejectedAsWrongCompany++;
+      // The verdict is what the judge concluded; the write is what actually
+      // happened to the row. They diverge whenever the stored evidence outranks
+      // this search, and counting the verdict regardless produced two opposite
+      // lies: a refused attach reported as a verified contact (organization_id
+      // still null, blocked at the send gate), and a refused detach reported as
+      // departed and dropped from the list while the person stayed attached and
+      // fully sendable.
+      //
+      // The one refusal that does NOT mean "leave them in the list": the person
+      // is filed under a different company, so nothing here was ever about
+      // them. They are not a contact at this company, and reporting them as an
+      // unchanged one is the same lie in a quieter voice.
+      if (!write.written && write.notAtJudgedOrg) {
+        if (judged.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
-      if (judged.verdict === "verified") verifiedCount++;
-      else uncertainCount++;
 
-      if (campaignId) await linkPersonToCampaign(person.id, campaignId);
+      if (!write.written) {
+        affiliationUnchanged++;
+      } else if (judged.verdict === "rejected") {
+        rejectedAsWrongCompany++;
+        continue;
+      } else if (judged.verdict === "former_employee") {
+        departedCount++;
+        continue;
+      } else if (judged.verdict === "verified") {
+        verifiedCount++;
+      } else {
+        uncertainCount++;
+      }
+
+      // Only ever link someone this search meant to keep. A refused detach
+      // still belongs in `contacts` (they are attached, and hiding that is the
+      // bug), but adding them to the campaign would act on the judgement the
+      // database just refused.
+      if (campaignId && !detaching) {
+        await linkPersonToCampaign(person.id, campaignId);
+      }
 
       contacts.push({
         id: person.id,
@@ -410,8 +546,10 @@ export async function findContactsForOrganization(
         personal_email: person.personal_email,
         linkedinUrl: person.linkedin_url,
         source: "exa",
-        affiliation: source,
-        affiliationEvidence: judged.evidence,
+        affiliation: write.written ? source : AFFILIATION_UNCHANGED,
+        affiliationEvidence: write.written
+          ? evidence
+          : unchangedEvidence(write.reason, evidence),
       });
     }
   }
@@ -433,5 +571,7 @@ export async function findContactsForOrganization(
     verifiedCount,
     uncertainCount,
     rejectedAsWrongCompany,
+    departedCount,
+    affiliationUnchanged,
   };
 }

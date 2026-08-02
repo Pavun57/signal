@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { AFFILIATION_SEND_THRESHOLD } from "@/lib/services/affiliation";
 import { findEmailForPerson } from "@/lib/tools/email-tools";
 
 export const runtime = "nodejs";
@@ -59,7 +60,9 @@ export async function POST(req: Request) {
   // to the requested organization.
   const { data: rows, error } = await supabase
     .from("campaign_people")
-    .select("person:people!inner(id, work_email, organization_id)")
+    .select(
+      "person:people!inner(id, work_email, organization_id, affiliation_confidence)",
+    )
     .eq("campaign_id", campaignId);
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -67,15 +70,28 @@ export async function POST(req: Request) {
 
   const targets: string[] = [];
   let pendingTotal = 0;
+  let skipped = 0;
   for (const row of rows ?? []) {
     const person = row.person as unknown as {
       id: string;
       work_email: string | null;
       organization_id: string | null;
+      affiliation_confidence: number | null;
     } | null;
     if (!person) continue;
     if (person.work_email) continue;
     if (person.organization_id !== organizationId) continue;
+    // A firstname@company.com address reads to the user as proof of
+    // employment, so minting one for a contact we cannot place at the company
+    // manufactures the confirmation they are looking for. They are blocked
+    // from outreach anyway, so the address could not be used even if it were
+    // right. A null confidence reads as unconfirmed, which is the safe way
+    // round. The org filter above only catches people already detached; this
+    // catches the ones still attached but unproven.
+    if ((person.affiliation_confidence ?? 0) < AFFILIATION_SEND_THRESHOLD) {
+      skipped++;
+      continue;
+    }
     pendingTotal++;
     if (targets.length < MAX_TARGETS_PER_REQUEST) {
       targets.push(person.id);
@@ -107,15 +123,21 @@ export async function POST(req: Request) {
   const remaining = Math.max(0, pendingTotal - targets.length);
   const truncated = remaining > 0;
 
+  // Skipped people are reported rather than dropped: without this the button
+  // says it found nothing and the user has no way to learn why.
+  const skippedNote =
+    skipped > 0 ? ` ${skipped} skipped, not confirmed at this company.` : "";
+
   return NextResponse.json({
     total: targets.length,
     pendingTotal,
     remaining,
     truncated,
+    skipped,
     found,
     notFound,
     summary: truncated
-      ? `Found ${found.length} of ${targets.length} (${remaining} more pending — click again).`
-      : `Found ${found.length} of ${targets.length} emails. ${notFound.length} not found.`,
+      ? `Found ${found.length} of ${targets.length} (${remaining} more pending, click again).${skippedNote}`
+      : `Found ${found.length} of ${targets.length} emails. ${notFound.length} not found.${skippedNote}`,
   });
 }

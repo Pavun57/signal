@@ -327,9 +327,10 @@ export default function CompanyPage() {
         }}
         onPersonRemove={async (personId) => {
           try {
-            const res = await apiFetch(`/api/people/${personId}/from-company`, {
-              method: "DELETE",
-            });
+            const res = await apiFetch(
+              `/api/people/${personId}/from-company?organizationId=${companyId}`,
+              { method: "DELETE" },
+            );
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
               throw new Error(err.error ?? `HTTP ${res.status}`);
@@ -348,9 +349,10 @@ export default function CompanyPage() {
         onEnrich={enrichContact}
         onRemove={async (personId) => {
           try {
-            const res = await apiFetch(`/api/people/${personId}/from-company`, {
-              method: "DELETE",
-            });
+            const res = await apiFetch(
+              `/api/people/${personId}/from-company?organizationId=${companyId}`,
+              { method: "DELETE" },
+            );
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
               throw new Error(err.error ?? `HTTP ${res.status}`);

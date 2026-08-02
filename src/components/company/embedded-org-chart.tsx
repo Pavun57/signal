@@ -144,9 +144,12 @@ export function EmbeddedOrgChart({
           }}
           onPersonRemove={async (personId) => {
             try {
+              // Names the company this chart is drawn for, so a removal aimed
+              // at a stale row is refused instead of detaching the person from
+              // whichever company they are filed under now.
               const url = campaignId
-                ? `/api/people/${personId}/from-company?campaignId=${campaignId}`
-                : `/api/people/${personId}/from-company`;
+                ? `/api/people/${personId}/from-company?campaignId=${campaignId}&organizationId=${organizationId}`
+                : `/api/people/${personId}/from-company?organizationId=${organizationId}`;
               const res = await fetch(url, { method: "DELETE" });
               if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
@@ -184,8 +187,8 @@ export function EmbeddedOrgChart({
         onRemove={async (personId) => {
           try {
             const url = campaignId
-              ? `/api/people/${personId}/from-company?campaignId=${campaignId}`
-              : `/api/people/${personId}/from-company`;
+              ? `/api/people/${personId}/from-company?campaignId=${campaignId}&organizationId=${organizationId}`
+              : `/api/people/${personId}/from-company?organizationId=${organizationId}`;
             const res = await fetch(url, { method: "DELETE" });
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
