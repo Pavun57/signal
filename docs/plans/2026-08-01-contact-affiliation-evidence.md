@@ -1110,6 +1110,37 @@ git commit -m "fix(enrich): stop guessing emails for unconfirmed contacts"
 
 ---
 
+## Task 6b: The same gate on the bulk email path
+
+Added during execution, not in the original plan. Task 6 gated `enrichContactById`, but the audit it asked for turned up a second path to the same defect, and leaving it open means Task 6 does not actually achieve what it was written to achieve.
+
+`src/app/api/find-email/bulk/route.ts:60-83` selects `campaign_people -> people` filtered only on `work_email is null` and `organization_id === organizationId`. There is no affiliation check, so a contact sitting at `search_stamp` 0.2 while still attached to the org gets a `firstname@company.com` minted by one button press. That is precisely the population the Task 8 review queue is about to make visible, and precisely how six strangers acquired convincing Browserbase addresses.
+
+Detached people (`organization_id` null) are already excluded there, but only by accident of the org filter. That covers `employer_mismatch` and `former_employee` and misses the needs-review group entirely.
+
+`src/lib/tools/email-tools.ts:715` (`findEmails`, batch of up to 25) is the same shape and needs the same gate.
+
+Deliberately NOT gated: `src/app/api/find-email/route.ts:51` and the single-person `findEmail` tool. Those are an explicit request for one named person, where the user or agent has already decided this contact is worth spending on. A batch fan-out is not that.
+
+**Files:**
+
+- Modify: `src/app/api/find-email/bulk/route.ts`, `src/lib/tools/email-tools.ts`
+- Test: `src/__tests__/find-email-bulk-gate.test.ts` (create)
+
+**Step 1: Write the failing test.** A campaign with two attached people, one at `affiliation_confidence` 0.9 and one at 0.2, both with `work_email` null. Assert `findEmailForPerson` is called for the first and not the second, and that the response still reports the skipped one rather than silently dropping it from the totals.
+
+**Step 2: Run it, plus `pnpm typecheck`, and confirm the red state.**
+
+**Step 3: Implement.** Add `affiliation_confidence` to both selects and skip rows below `AFFILIATION_SEND_THRESHOLD`. Count skipped rows separately from `pendingTotal` so the UI can say "3 skipped, not confirmed at this company" rather than appearing to find nothing.
+
+**Step 4: Run the file, then the full suite, then eslint. Commit.**
+
+```bash
+git commit -m "fix(email): do not mint addresses for unconfirmed contacts in bulk"
+```
+
+---
+
 ## Task 7: Keep dates through person enrichment
 
 The Victor Lue summary bug. `summarizePerson` receives `Array<{title, url, text}>` (`enrichment-tools.ts:595-603`) because `SearchResultLike` (`enrichment-summarizer.ts:20-24`) has no date field, so `formatResults` (`:131-136`) emits undated blobs. His material contained a March snapshot and a July one plus a live headline saying Anthropic; with nothing to order them by, the model picked Browserbase, called Anthropic "previous", and wrote that title back to `people.title` at `:611-617`.
