@@ -17,7 +17,7 @@ User ──▶ Next.js (App Router)
                 ├──▶ Anthropic Claude (via Vercel AI SDK)
                 ├──▶ Browserbase / Stagehand (web automation)
                 ├──▶ Gmail SMTP/IMAP (outbound email + reply tracking)
-                ├──▶ QStash (scheduled jobs)
+                ├──▶ jobs table (Postgres queue, Vercel Cron tick)
                 └──▶ Exa / Google / Apify / GitHub (enrichment)
 ```
 
@@ -33,12 +33,13 @@ src/
     outreach/       # sequence composer + review
     signals/        # signal management UI
     settings/       # user + team settings
-    tracking/       # email open/click tracking endpoints
+    tracking/       # signal-tracking UI (company / person monitoring)
   components/       # shadcn-style UI components + feature components
   lib/
     supabase/       # client, server, middleware, admin clients
     tools/          # AI tool definitions (email, profile, sequences)
-    services/       # integrations (gmail, qstash, exa, browserbase, ...)
+    services/       # integrations (gmail, jobs, exa, browserbase, ...)
+    jobs/           # job executors + runner for the Postgres queue
     signals/        # signal runner + recipe engine
     email-composition/
     types/          # shared TypeScript types
@@ -65,7 +66,8 @@ The consolidated schema at `supabase/migrations/20260419000000_initial_schema.sq
 | `sequences`, `sequence_steps`    | Multi-step outreach definitions                        |
 | `email_drafts`, `email_events`   | Drafted emails + send/open/reply lifecycle             |
 | `knowledge_base`                 | Shared user-authored notes, pinned in chat context     |
-| `tracking_*`                     | Open / click pixel tracking                            |
+| `tracking_*`                     | Recurring company / person signal monitoring           |
+| `jobs`                           | Postgres job queue (recurring + one-off work)          |
 | `api_usage`                      | Per-action cost attribution                            |
 | `user_profiles`, `team_members`  | Multi-tenant auth scope                                |
 
@@ -92,16 +94,46 @@ If you deploy Signal for multiple independent teams, **do not share a Supabase p
 
 ### Signal run
 
-1. QStash webhook at `src/app/api/outreach/process/route.ts` (and similar) fires on schedule.
-2. `src/lib/signals/runner.ts` loads the recipe, dispatches steps (scraper / API / Stagehand), persists events.
-3. New events raise contact priorities and surface in the campaign UI.
+1. The per-minute tick at `src/app/api/jobs/tick` claims due jobs; the recurring `tracking.dispatch` job enqueues one `tracking.run` job per due tracking config.
+2. The `tracking.run` executor (`src/lib/jobs/executors/tracking-run.ts`) calls `src/lib/signals/runner.ts`, which loads the recipe, dispatches steps (scraper / API / Stagehand), and persists events.
+3. New events raise contact priorities and surface in the campaign UI. A tracking verdict that flips to "ready to contact" enqueues an `outreach.process` job.
 
 ### Outreach send
 
 1. User reviews draft sequences in `/outreach/review`.
 2. Send request hits `src/app/api/outreach/send-now/route.ts`.
 3. `src/lib/services/gmail-service.ts` dispatches over the user's Gmail SMTP, stores `email_drafts` rows.
-4. IMAP polling at `src/app/api/email/track/route.ts` (QStash schedule) updates reply / bounce state.
+4. The recurring `email.track` job polls each connected mailbox over IMAP and updates reply / bounce state; the recurring `outreach.process` job sends due sequence follow-ups. Signal sends no tracking pixel, so `opened` / `clicked` statuses are never written.
+
+## Job queue
+
+Scheduling lives in Postgres, not an external vendor. A single `jobs` table (created in `supabase/migrations/20260801000003_job_queue.sql`) holds both recurring system jobs and one-off work items enqueued by app code via `enqueueJob()` (`src/lib/services/jobs.ts`).
+
+Claiming happens in one SQL function, `claim_jobs()`, so the concurrency rules live in one transaction the app can't get wrong:
+
+- `FOR UPDATE SKIP LOCKED` makes concurrent claimers safe (a second claimer skips rows the first is mid-claim on).
+- Per-user fairness: at most `per_user_cap` jobs per user per batch, so one tenant's backlog can't starve others.
+- Singleton keys: at most one running job per `singleton_key` (unused in v1; reserved for per-mailbox send serialization).
+- Lease reaping: a claimed job carries a `locked_until` lease. If the runner dies mid-job, the lease expires and the next `claim_jobs()` call reaps the job back to pending. That lease is the retry mechanism.
+
+Two routes drive the queue, both guarded by `CRON_SECRET` (unset secret means the queue stays off, never open):
+
+- `/api/jobs/tick` (per-minute, via Vercel Cron or pg_cron) claims a batch and POSTs each job id to the runner. It is a dispatcher only and finishes in seconds.
+- `/api/jobs/run` responds 202 immediately and executes the job in `after()`, so each job gets its own invocation and its own `maxDuration = 300` budget.
+
+Job types (v1):
+
+| type                | payload                                     | recurring                  |
+| ------------------- | ------------------------------------------- | -------------------------- |
+| `email.track`       | `{}`                                        | every 10 min               |
+| `email.cleanup`     | `{}`                                        | daily                      |
+| `tracking.dispatch` | `{}`                                        | every 15 min               |
+| `tracking.run`      | `{ trackingConfigId }`                      | no                         |
+| `outreach.process`  | `{ type: "followups" }` or a signal payload | followups row every 15 min |
+
+Executors live in `src/lib/jobs/executors/` and are registered in `src/lib/jobs/executors/index.ts`. The recurring rows are seeded by the migration with `insert ... on conflict do nothing`, so a fresh deploy schedules itself and a deleted row self-heals on the next migration run.
+
+When volume grows, a persistent worker can run the same `claim_jobs()` loop against the same executors. The table is the contract: no schema, executor, or enqueue-site changes, and worker and cron can run simultaneously because SKIP LOCKED prevents double-claims.
 
 ## External service touchpoints
 

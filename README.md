@@ -68,7 +68,7 @@ It's built for teams that want a CRM-adjacent tool they can read, fork, self-hos
 - **AI** — Anthropic Claude via `@ai-sdk/anthropic` and the Vercel AI SDK
 - **Automation** — Browserbase + Stagehand for browser tasks
 - **Email** — your own Gmail (app password) for sending, IMAP for reply tracking
-- **Jobs** — QStash (Upstash) for scheduled signal runs
+- **Jobs** — Postgres job queue (in-repo) driven by Vercel Cron or pg_cron
 - **UI** — Tailwind CSS 4, shadcn/ui
 - **Testing** — Vitest, Playwright
 
