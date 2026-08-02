@@ -46,6 +46,8 @@ Cost of feeding the text in: 25 candidates (the `MAX_TITLES` x `numResults` ceil
 ## House rules that will bite you
 
 - **No em dashes in any string, comment or copy.** eslint blocks them (`no-restricted-syntax`). Use commas, colons or parentheses.
+- **Vitest does not typecheck.** It transpiles with esbuild, so any step below that predicts "this will not compile" is wrong about what `vitest run` will show you. A test using a union member that does not exist yet runs it as a plain string, which means `AFFILIATION_WEIGHT[missing]` is `undefined` and every comparison against it is false. Measured on Task 2: that made 2 of 5 new tests pass spuriously and a third fail for the wrong reason. Always run `pnpm typecheck` alongside `pnpm vitest run` at the red step, and treat the typecheck output as the compile evidence.
+- **The first vitest run on a cold Vite cache can hang for several minutes.** Subsequent runs finish in under 10 seconds. Do not diagnose it as a broken test.
 - Every LLM call follows `src/lib/services/relevance-filter.ts` exactly: `generateObject` + `llmTimeout()` abort signal + `trackUsage` + `UNTRUSTED_NOTICE` / `wrapUntrusted` / `stringify` from `@/lib/prompt-safety` + a fail-open catch.
 - `recordAffiliation` is monotonic on the **source weight**, not on the stored confidence. The guard reads `affiliation_source` and maps it through `AFFILIATION_WEIGHT` (`affiliation.ts:92-96`). The `affiliation_confidence` column is read only by the send gate. That separation is what lets Task 2 write a high displacement weight and a zero send-confidence onto the same row.
 - Commands you will run constantly:
