@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "audit:data": "tsx scripts/audit-data-quality.ts",
+    "probe:affiliation": "tsx scripts/probe-affiliation.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
