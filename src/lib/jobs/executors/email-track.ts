@@ -1,43 +1,31 @@
-import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { decryptSecret } from "@/lib/crypto";
 import {
   classifyInboundMessage,
   fetchInboundSince,
 } from "@/lib/services/gmail-service";
-import { verifyQStashSignature } from "@/lib/services/qstash";
 import {
   applyInboundStatus,
   type TrackedEmail,
 } from "@/lib/services/email-tracking";
 
-// One IMAP connect + TLS handshake + fetch per user per run — slower than
-// REST polling, so give the route real headroom.
-export const maxDuration = 120;
-
 /**
- * Reply/bounce tracking. Call via a QStash schedule (the route is public, so
- * the signature check is the only auth). Polls each user's Gmail INBOX over
- * IMAP and matches inbound In-Reply-To/References headers against the RFC
- * Message-IDs of pending sends.
+ * Reply/bounce tracking (recurring job, every 10 min). Polls each user's
+ * Gmail INBOX over IMAP and matches inbound In-Reply-To/References headers
+ * against the RFC Message-IDs of pending sends.
  *
  * Gmail rows only ever move sent → replied | bounced: there is no
  * delivered/opened/clicked signal because Signal deliberately sends no
  * tracking pixel (pixels hurt cold-email deliverability and the data is
  * mostly fiction post-Apple-MPP).
  *
- * The status application itself lives in services/email-tracking so it can be
- * tested without a QStash signature and a live mailbox.
+ * Naturally idempotent: re-running re-matches already-applied statuses,
+ * which applyInboundStatus's monotonic status ladder ignores.
  */
-
-export async function POST(request: Request) {
-  try {
-    await verifyQStashSignature(request);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Invalid signature";
-    return NextResponse.json({ error: msg }, { status: 401 });
-  }
-
+export async function trackEmailReplies(): Promise<{
+  checked: number;
+  updated: number;
+}> {
   const supabase = getAdminClient();
 
   // Load recent sent emails that haven't reached a terminal state. Clamped
@@ -55,7 +43,7 @@ export async function POST(request: Request) {
     .limit(100);
 
   if (error || !emails || emails.length === 0) {
-    return NextResponse.json({ checked: 0, updated: 0 });
+    return { checked: 0, updated: 0 };
   }
 
   // Load gmail credentials for the affected users
@@ -123,5 +111,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ checked: emails.length, updated });
+  return { checked: emails.length, updated };
 }

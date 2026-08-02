@@ -1,22 +1,22 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { getQStashClient, getBaseUrl } from "@/lib/services/qstash";
+import { enqueueJob } from "@/lib/services/jobs";
 import { SCHEDULE_INTERVALS } from "@/lib/types/tracking";
 import type { Schedule } from "@/lib/types/tracking";
 
-/** Publish a QStash message to run a tracking config immediately (baseline). */
+/** Enqueue an immediate tracking.run job for a config's baseline snapshot. */
 async function dispatchImmediateRun(trackingConfigId: string): Promise<void> {
   try {
-    const qstash = getQStashClient();
-    const baseUrl = getBaseUrl();
-    await qstash.publishJSON({
-      url: `${baseUrl}/api/tracking/run`,
-      body: { trackingConfigId },
-      retries: 2,
+    await enqueueJob({
+      type: "tracking.run",
+      payload: { trackingConfigId },
+      maxAttempts: 2,
     });
   } catch (err) {
-    console.error("[tracking] Failed to dispatch baseline run:", err);
+    // Non-fatal: the config exists and will run on its schedule even if
+    // the baseline enqueue fails.
+    console.error("[tracking] Failed to enqueue baseline run:", err);
   }
 }
 
@@ -89,7 +89,7 @@ export const createTracking = tool({
         .eq("person_id", input.personId);
     }
 
-    // Dispatch immediate baseline run via QStash
+    // Enqueue immediate baseline run
     await dispatchImmediateRun(config.id);
 
     return {

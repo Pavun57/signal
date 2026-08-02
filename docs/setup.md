@@ -116,13 +116,42 @@ Every block in `.env.example` beyond the required ones is feature-gated. If you 
 | ------------------ | -------------------------------------------------------------------------------- |
 | Browserbase        | Web scraping, YC scraper, hiring signals (uses your Anthropic key for Stagehand) |
 | Gmail app password | Sending outreach emails from your own mailbox + reply tracking over IMAP         |
-| QStash             | Scheduled signal runs                                                            |
+| Job scheduler      | Scheduled signal runs, reply tracking, sequence follow-ups                       |
 | Exa                | Neural web search inside chat                                                    |
 | Google API + CSE   | Google Places enrichment                                                         |
 | Apify              | LinkedIn + X enrichment                                                          |
 | GitHub token       | GitHub-based signals (commits, releases)                                         |
 
 Signup links live in `.env.example` next to each block.
+
+### Job scheduler
+
+Recurring work (scheduled signal runs, reply tracking, sequence follow-ups) runs off a Postgres job queue driven by a per-minute tick at `/api/jobs/tick`. The tick and runner routes share one secret:
+
+```bash
+openssl rand -hex 32   # → CRON_SECRET in .env.local (and your Vercel env)
+```
+
+Without `CRON_SECRET`, the routes refuse everything and recurring jobs never run. `pnpm setup` can generate one for you.
+
+**On Vercel**: the repo ships `vercel.json` with the per-minute cron schedule, and Vercel Cron sends the `Authorization: Bearer $CRON_SECRET` header automatically once the env var is set. Per-minute cadence requires a Pro plan.
+
+**Self-hosting or Vercel Hobby**: schedule the tick from Postgres instead. In the Supabase SQL editor:
+
+```sql
+select cron.schedule(
+  'signal-jobs-tick',
+  '* * * * *',
+  $$
+  select net.http_post(
+    url := 'https://YOUR-APP-DOMAIN/api/jobs/tick',
+    headers := jsonb_build_object('Authorization', 'Bearer YOUR_CRON_SECRET')
+  )
+  $$
+);
+```
+
+The recurring jobs themselves are seeded by the job-queue migration with `insert ... on conflict do nothing`, so they self-heal: if a row is ever deleted, re-running the migration restores it.
 
 ## 7. Run
 

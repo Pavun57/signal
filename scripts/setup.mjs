@@ -360,12 +360,8 @@ async function promptOptional() {
       ],
     },
     {
-      name: "QStash (scheduled signal runs)",
-      prompts: [
-        ["QSTASH_TOKEN", "QStash token"],
-        ["QSTASH_CURRENT_SIGNING_KEY", "QStash current signing key"],
-        ["QSTASH_NEXT_SIGNING_KEY", "QStash next signing key"],
-      ],
+      name: "Job scheduler (scheduled signal runs, reply tracking, follow-ups)",
+      prompts: [["CRON_SECRET", "Cron secret (leave blank to auto-generate)"]],
     },
     {
       name: "Exa (neural web search)",
@@ -394,6 +390,12 @@ async function promptOptional() {
       if (key === "EMAIL_CREDENTIALS_KEY" && !value.trim()) {
         value = randomBytes(32).toString("base64");
         log.ok("Generated a fresh EMAIL_CREDENTIALS_KEY.");
+      }
+      // CRON_SECRET is likewise a random shared secret, not a vendor
+      // credential — generate one when the user has nothing to paste.
+      if (key === "CRON_SECRET" && !value.trim()) {
+        value = randomBytes(32).toString("hex");
+        log.ok("Generated a fresh CRON_SECRET.");
       }
       content = setEnvKey(content, key, value);
     }

@@ -6,7 +6,7 @@ import type { VoiceProfile } from "@/lib/types/email-voice";
  * Shared "write email" rules. Every email Signal sends is composed against
  * these, via composeEmail:
  *   - draftEmailsForSequence tool (server-side fan-out for sequences)
- *   - POST /api/outreach/process (scheduled sends)
+ *   - outreach.process job executor (scheduled sends)
  *   - POST /api/outreach/regenerate (single redraft from the UI)
  *
  * These are the *shared* rules — 2026 cold-email evidence that holds for every
