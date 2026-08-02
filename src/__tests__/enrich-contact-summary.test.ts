@@ -10,17 +10,42 @@ const findEmailForPerson = vi.fn<
 }));
 vi.mock("@/lib/tools/email-tools", () => ({ findEmailForPerson }));
 
+/**
+ * Every Exa search in this path returns the same dated archive snapshot, so a
+ * test can check the date survives the trip to the summarizer.
+ */
 vi.mock("@/lib/services/exa-service", () => ({
   ExaService: class {
     async search() {
-      return { results: [], resultCount: 0 };
+      return {
+        results: [
+          {
+            title: "Archived profile",
+            url: "https://web.archive.org/victor",
+            publishedDate: "2026-03-29",
+            text: "Customer Engineer at Browserbase, May 2025 - Present",
+          },
+        ],
+        resultCount: 1,
+      };
     }
   },
 }));
 
-vi.mock("@/lib/services/enrichment-summarizer", () => ({
-  summarizePerson: vi.fn(async () => null),
+// enrichment-tools imports summarizePerson at the top level, so the spy has to
+// exist before the module graph is built. vi.hoisted is what gets it there.
+const { summarizePerson } = vi.hoisted(() => ({
+  summarizePerson: vi.fn<
+    (input: {
+      news?: Array<{ publishedDate?: string | null }> | null;
+    }) => Promise<{
+      summary: string | null;
+      currentTitle: string | null;
+      sourcesConflict: boolean;
+    } | null>
+  >(async () => null),
 }));
+vi.mock("@/lib/services/enrichment-summarizer", () => ({ summarizePerson }));
 
 vi.mock("@/lib/services/knowledge-base", async (importOriginal) => {
   const actual =
@@ -41,9 +66,12 @@ const person = {
   organization: null,
 };
 
+/** Every payload handed to `.update()`, in call order. */
+const updates: Array<Record<string, unknown>> = [];
+
 type Chain = {
   select: (cols: string) => Chain;
-  update: () => Chain;
+  update: (payload: Record<string, unknown>) => Chain;
   eq: () => Chain;
   maybeSingle: () => Promise<{ data: unknown; error: null }>;
   single: () => Promise<{ data: unknown; error: null }>;
@@ -65,7 +93,10 @@ function chain(): Chain {
       columns = cols;
       return c;
     },
-    update: () => c,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return c;
+    },
     eq: () => c,
     maybeSingle: async () => ({ data: null, error: null }),
     single: async () => ({
@@ -154,5 +185,67 @@ describe("email discovery is gated on affiliation", () => {
     await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
 
     expect(findEmailForPerson).toHaveBeenCalledWith(PERSON_ID);
+  });
+});
+
+describe("title write-back", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    summarizePerson.mockClear();
+    summarizePerson.mockResolvedValue(null);
+    // Already has an address, so email discovery stays out of the way.
+    personAfter = {
+      work_email: "victor@anthropic.com",
+      personal_email: null,
+      affiliation_confidence: 0.9,
+    };
+  });
+
+  /** The bio write is the only update carrying either of these keys. */
+  const bioUpdate = () =>
+    updates.find((u) => "bio_summary" in u || "title" in u);
+
+  it("hands the summarizer the date on every source", async () => {
+    // Dropped here, the date can never reach the prompt no matter what the
+    // summarizer does with it.
+    await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
+
+    const input = summarizePerson.mock.calls[0][0];
+    expect(input.news?.[0]?.publishedDate).toBe("2026-03-29");
+  });
+
+  it("does not overwrite the stored title when the sources conflict", async () => {
+    // The live headline says one employer, the archived text says another.
+    // Picking one silently is how enrichment overwrote a correct title with a
+    // four-month-old one.
+    summarizePerson.mockResolvedValue({
+      summary: "Sources disagree about where they work.",
+      currentTitle: "Customer Engineer",
+      sourcesConflict: true,
+    });
+
+    await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
+
+    const written = bioUpdate();
+    expect(written).toBeDefined();
+    expect(written).not.toHaveProperty("title");
+    expect(written?.bio_summary).toBe(
+      "Sources disagree about where they work.",
+    );
+  });
+
+  it("still writes the title when the sources agree", async () => {
+    // The write-back exists because a person discovered with a wrong title
+    // kept it forever. The conflict guard must not be satisfied by never
+    // writing a title at all.
+    summarizePerson.mockResolvedValue({
+      summary: "A summary.",
+      currentTitle: "Product Support",
+      sourcesConflict: false,
+    });
+
+    await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
+
+    expect(bioUpdate()?.title).toBe("Product Support");
   });
 });

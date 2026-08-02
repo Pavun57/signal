@@ -408,6 +408,18 @@ export function summarizeContactEnrichment(
   return s;
 }
 
+/**
+ * A scraped search result as the person summarizer needs it. The date is the
+ * load-bearing field: it is what lets the summarizer tell a live page from a
+ * year-old archive that still says "Present".
+ */
+type SummarySource = {
+  title: string;
+  url: string;
+  publishedDate: string | null;
+  text: string | null;
+};
+
 async function enrichContactById(
   personId: string,
   linkedinUrl?: string,
@@ -540,14 +552,8 @@ async function enrichContactById(
       }
     }
 
-    const dedup = (
-      results: Array<{
-        title: string;
-        url: string;
-        publishedDate: string | null;
-        text: string | null;
-      }>,
-    ) => results.filter((r) => !companyUrls.has(r.url));
+    const dedup = (results: SummarySource[]) =>
+      results.filter((r) => !companyUrls.has(r.url));
 
     promises.push(
       (async () => {
@@ -653,15 +659,11 @@ async function enrichContactById(
         twitterBio: twitter?.user?.description ?? null,
         linkedinPosts: linkedin?.posts,
         tweets: twitter?.tweets,
-        news: enrichmentData.news as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
-        articles: enrichmentData.articles as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
-        background: enrichmentData.background as
-          | Array<{ title: string; url: string; text: string | null }>
-          | undefined,
+        // publishedDate rides along: the summarizer orders the sources by it,
+        // and casting it away here is what left it with undated blobs.
+        news: enrichmentData.news as SummarySource[] | undefined,
+        articles: enrichmentData.articles as SummarySource[] | undefined,
+        background: enrichmentData.background as SummarySource[] | undefined,
       });
       // Write the title back, not just the prose. Enrichment reads the real
       // title off the profile and used to spend it entirely on `bio_summary`,
@@ -669,9 +671,17 @@ async function enrichContactById(
       // said "Head of GTM / Revenue Ops" while the org chart, the scoring and
       // any draft email all still read "Head of Growth" off `people.title`.
       // Enrichment is the correcting step, so let it correct.
+      //
+      // The one exception is a conflict: when the freshest source names a
+      // different employer than an older one, `currentTitle` is a guess
+      // between two stories, and the guess it used to make was the wrong one
+      // (an archived snapshot saying "Present" beat a live headline). Keep the
+      // prose, which now says the sources disagree, and leave the stored title
+      // alone rather than trading a stale title for a different stale title.
       const update: { bio_summary?: string; title?: string } = {};
       if (summarized?.summary) update.bio_summary = summarized.summary;
-      if (summarized?.currentTitle) update.title = summarized.currentTitle;
+      if (summarized?.currentTitle && !summarized.sourcesConflict)
+        update.title = summarized.currentTitle;
 
       if (Object.keys(update).length > 0) {
         await supabase.from("people").update(update).eq("id", personId);
