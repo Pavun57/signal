@@ -90,6 +90,8 @@ export interface ContactDiscoveryResult {
   uncertainCount: number;
   /** Positively placed at a different company; stored unattached. */
   rejectedAsWrongCompany: number;
+  /** Worked here once, and the evidence shows the role has ended. Detached. */
+  departedCount: number;
   error?: string;
 }
 
@@ -132,6 +134,7 @@ export async function findContactsForOrganization(
     verifiedCount: 0,
     uncertainCount: 0,
     rejectedAsWrongCompany: 0,
+    departedCount: 0,
     error,
   });
 
@@ -206,6 +209,7 @@ export async function findContactsForOrganization(
   let verifiedCount = 0;
   let uncertainCount = 0;
   let rejectedAsWrongCompany = 0;
+  let departedCount = 0;
 
   // ── Phase 1: the company's own website ──────────────────────────────────
   // Strongest routine evidence there is: the company published these people as
@@ -352,6 +356,8 @@ export async function findContactsForOrganization(
         title: parsed.title,
         linkedinUrl,
         rawHeadline: result.title,
+        pageText: result.text ?? null,
+        pageDate: result.publishedDate ?? null,
         searchTitle: search.title,
       });
     }
@@ -362,21 +368,39 @@ export async function findContactsForOrganization(
       const candidate = candidates[judged.index];
       if (!candidate) continue;
 
-      // Rejected means the evidence positively placed them somewhere else.
-      // Keep them, unattached, rather than pretending they are an employee —
-      // but only when we can actually identify them. findOrCreatePerson dedups
-      // by LinkedIn URL, or by name within an organization; a rejected
-      // candidate has no organization, so one with no profile URL matches
-      // neither path and would be INSERTED fresh on every run, leaving the
-      // mis-filed original untouched and adding an orphan each time.
-      if (judged.verdict === "rejected" && !candidate.linkedinUrl) {
-        rejectedAsWrongCompany++;
+      const detaching =
+        judged.verdict === "rejected" || judged.verdict === "former_employee";
+
+      // A detached candidate is a real person who works somewhere else, or
+      // used to work here. Keep them, unattached, rather than pretending they
+      // are an employee, but only when we can actually identify them.
+      // findOrCreatePerson dedups by LinkedIn URL, or by name within an
+      // organization; a detached candidate has no organization, so one with no
+      // profile URL matches neither path and would be INSERTED fresh on every
+      // run, leaving the mis-filed original untouched and adding an orphan
+      // each time.
+      if (detaching && !candidate.linkedinUrl) {
+        if (judged.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
 
-      const attachTo = judged.verdict === "rejected" ? null : organizationId;
+      const attachTo = detaching ? null : organizationId;
       const source: AffiliationSource =
-        judged.verdict === "verified" ? "llm_verified" : "search_stamp";
+        judged.verdict === "verified"
+          ? "llm_verified"
+          : judged.verdict === "former_employee"
+            ? "former_employee"
+            : judged.verdict === "rejected"
+              ? "employer_mismatch"
+              : "search_stamp";
+
+      // Fold what the judge saw into the stored evidence. Without it the row
+      // says "profile names a different employer" and the user has to go and
+      // look up which one.
+      const evidence = judged.employerSeen
+        ? `${judged.evidence} (saw: ${judged.employerSeen}${judged.datesSeen ? `, ${judged.datesSeen}` : ""})`
+        : judged.evidence;
 
       const person = await findOrCreatePerson({
         name: judged.name,
@@ -390,11 +414,15 @@ export async function findContactsForOrganization(
         personId: person.id,
         organizationId: attachTo,
         source,
-        evidence: judged.evidence,
+        evidence,
       });
 
       if (judged.verdict === "rejected") {
         rejectedAsWrongCompany++;
+        continue;
+      }
+      if (judged.verdict === "former_employee") {
+        departedCount++;
         continue;
       }
       if (judged.verdict === "verified") verifiedCount++;
@@ -411,7 +439,7 @@ export async function findContactsForOrganization(
         linkedinUrl: person.linkedin_url,
         source: "exa",
         affiliation: source,
-        affiliationEvidence: judged.evidence,
+        affiliationEvidence: evidence,
       });
     }
   }
@@ -433,5 +461,6 @@ export async function findContactsForOrganization(
     verifiedCount,
     uncertainCount,
     rejectedAsWrongCompany,
+    departedCount,
   };
 }

@@ -1563,6 +1563,7 @@ export const findContacts = tool({
       verifiedCount: result.verifiedCount,
       uncertainCount: result.uncertainCount,
       rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+      departedCount: result.departedCount,
       error: result.error,
     };
   },

@@ -18,7 +18,14 @@ vi.mock("@/lib/services/contact-filter", () => ({
   findPeopleOnDomain: vi.fn().mockResolvedValue([]),
 }));
 
-const exaResults = { results: [] as Array<{ url: string; title: string }> };
+const exaResults = {
+  results: [] as Array<{
+    url: string;
+    title: string;
+    text?: string | null;
+    publishedDate?: string | null;
+  }>,
+};
 vi.mock("@/lib/services/exa-service", () => ({
   ExaService: class {
     async search() {
@@ -344,5 +351,107 @@ describe("verdict handling", () => {
       rejectedAsWrongCompany: 1,
       uncertainCount: 1,
     });
+  });
+});
+
+describe("evidence handed to the judge", () => {
+  it("passes the page text and date Exa returned", async () => {
+    // includeText is already set on the search, so this text is paid for
+    // whether or not we read it. Dropping it is why every candidate at a
+    // company whose staff do not name their employer came back uncertain.
+    exaResults.results = [
+      {
+        url: "https://www.linkedin.com/in/a",
+        title: "Ann A - Engineer",
+        text: "Experience: Software Engineer, Browserbase, May 2025 - Present",
+        publishedDate: "2026-07-23",
+      },
+    ];
+
+    await run();
+
+    const candidates = judged.mock.calls[0][1] as Array<{
+      pageText: string | null;
+      pageDate: string | null;
+    }>;
+    expect(candidates[0].pageText).toContain("May 2025 - Present");
+    expect(candidates[0].pageDate).toBe("2026-07-23");
+  });
+});
+
+describe("acting on the verdicts", () => {
+  const oneCandidate = () => {
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/a", title: "Ann A - Engineer" },
+    ];
+  };
+
+  it("detaches someone the evidence says has left", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        employerSeen: "Browserbase",
+        datesSeen: "Oct 2024 - Mar 2026",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    const result = await run();
+
+    const last = affiliations[affiliations.length - 1];
+    expect(last.source).toBe("former_employee");
+    expect(last.organizationId).toBeNull();
+    expect(result.departedCount).toBe(1);
+    // Reporting them as a contact at this company one line after detaching
+    // them is how a caller ends up drafting for someone who left.
+    expect(result.contacts).toHaveLength(0);
+  });
+
+  it("detaches someone the evidence places elsewhere", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        employerSeen: "Chronicle Labs",
+        datesSeen: "May 2024 - Present",
+        evidence: "profile names Chronicle Labs",
+      },
+    ]);
+
+    const result = await run();
+
+    const last = affiliations[affiliations.length - 1];
+    expect(last.source).toBe("employer_mismatch");
+    expect(last.organizationId).toBeNull();
+    expect(last.evidence).toContain("Chronicle Labs");
+    expect(result.rejectedAsWrongCompany).toBe(1);
+  });
+
+  it("still keeps uncertain people attached and flagged", async () => {
+    // The whole point of `uncertain` is that we keep them. This must not
+    // regress into the old hard filter that deleted real employees.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "uncertain",
+        evidence: "page text unavailable",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.contacts).toHaveLength(1);
+    expect(result.uncertainCount).toBe(1);
+    expect(affiliations[affiliations.length - 1].source).toBe("search_stamp");
   });
 });
