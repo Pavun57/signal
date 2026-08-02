@@ -24,21 +24,15 @@ import { runDataQualityAudit } from "@/lib/services/data-quality";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
 import { extractClaims } from "@/lib/services/claim-extractor";
 import { reconcileClaims } from "@/lib/services/claim-reconciler";
-import { tryScrapeHiringData } from "@/lib/services/hiring-scraper";
+import {
+  HIRING_SCRAPE_TIMEOUT_MS,
+  tryScrapeHiringData,
+} from "@/lib/services/hiring-scraper";
 import type { CompanyClaim } from "@/lib/types/claims";
 import { withTimeout } from "@/lib/utils/timeout";
 
 /** Ceiling for one company's full enrichment chain. */
 const PER_COMPANY_TIMEOUT_MS = 150_000;
-
-/**
- * Ceiling for the careers-page scrape inside enrichment. Runs in parallel
- * with website extraction (~120s worst case), so this keeps the whole
- * parallel phase inside PER_COMPANY_TIMEOUT_MS. withTimeout does not cancel
- * the underlying scrape; a slow scrape may still finish and merge hiring
- * data into the DB later, it just misses this enrichment's claims.
- */
-const HIRING_SCRAPE_TIMEOUT_MS = 90_000;
 
 /** Rough worst case for one contact-enrichment chunk (Exa + socials). */
 const PER_CONTACT_CHUNK_ESTIMATE_MS = 120_000;

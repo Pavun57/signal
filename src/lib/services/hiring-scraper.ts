@@ -5,6 +5,15 @@ import { withTimeout } from "@/lib/utils/timeout";
 
 const STAGEHAND_INIT_TIMEOUT_MS = 60_000;
 
+/**
+ * Ceiling for the careers-page scrape when it runs inside an enrichment's
+ * parallel pull batch alongside website extraction (~120s worst case), so
+ * the whole parallel phase stays bounded. withTimeout does not cancel the
+ * underlying scrape; a slow scrape may still finish and merge hiring data
+ * into the DB later, it just misses that enrichment's claims.
+ */
+export const HIRING_SCRAPE_TIMEOUT_MS = 90_000;
+
 export interface HiringScrapeResult {
   careersUrl: string | null;
   jobs: Array<{
