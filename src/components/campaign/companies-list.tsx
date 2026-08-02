@@ -96,12 +96,14 @@ export function CompaniesList({
     Set<string>
   >(new Set());
   const [page, setPage] = useState(0);
-  // Review-queue rows the user has just acted on. Applied to the table before
-  // the refetch lands so a click moves the row immediately, and rolled back if
-  // the request fails.
+  // Review-queue rows with a request in flight. The row holds its place and
+  // both its buttons go disabled until the request resolves, because a confirm
+  // is permanent and a row that moves on the click takes the buttons with it.
   const [reviewPendingIds, setReviewPendingIds] = useState<Set<string>>(
     new Set(),
   );
+  // Rows the user has acted on successfully. Applied as soon as the response
+  // lands, which is ahead of the refetch, so the table settles without a wait.
   const [confirmedContactIds, setConfirmedContactIds] = useState<Set<string>>(
     new Set(),
   );
@@ -126,8 +128,9 @@ export function CompaniesList({
 
   const contactsByOrgId = new Map<string | null, CampaignContact[]>();
   for (const contact of contacts) {
-    // "Not here" unlinks the person from the campaign, so drop the row on the
-    // spot rather than leaving it sitting there until the refetch returns.
+    // "Not here" unlinks the person from the campaign, so drop the row once the
+    // delete lands rather than leaving it sitting there until the refetch
+    // returns.
     if (removedContactIds.has(contact.id)) continue;
     const key = contact.organization_id;
     if (!contactsByOrgId.has(key)) contactsByOrgId.set(key, []);
@@ -256,24 +259,39 @@ export function CompaniesList({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId, organizationId }),
       });
-      // The route skips contacts below the affiliation threshold, so the count
-      // it found can be lower than the button promised. Saying why beats
-      // leaving the user to wonder where the rest went.
+      // apiFetch returns the Response unchanged and never throws on a non-2xx,
+      // so without this an error body reads as a run that found nobody, and a
+      // 401 stacks a green "Found 0 emails." on top of the session-expired
+      // toast apiFetch already raised.
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      // The route skips contacts below the affiliation threshold and caps each
+      // batch, so the count it found can be lower than the button promised and
+      // there may be more still waiting. Its own summary says both; the local
+      // string is only a fallback for a response that predates it.
       const data = (await res.json().catch(() => null)) as {
         found?: unknown[];
         skipped?: number;
+        remaining?: number;
+        summary?: string;
       } | null;
       const found = data?.found?.length ?? 0;
       const skipped = data?.skipped ?? 0;
+      const remaining = data?.remaining ?? 0;
       toast.success(
-        `Found ${found} ${found === 1 ? "email" : "emails"}.` +
-          (skipped > 0
-            ? ` ${skipped} skipped, not confirmed at this company.`
-            : ""),
+        data?.summary ??
+          `Found ${found} ${found === 1 ? "email" : "emails"}.` +
+            (remaining > 0 ? ` ${remaining} more pending, click again.` : "") +
+            (skipped > 0
+              ? ` ${skipped} skipped, not confirmed at this company.`
+              : ""),
       );
       onDataChanged();
     } catch (err) {
       console.error(`[find-email/bulk] Failed:`, err);
+      toast.error(err instanceof Error ? err.message : "Failed to find emails");
     } finally {
       setFindingEmailsCompanyIds((prev) => {
         const next = new Set(prev);
@@ -299,13 +317,18 @@ export function CompaniesList({
    * source, so nothing we learn later can move them back out. That is the
    * point (it is the manual escape hatch when the evidence cannot settle it)
    * and also why the button says so.
+   *
+   * The row stays exactly where it is until the request resolves. Moving it on
+   * the click looked like the responsive choice, but it took the buttons with
+   * it and pulled the next person up under a stationary cursor, so the second
+   * half of a double-click confirmed somebody else, permanently.
    */
   const confirmAffiliation = async (
     contact: CampaignContact,
     organizationId: string,
   ) => {
+    if (reviewPendingIds.has(contact.id)) return;
     markPending(contact.id, true);
-    setConfirmedContactIds((prev) => new Set(prev).add(contact.id));
     try {
       const res = await apiFetch(
         `/api/people/${contact.person_id}/to-company`,
@@ -319,14 +342,12 @@ export function CompaniesList({
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
+      // Applied here rather than up front so the table only moves once we know
+      // the write landed. There is nothing to roll back on failure.
+      setConfirmedContactIds((prev) => new Set(prev).add(contact.id));
       toast.success(`Confirmed ${contact.name} works here.`);
       onDataChanged();
     } catch (err) {
-      setConfirmedContactIds((prev) => {
-        const next = new Set(prev);
-        next.delete(contact.id);
-        return next;
-      });
       toast.error(err instanceof Error ? err.message : "Failed to confirm");
     } finally {
       markPending(contact.id, false);
@@ -347,8 +368,8 @@ export function CompaniesList({
     contact: CampaignContact,
     organizationId: string,
   ) => {
+    if (reviewPendingIds.has(contact.id)) return;
     markPending(contact.id, true);
-    setRemovedContactIds((prev) => new Set(prev).add(contact.id));
     try {
       const res = await apiFetch(
         `/api/people/${contact.person_id}/from-company?campaignId=${encodeURIComponent(campaignId)}&organizationId=${encodeURIComponent(organizationId)}`,
@@ -358,14 +379,13 @@ export function CompaniesList({
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
+      // Same as Confirm: drop the row once the delete is known to have landed,
+      // not before, so a failed request never has to put it back and the row
+      // under the cursor is still the one the user was looking at.
+      setRemovedContactIds((prev) => new Set(prev).add(contact.id));
       toast.success(`Removed ${contact.name} from this company.`);
       onDataChanged();
     } catch (err) {
-      setRemovedContactIds((prev) => {
-        const next = new Set(prev);
-        next.delete(contact.id);
-        return next;
-      });
       toast.error(err instanceof Error ? err.message : "Failed to remove");
     } finally {
       markPending(contact.id, false);
@@ -1029,40 +1049,39 @@ function ContactsTable({
                         {findingEmailIds.has(contact.id) && (
                           <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
                         )}
-                        {review &&
-                          group.needsReview &&
-                          (review.pendingIds.has(contact.id) ? (
-                            <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <>
-                              <Button
-                                size="xs"
-                                variant="outline"
-                                title={`Record that ${contact.name} works here. Your word outranks every later check, so this cannot be undone by new evidence.`}
-                                onClick={() =>
-                                  review.onConfirm(
-                                    contact,
-                                    review.organizationId,
-                                  )
-                                }
-                              >
-                                Confirm employer
-                              </Button>
-                              <Button
-                                size="xs"
-                                variant="ghost"
-                                title={`Remove ${contact.name} from this company and this campaign. You can add them back later.`}
-                                onClick={() =>
-                                  review.onNotHere(
-                                    contact,
-                                    review.organizationId,
-                                  )
-                                }
-                              >
-                                Not here
-                              </Button>
-                            </>
-                          ))}
+                        {review && group.needsReview && (
+                          // Both buttons stay mounted and go disabled for the
+                          // duration of the request. Swapping them for a
+                          // spinner moved the rows below up under the cursor,
+                          // and a confirm is permanent.
+                          <>
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={review.pendingIds.has(contact.id)}
+                              title={`Record that ${contact.name} works here. Your word outranks every later check, so this cannot be undone by new evidence.`}
+                              onClick={() =>
+                                review.onConfirm(contact, review.organizationId)
+                              }
+                            >
+                              Confirm employer
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              disabled={review.pendingIds.has(contact.id)}
+                              title={`Remove ${contact.name} from this company and this campaign. You can add them back later.`}
+                              onClick={() =>
+                                review.onNotHere(contact, review.organizationId)
+                              }
+                            >
+                              Not here
+                            </Button>
+                            {review.pendingIds.has(contact.id) && (
+                              <Loader2 className="text-muted-foreground h-3.5 w-3.5 animate-spin" />
+                            )}
+                          </>
+                        )}
                       </div>
                     </td>
                     {showOutreach && (

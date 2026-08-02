@@ -19,6 +19,7 @@ import {
 } from "@/lib/services/knowledge-base";
 import {
   findContactsForOrganization,
+  affiliationNotes,
   AFFILIATION_UNCHANGED,
   unchangedEvidence,
 } from "@/lib/services/contact-discovery";
@@ -407,25 +408,14 @@ export const searchPeople = tool({
       });
     }
 
-    // Both counts describe people the agent will not find in `contacts`, so
+    // These counts describe people the agent will not find in `contacts`, so
     // saying nothing about them reads as "the search found fewer people" rather
     // than "some of what it found was not staff here".
-    const notes: string[] = [];
-    if (uncertainCount > 0) {
-      notes.push(
-        `${uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed.`,
-      );
-    }
-    if (departedCount > 0) {
-      notes.push(
-        `${departedCount} contact(s) have left this company: their profile shows a stint here that has already ended, so they were detached from it and are not in the contact list.`,
-      );
-    }
-    if (affiliationUnchanged > 0) {
-      notes.push(
-        `${affiliationUnchanged} contact(s) already have stronger evidence on file than this search found, so their affiliation was left exactly as it was and is shown as "unchanged". Do not describe them as verified or as departed: nothing about them changed.`,
-      );
-    }
+    const note = affiliationNotes({
+      uncertainCount,
+      departedCount,
+      affiliationUnchanged,
+    });
 
     return {
       contacts: storedContacts.map((c) => ({
@@ -445,7 +435,7 @@ export const searchPeople = tool({
       departedCount,
       affiliationUnchanged,
       query: input.query,
-      note: notes.length > 0 ? notes.join(" ") : undefined,
+      note,
     };
   },
 });
@@ -1697,6 +1687,15 @@ export const findContacts = tool({
       // "unchanged", and describing them as verified or departed would be
       // describing a write that was refused.
       affiliationUnchanged: result.affiliationUnchanged,
+      // The same prose searchPeople returns. Without it this path handed the
+      // agent bare numbers and left it to guess what "affiliationUnchanged: 2"
+      // meant, which it got wrong in exactly the direction that flatters the
+      // result.
+      note: affiliationNotes({
+        uncertainCount: result.uncertainCount,
+        departedCount: result.departedCount,
+        affiliationUnchanged: result.affiliationUnchanged,
+      }),
       error: result.error,
     };
   },

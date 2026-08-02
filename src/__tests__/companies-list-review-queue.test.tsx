@@ -233,6 +233,7 @@ describe("<CompaniesList> bulk find emails", () => {
     cleanup();
     vi.mocked(apiFetch).mockReset();
     vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.error).mockReset();
   });
 
   it("reports the contacts the route skipped as unconfirmed", async () => {
@@ -275,6 +276,54 @@ describe("<CompaniesList> bulk find emails", () => {
 
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith("Found 0 emails."),
+    );
+  });
+
+  it("surfaces a failed request instead of reporting zero emails", async () => {
+    // apiFetch returns the Response unchanged and never throws on a non-2xx, so
+    // a 401/403/500 body has no `found` array and reads as a finished run that
+    // found nothing. On a 401 that stacks a green toast on top of apiFetch's
+    // own "session expired" error.
+    vi.mocked(apiFetch).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "database is on fire" }),
+    } as unknown as Response);
+
+    renderList([contact({ work_email: null })]);
+
+    fireEvent.click(screen.getByTitle(/Find emails for/));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("database is on fire"),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("reports the contacts still pending when the route capped the batch", async () => {
+    // The route stops at 50 targets per request. Without the remaining count a
+    // company with 84 contacts missing emails reads as a finished job and 34
+    // people are silently never attempted.
+    vi.mocked(apiFetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        found: [{ personId: "p1" }],
+        notFound: [],
+        skipped: 0,
+        remaining: 34,
+        truncated: true,
+        summary: "Found 41 of 50 (34 more pending, click again).",
+      }),
+    } as unknown as Response);
+
+    renderList([contact({ work_email: null })]);
+
+    fireEvent.click(screen.getByTitle(/Find emails for/));
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Found 41 of 50 (34 more pending, click again).",
+      ),
     );
   });
 });
@@ -347,5 +396,70 @@ describe("<CompaniesList> review actions", () => {
       expect(toast.error).toHaveBeenCalledWith("database is on fire"),
     );
     expect(screen.getByText("Chris Sev")).toBeInTheDocument();
+  });
+
+  it("disables both actions and holds the row while a confirm is in flight", async () => {
+    // The row used to leave the needs-review group on the first click, which
+    // both hid the pending state and shifted the rows below it up under a
+    // stationary cursor.
+    let release!: (res: Response) => void;
+    vi.mocked(apiFetch).mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    openList([unproven()]);
+    fireEvent.click(screen.getByText("Confirm employer"));
+
+    await waitFor(() =>
+      expect(screen.getByText("Confirm employer")).toBeDisabled(),
+    );
+    expect(screen.getByText("Not here")).toBeDisabled();
+    expect(screen.getByText("Needs review (1)")).toBeInTheDocument();
+
+    release({ ok: true, json: async () => ({}) } as unknown as Response);
+
+    await waitFor(() =>
+      expect(screen.getByText("Confirmed (1)")).toBeInTheDocument(),
+    );
+  });
+
+  it("issues one request for a double-click on Confirm", async () => {
+    // user_entered at 1.0 is permanent and nothing outranks it, so a second
+    // click landing on whoever moved into that row is not recoverable.
+    let release!: (res: Response) => void;
+    vi.mocked(apiFetch).mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      }),
+    );
+
+    openList([
+      unproven(),
+      contact({
+        id: "p4",
+        person_id: "p4",
+        name: "Carter Rabasa",
+        affiliation_source: "search_stamp",
+        affiliation_confidence: 0.2,
+      }),
+    ]);
+
+    // Re-queried each time, because the cursor does not move: the second click
+    // lands on whatever button is now in that spot.
+    fireEvent.click(screen.getAllByText("Confirm employer")[0]);
+    fireEvent.click(screen.getAllByText("Confirm employer")[0]);
+
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch).not.toHaveBeenCalledWith(
+      "/api/people/p4/to-company",
+      expect.anything(),
+    );
+
+    release({ ok: true, json: async () => ({}) } as unknown as Response);
+    await waitFor(() =>
+      expect(screen.getByText("Confirmed (1)")).toBeInTheDocument(),
+    );
   });
 });

@@ -128,6 +128,39 @@ export interface ContactDiscoveryResult {
   error?: string;
 }
 
+/**
+ * Prose for the three counters that describe people the agent will NOT find in
+ * the returned contact list.
+ *
+ * A bare `affiliationUnchanged: 2` reads as "two more were fine" when it means
+ * "two writes were refused", and a bare `uncertainCount: 6` invites the agent
+ * to go and fix it with a tool that cannot. Shared by both discovery paths so
+ * the same number is never described two different ways.
+ */
+export function affiliationNotes(counts: {
+  uncertainCount: number;
+  departedCount: number;
+  affiliationUnchanged: number;
+}): string | undefined {
+  const notes: string[] = [];
+  if (counts.uncertainCount > 0) {
+    notes.push(
+      `${counts.uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed. Enrichment cannot settle this: confirming them is a human action in the campaign UI.`,
+    );
+  }
+  if (counts.departedCount > 0) {
+    notes.push(
+      `${counts.departedCount} contact(s) have left this company: their profile shows a stint here that has already ended, so they were detached from it and are not in the contact list.`,
+    );
+  }
+  if (counts.affiliationUnchanged > 0) {
+    notes.push(
+      `${counts.affiliationUnchanged} contact(s) already have stronger evidence on file than this search found, so their affiliation was left exactly as it was and is shown as "unchanged". Do not describe them as verified or as departed: nothing about them changed.`,
+    );
+  }
+  return notes.length > 0 ? notes.join(" ") : undefined;
+}
+
 export async function findContactsForOrganization(
   supabase: SupabaseClient,
   args: {
