@@ -56,9 +56,18 @@ vi.mock("@/lib/services/knowledge-base", async (importOriginal) => {
 });
 
 const affiliations: Array<Record<string, unknown>> = [];
+/**
+ * What recordAffiliation reports back. It is monotonic on the source weight, so
+ * refusing a write is a normal outcome, not an error, and the storage loop has
+ * to read it rather than assume the verdict landed.
+ */
+const writeResult: { current: { written: boolean; reason?: string } } = {
+  current: { written: true },
+};
 vi.mock("@/lib/services/affiliation", () => ({
   recordAffiliation: vi.fn(async (_c: unknown, a: Record<string, unknown>) => {
     affiliations.push(a);
+    return writeResult.current;
   }),
 }));
 
@@ -98,6 +107,7 @@ import { searchPeople } from "@/lib/tools/enrichment-tools";
 beforeEach(() => {
   created.length = 0;
   affiliations.length = 0;
+  writeResult.current = { written: true };
   exaResults.results = [];
   exaResults.resultCount = 0;
   judged.mockReset().mockResolvedValue([]);
@@ -296,5 +306,88 @@ describe("acting on the verdicts", () => {
     const result = await run();
 
     expect(result.note).toMatch(/left|no longer|departed/i);
+  });
+});
+
+describe("when the write is refused", () => {
+  // Same four cases as contact-discovery.test.ts. The two paths are meant to
+  // behave identically, and a fix landing in only one of them is how the
+  // original bug survived twice already.
+  beforeEach(() => {
+    writeResult.current = { written: false, reason: "weaker_than_existing" };
+  });
+
+  it("does not report a verified contact the write refused", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "verified",
+        evidence: "headline names Browserbase",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts[0].affiliation).toBe("unchanged");
+  });
+
+  it("does not drop someone whose detach was refused", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.departedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+    expect(result.contacts[0].affiliation).toBe("unchanged");
+  });
+
+  it("does not report a rejection the write refused", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        evidence: "profile names Chronicle Labs",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.rejectedAsWrongCompany).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+  });
+
+  it("tells the agent nothing changed for them", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "verified",
+        evidence: "headline names Browserbase",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.note).toMatch(/stronger evidence|unchanged/i);
   });
 });

@@ -68,6 +68,24 @@ export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
 export const AFFILIATION_SEND_THRESHOLD = 0.6;
 
 /**
+ * What a call to recordAffiliation actually did.
+ *
+ * Returned rather than inferred, because refusing the write is a routine
+ * outcome here, not an error: the monotonic guard no-ops whenever the stored
+ * evidence outranks the incoming claim. Callers used to assume the verdict they
+ * passed in was the state that resulted, so a refused write was reported to the
+ * user as "verified" or "departed" while the row said neither. A failed UPDATE
+ * was worse still, since nothing read the error at all.
+ *
+ * `reason` is a short machine-readable code for a refusal by the guard, and the
+ * Postgres message for a refusal by the database.
+ */
+export interface AffiliationWrite {
+  written: boolean;
+  reason?: string;
+}
+
+/**
  * Records why we believe someone works somewhere. Monotonic in the same sense
  * as recordVerifiedEmail: a weaker signal never overwrites a stronger one.
  *
@@ -75,6 +93,10 @@ export const AFFILIATION_SEND_THRESHOLD = 0.6;
  * *different* employer does move the person — that is a job change, or a
  * correction of a bad stamp — while equal-or-weaker evidence is ignored. That
  * is what makes affiliation revisable at all.
+ *
+ * Reports back whether the row changed. Read it: acting on the verdict you
+ * passed in rather than on the result is how a person sitting at
+ * organization_id = null gets counted as a verified contact.
  */
 export async function recordAffiliation(
   supabase: SupabaseClient,
@@ -84,7 +106,7 @@ export async function recordAffiliation(
     source: AffiliationSource;
     evidence: string;
   },
-): Promise<void> {
+): Promise<AffiliationWrite> {
   const { personId, organizationId, source, evidence } = args;
   const incoming = AFFILIATION_WEIGHT[source];
 
@@ -94,7 +116,7 @@ export async function recordAffiliation(
     .eq("id", personId)
     .maybeSingle();
 
-  if (!person) return;
+  if (!person) return { written: false, reason: "person_not_found" };
 
   const existingSource = person.affiliation_source as AffiliationSource | null;
   // A pre-existing link with no recorded source is legacy data, and we know
@@ -129,10 +151,17 @@ export async function recordAffiliation(
 
   if (!humanOverride) {
     if (sameOrg) {
-      if (incoming < existingWeight) return;
-      if (incoming === existingWeight && existingSource) return;
+      if (incoming < existingWeight) {
+        return { written: false, reason: "weaker_than_existing" };
+      }
+      if (incoming === existingWeight && existingSource) {
+        return { written: false, reason: "already_recorded_at_same_strength" };
+      }
+      // A detaching write is never sameOrg (organizationId is null and the
+      // person has an org), so both refusals below cover it: the row stays
+      // attached to whoever it was attached to.
     } else if (incoming <= existingWeight) {
-      return;
+      return { written: false, reason: "not_stronger_than_existing" };
     }
   }
 
@@ -143,7 +172,11 @@ export async function recordAffiliation(
   // which is what the monotonic guard reads.
   const storedConfidence = organizationId === null ? 0 : incoming;
 
-  await supabase
+  // The error is read, not discarded. affiliation_source carries a CHECK
+  // constraint, so a value the migration has not been taught about fails every
+  // write with 23514, which is exactly what happened to every detach on this
+  // branch, silently, because nothing here looked.
+  const { error } = await supabase
     .from("people")
     .update({
       organization_id: organizationId,
@@ -153,6 +186,15 @@ export async function recordAffiliation(
       affiliation_verified_at: new Date().toISOString(),
     })
     .eq("id", personId);
+
+  if (error) {
+    console.error(
+      `[affiliation] write failed for person ${personId} (${source}): ${error.message}`,
+    );
+    return { written: false, reason: error.message };
+  }
+
+  return { written: true };
 }
 
 // ─── Send gate ────────────────────────────────────────────────────────────

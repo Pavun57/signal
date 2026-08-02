@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
@@ -21,6 +21,12 @@ interface PersonRow extends Record<string, unknown> {
 }
 
 let people: PersonRow[] = [];
+/**
+ * What the update leg comes back with. The real column carries a CHECK
+ * constraint, so a rejected write is an ordinary runtime outcome rather than an
+ * exotic one, and it has to be visible to the caller.
+ */
+let updateError: { message: string } | null = null;
 
 function client(): SupabaseClient {
   const chain = () => {
@@ -42,6 +48,12 @@ function client(): SupabaseClient {
       then(onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) {
         const matches = people.filter((r) => preds.every((p) => p(r)));
         if (mode === "update") {
+          if (updateError) {
+            return Promise.resolve({ data: null, error: updateError }).then(
+              onF,
+              onR,
+            );
+          }
           for (const r of matches) Object.assign(r, updates);
           return Promise.resolve({ data: null, error: null }).then(onF, onR);
         }
@@ -68,9 +80,99 @@ function seed(over: Partial<PersonRow> = {}) {
   ];
 }
 
-beforeEach(() => seed());
+beforeEach(() => {
+  seed();
+  updateError = null;
+});
 
 // ─── recordAffiliation ────────────────────────────────────────────────────
+
+describe("recordAffiliation reports what it did", () => {
+  it("says it wrote when it wrote", async () => {
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "team_page",
+      evidence: "listed on acme.com/team",
+    });
+
+    expect(result).toEqual({ written: true });
+  });
+
+  it("says it refused, and why, when the guard blocks the write", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "email_domain",
+      affiliation_confidence: AFFILIATION_WEIGHT.email_domain,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "an LLM read the headline",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.reason).toBeTruthy();
+  });
+
+  it("says it refused a detach the stored evidence outranks", async () => {
+    // The team-page case: 0.9 on file, a 0.8 former_employee verdict cannot
+    // move it. The caller has to know, because it was about to report this
+    // person as departed while they stay attached and sendable.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "team_page",
+      affiliation_confidence: AFFILIATION_WEIGHT.team_page,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "former_employee",
+      evidence: "role ended Mar 2026",
+    });
+
+    expect(result.written).toBe(false);
+    expect(people[0].organization_id).toBe("org-a");
+  });
+
+  it("surfaces a database failure instead of swallowing it", async () => {
+    // Exactly how the CHECK constraint on affiliation_source went unnoticed for
+    // a whole branch: the update error was never read.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    updateError = {
+      message:
+        'new row for relation "people" violates check constraint "people_affiliation_source_check"',
+    };
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "team_page",
+      evidence: "listed on acme.com/team",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.reason).toContain("check constraint");
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("says it refused when the person does not exist", async () => {
+    people = [];
+
+    const result = await recordAffiliation(client(), {
+      personId: "ghost",
+      organizationId: "org-a",
+      source: "user_entered",
+      evidence: "assigned by the user",
+    });
+
+    expect(result).toEqual({ written: false, reason: "person_not_found" });
+  });
+});
 
 describe("recordAffiliation", () => {
   it("records the source, confidence and evidence", async () => {

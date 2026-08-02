@@ -109,6 +109,8 @@ export async function POST() {
   const rows = (orphans ?? []) as PersonRow[];
 
   let linked = 0;
+  /** Matched to an org, but the write was refused or failed. Not linked. */
+  let notWritten = 0;
   const unmatched: string[] = [];
 
   for (const row of rows) {
@@ -123,14 +125,19 @@ export async function POST() {
     // employment. Writing it as a bare organization_id, as this did before,
     // made a guess indistinguishable from a confirmed employee.
     try {
-      await recordAffiliation(supabase, {
+      // Only count what was actually written. These rows are selected as
+      // orphans, so a refusal means something changed underneath the query or
+      // the update failed, and either way nobody was linked.
+      const write = await recordAffiliation(supabase, {
         personId: row.id,
         organizationId: orgId,
         source: "search_stamp",
         evidence: "company name matched in stored profile text",
       });
-      linked += 1;
+      if (write.written) linked += 1;
+      else notWritten += 1;
     } catch (err) {
+      notWritten += 1;
       console.error("[backfill-orgs] recordAffiliation failed:", err);
     }
   }
@@ -138,6 +145,7 @@ export async function POST() {
   return Response.json({
     scanned: rows.length,
     linked,
+    notWritten,
     unmatched: unmatched.length,
   });
 }

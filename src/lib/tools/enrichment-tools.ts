@@ -17,7 +17,11 @@ import {
   isRecentlyEnriched,
   normalizeLinkedInUrl,
 } from "@/lib/services/knowledge-base";
-import { findContactsForOrganization } from "@/lib/services/contact-discovery";
+import {
+  findContactsForOrganization,
+  AFFILIATION_UNCHANGED,
+  unchangedEvidence,
+} from "@/lib/services/contact-discovery";
 import {
   filterContactsByCompany,
   type VerifiedContact,
@@ -265,10 +269,13 @@ export const searchPeople = tool({
       title: string | null;
       linkedin_url: string | null;
       verdict: string;
+      /** Why they are labelled that, so `unchanged` is explicable. */
+      evidence: string;
     }> = [];
     let rejectedAsWrongCompany = 0;
     let uncertainCount = 0;
     let departedCount = 0;
+    let affiliationUnchanged = 0;
 
     for (const v of judged) {
       const c = candidates[v.index];
@@ -314,13 +321,19 @@ export const searchPeople = tool({
         source: "exa",
       });
 
+      // With no organization there is nothing to affiliate anyone to, so no
+      // write is attempted and there is nothing to refuse.
+      let refused = false;
+      let refusedReason: string | undefined;
       if (organizationId) {
-        await recordAffiliation(supabase, {
+        const write = await recordAffiliation(supabase, {
           personId: person.id,
           organizationId: attachTo,
           source,
           evidence,
         });
+        refused = !write.written;
+        refusedReason = write.reason;
       }
 
       if (person.enrichment_status === "pending") {
@@ -336,17 +349,30 @@ export const searchPeople = tool({
           .eq("id", person.id);
       }
 
-      if (v.verdict === "rejected") {
+      // The verdict is what the judge concluded; the write is what actually
+      // happened to the row. They diverge whenever the stored evidence outranks
+      // this search, and counting the verdict regardless produced two opposite
+      // lies: a refused attach reported as a verified contact (organization_id
+      // still null, blocked at the send gate), and a refused detach reported as
+      // departed and dropped from the list while the person stayed attached and
+      // fully sendable. Same rule as contact-discovery, deliberately.
+      if (refused) {
+        affiliationUnchanged++;
+      } else if (v.verdict === "rejected") {
         rejectedAsWrongCompany++;
         continue;
-      }
-      if (v.verdict === "former_employee") {
+      } else if (v.verdict === "former_employee") {
         departedCount++;
         continue;
+      } else if (v.verdict === "uncertain") {
+        uncertainCount++;
       }
-      if (v.verdict === "uncertain") uncertainCount++;
 
-      if (input.campaignId) {
+      // Only ever link someone this search meant to keep. A refused detach
+      // still belongs in the contact list (they are attached, and hiding that
+      // is the bug), but adding them to the campaign would act on the
+      // judgement the write just refused.
+      if (input.campaignId && !detaching) {
         await linkPersonToCampaign(person.id, input.campaignId);
       }
 
@@ -355,7 +381,10 @@ export const searchPeople = tool({
         name: person.name,
         title: person.title,
         linkedin_url: person.linkedin_url,
-        verdict: v.verdict,
+        verdict: refused ? AFFILIATION_UNCHANGED : v.verdict,
+        evidence: refused
+          ? unchangedEvidence(refusedReason, evidence)
+          : evidence,
       });
     }
 
@@ -373,6 +402,11 @@ export const searchPeople = tool({
         `${departedCount} contact(s) have left this company: their profile shows a stint here that has already ended, so they were detached from it and are not in the contact list.`,
       );
     }
+    if (affiliationUnchanged > 0) {
+      notes.push(
+        `${affiliationUnchanged} contact(s) already have stronger evidence on file than this search found, so their affiliation was left exactly as it was and is shown as "unchanged". Do not describe them as verified or as departed: nothing about them changed.`,
+      );
+    }
 
     return {
       contacts: storedContacts.map((c) => ({
@@ -381,6 +415,7 @@ export const searchPeople = tool({
         title: c.title,
         linkedinUrl: c.linkedin_url,
         affiliation: c.verdict,
+        affiliationEvidence: c.evidence,
       })),
       organizationId,
       totalFound: searchResponse.resultCount,
@@ -389,6 +424,7 @@ export const searchPeople = tool({
       uncertainCount,
       rejectedAsWrongCompany,
       departedCount,
+      affiliationUnchanged,
       query: input.query,
       note: notes.length > 0 ? notes.join(" ") : undefined,
     };
@@ -1638,6 +1674,10 @@ export const findContacts = tool({
       uncertainCount: result.uncertainCount,
       rejectedAsWrongCompany: result.rejectedAsWrongCompany,
       departedCount: result.departedCount,
+      // People this search did not change. They are in `contacts` marked
+      // "unchanged", and describing them as verified or departed would be
+      // describing a write that was refused.
+      affiliationUnchanged: result.affiliationUnchanged,
       error: result.error,
     };
   },

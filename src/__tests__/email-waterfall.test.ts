@@ -112,7 +112,9 @@ vi.mock("@/lib/services/exa-service", () => ({
 }));
 
 vi.mock("@/lib/services/affiliation", () => ({
-  recordAffiliation: vi.fn().mockResolvedValue(undefined),
+  // Matches the real signature: a mock resolving to undefined would let a
+  // caller that reads `.written` pass on a value it can never get.
+  recordAffiliation: vi.fn().mockResolvedValue({ written: true }),
 }));
 
 vi.mock("@/lib/services/cost-tracker", () => ({

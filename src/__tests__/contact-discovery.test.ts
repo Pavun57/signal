@@ -56,9 +56,18 @@ vi.mock("@/lib/services/knowledge-base", async (importOriginal) => {
 });
 
 const affiliations: Array<Record<string, unknown>> = [];
+/**
+ * What recordAffiliation reports back. It is monotonic on the source weight, so
+ * refusing a write is a normal outcome, not an error, and the storage loop has
+ * to read it rather than assume the verdict landed.
+ */
+const writeResult: { current: { written: boolean; reason?: string } } = {
+  current: { written: true },
+};
 vi.mock("@/lib/services/affiliation", () => ({
   recordAffiliation: vi.fn(async (_c: unknown, a: Record<string, unknown>) => {
     affiliations.push(a);
+    return writeResult.current;
   }),
 }));
 
@@ -106,6 +115,7 @@ function client(): SupabaseClient {
 beforeEach(() => {
   created.length = 0;
   affiliations.length = 0;
+  writeResult.current = { written: true };
   exaResults.results = [];
   orgPeople = [];
   judged.mockReset().mockResolvedValue([]);
@@ -453,5 +463,102 @@ describe("acting on the verdicts", () => {
     expect(result.contacts).toHaveLength(1);
     expect(result.uncertainCount).toBe(1);
     expect(affiliations[affiliations.length - 1].source).toBe("search_stamp");
+  });
+});
+
+describe("when the write is refused", () => {
+  const oneCandidate = () => {
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/a", title: "Ann A - Engineer" },
+    ];
+  };
+
+  beforeEach(() => {
+    writeResult.current = { written: false, reason: "weaker_than_existing" };
+  });
+
+  it("does not report a verified contact the write refused", async () => {
+    // A person already on file at team_page (0.9): the judge says verified
+    // (0.6) and recordAffiliation correctly refuses. Counting the verdict
+    // anyway is how "8 verified contacts" gets reported for rows the send gate
+    // then blocks.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "verified",
+        evidence: "headline names Browserbase",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+  });
+
+  it("does not drop someone whose detach was refused", async () => {
+    // The inverse failure: the write is refused, so they are still attached and
+    // still sendable, but they were reported as departed and dropped from the
+    // list the caller works from.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.departedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+    // Labelled for what actually happened, not for what the judge wanted.
+    expect(result.contacts[0].affiliation).toBe("unchanged");
+  });
+
+  it("does not report a rejection the write refused", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        evidence: "profile names Chronicle Labs",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.rejectedAsWrongCompany).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
+  });
+
+  it("counts a refused team page write as unchanged, not verified", async () => {
+    // Phase 1 has the same bug: verifiedCount++ regardless of the write.
+    const { findPeopleOnDomain } =
+      await import("@/lib/services/contact-filter");
+    vi.mocked(findPeopleOnDomain).mockResolvedValueOnce([
+      {
+        name: "Dee D",
+        title: "Engineer",
+        linkedinUrl: "https://www.linkedin.com/in/dee",
+        email: null,
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(1);
+    expect(result.contacts).toHaveLength(1);
   });
 });
