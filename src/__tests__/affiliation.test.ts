@@ -3,6 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   AFFILIATION_WEIGHT,
+  canDraftFor,
+  canSendTo,
   normalizeCompanyName,
   parseLinkedInEmployer,
   recordAffiliation,
@@ -200,6 +202,39 @@ describe("recordAffiliation", () => {
     });
 
     expect(people[0].organization_id).toBeNull();
+  });
+});
+
+// ─── Send gate ────────────────────────────────────────────────────────────
+
+describe("send gate: employer required", () => {
+  const sendable = {
+    work_email: "a@acme.com",
+    personal_email: null,
+    work_email_source: "user_entered",
+    work_email_verification: "deliverable",
+    affiliation_confidence: 0.9,
+    affiliation_source: "team_page",
+    organization_id: "org-a",
+  };
+
+  it("blocks a contact with no employer on file", () => {
+    // A detached row is a person we could not place anywhere. Confidence says
+    // nothing about who they work for once organization_id is null, so the
+    // numeric threshold alone is not a sufficient gate.
+    const check = canSendTo({ ...sendable, organization_id: null });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toMatch(
+      /not linked to a company/i,
+    );
+  });
+
+  it("blocks drafting for a contact with no employer on file", () => {
+    expect(canDraftFor({ ...sendable, organization_id: null }).ok).toBe(false);
+  });
+
+  it("still allows a contact who has an employer", () => {
+    expect(canSendTo(sendable).ok).toBe(true);
   });
 });
 

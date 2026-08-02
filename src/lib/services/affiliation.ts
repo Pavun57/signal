@@ -142,12 +142,18 @@ export async function recordAffiliation(
 /** The fields the send gate reads. */
 export interface SendCandidate {
   work_email: string | null;
-  /** Read only to give an accurate refusal reason — never sendable itself. */
+  /** Read only to give an accurate refusal reason, never sendable itself. */
   personal_email?: string | null;
   work_email_source: string | null;
   work_email_verification: string | null;
   affiliation_confidence: number | null;
   affiliation_source: string | null;
+  /**
+   * Who we believe they work for. `affiliation_confidence` is confidence in
+   * *this* link; with no link there is nothing for the number to be about, and
+   * a detached row carrying a high score would otherwise clear the threshold.
+   */
+  organization_id?: string | null;
 }
 
 export type SendCheck = { ok: true } | { ok: false; reason: string };
@@ -234,6 +240,14 @@ export function canSendTo(person: SendCandidate): SendCheck {
     };
   }
 
+  if (!person.organization_id) {
+    return {
+      ok: false,
+      reason:
+        "not linked to a company, and outreach personalises against the employer, so there is nothing to write about",
+    };
+  }
+
   const confidence = person.affiliation_confidence ?? 0;
   if (confidence < AFFILIATION_SEND_THRESHOLD) {
     return {
@@ -274,6 +288,14 @@ export function canDraftFor(person: SendCandidate): SendCheck {
   }
   if (!humanEntered && person.work_email_verification === "risky") {
     return { ok: false, reason: "address is on a catch-all domain" };
+  }
+
+  if (!person.organization_id) {
+    return {
+      ok: false,
+      reason:
+        "not linked to a company, and outreach personalises against the employer, so there is nothing to write about",
+    };
   }
 
   const confidence = person.affiliation_confidence ?? 0;
