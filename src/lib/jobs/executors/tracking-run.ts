@@ -1,9 +1,5 @@
 import { getAdminClient } from "@/lib/supabase/admin";
-import {
-  verifyQStashSignature,
-  getQStashClient,
-  getBaseUrl,
-} from "@/lib/services/qstash";
+import { enqueueJob } from "@/lib/services/jobs";
 import { withAction } from "@/lib/services/cost-tracker";
 import { executeSignal } from "@/lib/signals/executor";
 import type { Signal } from "@/lib/types/signal";
@@ -17,27 +13,16 @@ import {
 import { evaluateIntent } from "@/lib/services/intent-evaluator";
 import type { HiringSnapshot, TrackingConfig } from "@/lib/types/tracking";
 
-export const maxDuration = 120;
-
-interface RunPayload {
-  trackingConfigId: string;
-}
-
-export async function POST(request: Request) {
-  // Verify QStash signature
-  let payload: RunPayload | null;
-  try {
-    payload = await verifyQStashSignature<RunPayload>(request);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Invalid signature";
-    return Response.json({ error: msg }, { status: 401 });
-  }
-  if (!payload) {
-    return Response.json({ error: "Missing payload" }, { status: 400 });
-  }
-
-  const { trackingConfigId } = payload;
-
+/**
+ * Runs one tracking config: execute its signal, snapshot, diff against the
+ * previous snapshot, and fire outreach when the intent verdict says so.
+ *
+ * Retry safety: a retry after partial failure re-executes the signal and
+ * inserts a second snapshot with the same hash, which the differ then reports
+ * as "no change" — a harmless duplicate timeline row, no duplicate outreach
+ * (the enqueue only fires on a fresh diff verdict).
+ */
+export async function runTrackingConfig(trackingConfigId: string) {
   // Load tracking config with joins
   const { data: config, error: configErr } = await getAdminClient()
     .from("tracking_configs")
@@ -48,10 +33,7 @@ export async function POST(request: Request) {
     .single();
 
   if (configErr || !config) {
-    return Response.json(
-      { error: `Tracking config not found: ${configErr?.message}` },
-      { status: 404 },
-    );
+    throw new Error(`Tracking config not found: ${configErr?.message}`);
   }
 
   const typedConfig = config as TrackingConfig & {
@@ -90,10 +72,7 @@ export async function POST(request: Request) {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      return Response.json(
-        { trackingConfigId, error: `Signal execution failed: ${msg}` },
-        { status: 500 },
-      );
+      throw new Error(`Signal execution failed: ${msg}`);
     }
 
     // ── Normalize into snapshot ────────────────────────────────────────
@@ -144,11 +123,11 @@ export async function POST(request: Request) {
       .eq("id", trackingConfigId);
 
     if (!hasChanged) {
-      return Response.json({
+      return {
         trackingConfigId,
         changed: false,
         jobCount: snapshot.job_count,
-      });
+      };
     }
 
     // ── Compute diff ───────────────────────────────────────────────────
@@ -158,12 +137,12 @@ export async function POST(request: Request) {
 
     // If no previous data (first run after baseline), store as baseline
     if (!prevData) {
-      return Response.json({
+      return {
         trackingConfigId,
         changed: false,
         baseline: true,
         jobCount: snapshot.job_count,
-      });
+      };
     }
 
     const diff = diffHiringSnapshots(prevData, snapshot);
@@ -269,28 +248,25 @@ export async function POST(request: Request) {
         .eq("campaign_id", config.campaign_id)
         .eq(entityField, entityId);
 
-      // Publish via QStash (not a bare fetch) so the request arrives signed —
-      // /api/outreach/process rejects anything without a valid signature.
-      // Fire-and-forget: don't block the tracking response on the dispatch.
-      void getQStashClient()
-        .publishJSON({
-          url: `${getBaseUrl()}/api/outreach/process`,
-          body: {
-            type: "signal",
-            signalId: config.signal_id,
-            campaignId: config.campaign_id,
-            organizationId: config.organization_id ?? undefined,
-            reason: verdict.reason,
-            confidence: verdict.confidence,
-          },
-          retries: 2,
-        })
-        .catch((err) => {
-          console.error("[tracking] Failed to dispatch outreach:", err);
-        });
+      // Enqueue the outreach job (replaces the signed QStash publish —
+      // /api/jobs/* auth now guards the outbox path).
+      // Fire-and-forget: don't block the tracking run on the dispatch.
+      void enqueueJob({
+        type: "outreach.process",
+        payload: {
+          type: "signal",
+          signalId: config.signal_id,
+          campaignId: config.campaign_id,
+          organizationId: config.organization_id ?? undefined,
+          reason: verdict.reason,
+          confidence: verdict.confidence,
+        },
+      }).catch((err) => {
+        console.error("[tracking] Failed to enqueue outreach:", err);
+      });
     }
 
-    return Response.json({
+    return {
       trackingConfigId,
       changed: true,
       diff: {
@@ -302,6 +278,6 @@ export async function POST(request: Request) {
       intentFired: verdict.fire,
       reason: verdict.reason,
       confidence: verdict.confidence,
-    });
+    };
   });
 }
