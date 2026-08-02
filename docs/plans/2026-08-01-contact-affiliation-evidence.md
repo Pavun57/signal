@@ -1269,6 +1269,64 @@ Title: `feat(affiliation): judge employment from profile evidence, not headlines
 
 ---
 
+---
+
+# Post-review fixes (Tasks 10-15)
+
+Added after a four-dimension code review of the finished branch. Five blockers, all in the storage layer; the judging work (Task 3), `downgradeStale`, the fail-open paths and the send gate were all independently confirmed sound and must not be touched.
+
+**Read this first: the branch does not work against a real database.** `affiliation_source` carries a CHECK constraint (`supabase/migrations/20260801000000_contact_data_quality.sql:98-104`) listing exactly six values. `former_employee` and `employer_mismatch` are not among them, and `recordAffiliation` never checks its update error. So every detach raises 23514 and is swallowed. All 529 tests pass because every Supabase fake in the suite is a hand-rolled object with no constraints, and the probe never writes. Task 10 and Task 11 exist to close that class permanently.
+
+## Task 10: Migration
+
+**Files:** create `supabase/migrations/20260802000000_affiliation_detach.sql`
+
+Drop and recreate the `affiliation_source` check to add `former_employee`, `employer_mismatch` and `user_rejected` (Task 13 needs the third). Add `affiliation_detached_from uuid references organizations(id)`, nullable, which Task 12 needs to know which company a detach was about.
+
+Follow the idempotent style of the existing migration (`drop constraint if exists`, `add column if not exists`). Apply locally with `supabase db push` and confirm an `employer_mismatch` write succeeds against the local instance before moving on. Note for the owner: production migrations are manual.
+
+## Task 11: `recordAffiliation` reports what it did
+
+**Files:** `src/lib/services/affiliation.ts`, `src/lib/services/contact-discovery.ts`, `src/lib/tools/enrichment-tools.ts`, tests
+
+Return `{ written: boolean; reason?: string }` instead of `void`, and destructure the update `error` so a database failure is a `written: false` with the message, not silence. Then make both discovery paths derive their counters and their returned `contacts` from that result rather than from the verdict.
+
+Today `verifiedCount++` and `contacts.push(...)` fire even when the write was refused, so the agent reports "8 verified" for rows sitting at `organization_id = null`. The inverse is worse: a `team_page` person (0.9) judged `former_employee` (0.8) is refused correctly, yet is still counted as departed and dropped from the contact list while remaining attached and sendable.
+
+## Task 12: Detaches are scoped to the company that was judged
+
+**Files:** `src/lib/services/affiliation.ts`, both callers, tests
+
+The judge's verdict is about one company. The write is not: `organizationId: null` means "detach from wherever you are". So a `rejected` verdict at Browserbase detaches a person from Box, where they correctly work and where the judge just said they work.
+
+Add `detachedFrom` to the detaching call sites, carrying the org being judged. In `recordAffiliation`, a detaching write no-ops unless `person.organization_id === detachedFrom`. Persist it to `affiliation_detached_from`.
+
+Then fix the irreversibility: a row with `organization_id = null` is not "attached somewhere weaker", it is attached nowhere, so attaching it is not a move and must not be measured against the detaching weight. Allow any positive-weight write to attach a detached row to an organization OTHER than `affiliation_detached_from`. Keep the strictly-greater rule for re-attaching to the org they were detached from, which is the stickiness the original design actually wanted.
+
+## Task 13: "Not here" is remembered
+
+**Files:** `src/app/api/people/[id]/from-company/route.ts`, tests
+
+The endpoint nulls `organization_id` AND all four provenance columns. `recordAffiliation` scores a row with no org and no source as `-1`, so the next `search_stamp` (0.2) re-attaches them and they reappear in the review queue. A human's rejection has no memory and the queue never terminates.
+
+Route it through `recordAffiliation` with a new `user_rejected` source at weight 1.0 and `detachedFrom` set, so it records the decision instead of erasing it. Machine evidence cannot undo it; `user_entered` still can, because `humanOverride` bypasses the guard.
+
+## Task 14: The fakes must model the query layer
+
+**Files:** the four hand-rolled Supabase fakes in `src/__tests__/`
+
+Mutation testing found nine reverts that pass all 529 tests, because `select()` returns whole fixtures regardless of the column list and `eq()` is a no-op. The worst fails unsafe: dropping `affiliation_source` from the select in `recordAffiliation` makes every row read as legacy and lets refused detaches through. Dropping `.eq("campaign_id")` in the bulk email route would fan out across every campaign on the instance, undetected.
+
+Make `select()` project only the requested columns (and throw on reading one that was not selected), make `eq()` actually filter, and seed more than one row so the predicates are exercised. This branch added four new column couplings that the type system cannot see; this is the only thing that can guard them.
+
+## Task 15: UI and prompt corrections
+
+**Files:** `src/components/campaign/companies-list.tsx`, `src/lib/system-prompt.ts`
+
+1. `findEmailsForCompany` never checks `res.ok`, and `apiFetch` does not throw on non-2xx, so a 401/403/500 shows a green "Found 0 emails." On 401 it stacks on top of apiFetch's own session-expired toast. Check `res.ok` first, and use the route's own `summary` so truncated batches stop reading as finished jobs.
+2. Confirm is irreversible and the row leaves the group on the first click, which makes the pending spinner dead code and lets a double-click confirm the next person. Keep the row in place and disable both buttons while the request is in flight.
+3. `system-prompt.ts` tells the agent that `enrichContact` "often settles" an uncertain affiliation. `enrichContactById` never calls `recordAffiliation`, and Task 6 removed the incidental email path that could have raised confidence. The documented remediation is a guaranteed no-op. Say what actually resolves an uncertain contact: the Confirm button, a team-page listing, or a verified company-domain mailbox.
+
 ## Out of scope, deliberately
 
 - **Backfilling the 55 contacts already stored at 0.2.** Re-running discovery only re-judges people the search returns again, so anyone already in the list who does not come back stays where they are. The review queue from Task 8 is what makes them visible and confirmable by hand, which is the human loop this is aiming at anyway. A bulk re-judge job is a follow-up once the mismatch rate from Task 9 Step 4 is known to be sane.
