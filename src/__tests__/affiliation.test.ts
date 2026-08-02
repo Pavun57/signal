@@ -205,6 +205,102 @@ describe("recordAffiliation", () => {
   });
 });
 
+// ─── Detaching sources ────────────────────────────────────────────────────
+
+describe("detaching sources", () => {
+  it("detaches someone whose profile names a different employer", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "search_stamp",
+      affiliation_confidence: AFFILIATION_WEIGHT.search_stamp,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      evidence: "profile shows Chronicle Labs, Jan 2024 to Present",
+    });
+
+    expect(people[0].organization_id).toBeNull();
+    expect(people[0].affiliation_source).toBe("employer_mismatch");
+  });
+
+  it("detaches someone the evidence says has left", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "llm_verified",
+      affiliation_confidence: AFFILIATION_WEIGHT.llm_verified,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "former_employee",
+      evidence: "profile shows Browserbase, Oct 2024 to Mar 2026",
+    });
+
+    expect(people[0].organization_id).toBeNull();
+    expect(people[0].affiliation_source).toBe("former_employee");
+  });
+
+  it("writes zero confidence for a detached person", async () => {
+    // The column means "confidence they work at organization_id". With no org
+    // there is nothing for it to be about, and any non-zero value would clear
+    // AFFILIATION_SEND_THRESHOLD on a row nobody can vouch for.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "search_stamp",
+      affiliation_confidence: AFFILIATION_WEIGHT.search_stamp,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      evidence: "profile names another employer",
+    });
+
+    expect(people[0].affiliation_confidence).toBe(0);
+  });
+
+  it("does not detach someone the company itself lists", async () => {
+    // A stale snapshot must not overrule the company's own team page.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "team_page",
+      affiliation_confidence: AFFILIATION_WEIGHT.team_page,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      evidence: "profile names another employer",
+    });
+
+    expect(people[0].organization_id).toBe("org-a");
+    expect(people[0].affiliation_source).toBe("team_page");
+  });
+
+  it("keeps a detached person from being re-filed by a weaker search", async () => {
+    seed({
+      organization_id: null,
+      affiliation_source: "employer_mismatch",
+      affiliation_confidence: 0,
+    });
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(people[0].organization_id).toBeNull();
+  });
+});
+
 // ─── Send gate ────────────────────────────────────────────────────────────
 
 describe("send gate: employer required", () => {

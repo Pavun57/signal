@@ -23,7 +23,9 @@ export type AffiliationSource =
   | "team_page"
   | "linkedin_profile"
   | "llm_verified"
-  | "search_stamp";
+  | "search_stamp"
+  | "former_employee"
+  | "employer_mismatch";
 
 export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
   /** A human said so. Nothing outranks it. */
@@ -39,6 +41,15 @@ export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
   team_page: 0.9,
   /** Their LinkedIn profile names this employer. */
   linkedin_profile: 0.8,
+  /**
+   * Their profile shows a dated stint at this company that has already ended.
+   * Same strength as linkedin_profile because it is the same evidence read the
+   * same way: strong enough to displace a search stamp or an LLM guess, never
+   * strong enough to overrule the company's own team page or a human.
+   */
+  former_employee: 0.8,
+  /** Their profile names a DIFFERENT employer and never mentions this one. */
+  employer_mismatch: 0.8,
   /** An LLM read the evidence and judged them an employee. */
   llm_verified: 0.6,
   /**
@@ -125,12 +136,19 @@ export async function recordAffiliation(
     }
   }
 
+  // Confidence is "how sure are we they work at organization_id". Detached,
+  // there is no such claim to be confident about, and a non-zero score on a
+  // null-org row would clear the send threshold for a person nobody can vouch
+  // for. The displacement strength still comes from the source weight above,
+  // which is what the monotonic guard reads.
+  const storedConfidence = organizationId === null ? 0 : incoming;
+
   await supabase
     .from("people")
     .update({
       organization_id: organizationId,
       affiliation_source: source,
-      affiliation_confidence: incoming,
+      affiliation_confidence: storedConfidence,
       affiliation_evidence: evidence.slice(0, 500),
       affiliation_verified_at: new Date().toISOString(),
     })
