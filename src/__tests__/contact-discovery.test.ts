@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { createSupabaseFake } from "./helpers/supabase-fake";
 
 /**
  * The affiliation half of contact discovery: who gets attached to a company,
@@ -82,37 +83,49 @@ import {
   MAX_ALREADY_LINKED,
 } from "@/lib/services/contact-discovery";
 
+/** The organization under test. */
 let org: Record<string, unknown> = {};
-/** Rows the people-list queries resolve to (org dedup / campaign links). */
+/** People already attached to `org`. */
 let orgPeople: Array<Record<string, unknown>> = [];
 
-function client(): SupabaseClient {
-  const chain = () => {
-    // The people queries (org dedup, campaign links) select a list; everything
-    // else in these tests resolves the single org row. Keyed on the presence of
-    // linkedin_url rather than an exact column string — matching the whole
-    // string meant widening the select silently handed back a non-iterable org
-    // row instead of a list.
-    let wantsList = false;
-    const c: Record<string, unknown> & PromiseLike<unknown> = {
-      select: (cols?: string) => {
-        if (cols?.includes("linkedin_url")) wantsList = true;
-        return c;
-      },
-      eq: () => c,
-      not: () => c,
-      single: () => c,
-      maybeSingle: () => c,
-      then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
-        Promise.resolve({
-          data: wantsList ? orgPeople : org,
-          error: null,
-        }).then(onF, onR),
-    } as unknown as Record<string, unknown> & PromiseLike<unknown>;
-    return c;
-  };
-  return { from: () => chain() } as unknown as SupabaseClient;
-}
+/**
+ * A second company, and someone who works at it.
+ *
+ * Both queries in this path are scoped: the org read by `.eq("id", ...)` and the
+ * roster by `.eq("organization_id", ...)`. With one organization and one set of
+ * people in the fixtures, deleting either predicate changed nothing and the
+ * whole suite stayed green. These rows are what make an unscoped query return
+ * the wrong answer instead of the same one.
+ */
+const OTHER_ORG = {
+  id: "org-2",
+  name: "Chronicle Labs",
+  domain: "chroniclelabs.com",
+  industry: "developer tools",
+  location: "NYC",
+  description: null,
+};
+
+const otherOrgPerson = {
+  id: "elsewhere-1",
+  name: "Stranger S",
+  title: "Engineer",
+  work_email: null,
+  personal_email: null,
+  linkedin_url: "https://www.linkedin.com/in/stranger",
+  organization_id: OTHER_ORG.id,
+};
+
+const client = () =>
+  createSupabaseFake({
+    tables: {
+      organizations: () => [org, OTHER_ORG],
+      people: () => [...orgPeople, otherOrgPerson],
+      // Only read when a campaignId is passed, which these tests do not do.
+      campaign_people: () => [],
+    },
+    relations: { campaign_people: { person: { localKey: "person_id" } } },
+  });
 
 beforeEach(() => {
   created.length = 0;
@@ -209,6 +222,7 @@ describe("alreadyLinked", () => {
     work_email: null,
     personal_email: null,
     linkedin_url: `https://www.linkedin.com/in/ex${i}`,
+    organization_id: "org-1",
   });
 
   it("returns people already attached to the org", async () => {
@@ -216,6 +230,9 @@ describe("alreadyLinked", () => {
 
     const result = await run();
 
+    // Two, not three: someone at another company is in the table and must not
+    // be rostered here. The roster is what the agent reads back as "everyone at
+    // this company", so an unscoped query pools unrelated businesses.
     expect(result.alreadyLinkedTotal).toBe(2);
     expect(result.alreadyLinked.map((p) => p.name)).toEqual([
       "Existing 1",

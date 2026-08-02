@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-/** The row the post-enrichment select returns, rewritten per test. */
-let personAfter: Record<string, unknown> = {};
+import { createSupabaseFake, type FakeRow } from "./helpers/supabase-fake";
 
 const findEmailForPerson = vi.fn<
   (personId: string) => Promise<{ email: string | null }>
@@ -57,60 +56,65 @@ vi.mock("@/lib/services/knowledge-base", async (importOriginal) => {
   };
 });
 
-/** The person row every pre-enrichment select resolves to. */
-const person = {
-  name: "Ann A",
-  title: "Engineer",
-  linkedin_url: null,
-  twitter_url: null,
-  organization: null,
+const PERSON_ID = "11111111-1111-1111-1111-111111111111";
+/**
+ * Someone else in the table.
+ *
+ * Every read in this path is scoped by `.eq("id", personId)`, and with one row
+ * in the fixtures the predicate could be deleted with the suite still green.
+ * This row is a confirmed contact with an address already on file, so an
+ * unscoped read gets a different answer at every step.
+ */
+const OTHER_PERSON = "99999999-9999-9999-9999-999999999999";
+
+/** The people table. The contact under test is always row zero. */
+let people: FakeRow[] = [];
+
+const seed = (over: FakeRow = {}) => {
+  people = [
+    {
+      id: PERSON_ID,
+      name: "Ann A",
+      title: "Engineer",
+      linkedin_url: null,
+      twitter_url: null,
+      organization_id: null,
+      enrichment_data: null,
+      work_email: null,
+      personal_email: null,
+      affiliation_confidence: 0.9,
+      ...over,
+    },
+    {
+      id: OTHER_PERSON,
+      name: "Bystander B",
+      title: "Engineer",
+      linkedin_url: null,
+      twitter_url: null,
+      organization_id: null,
+      enrichment_data: null,
+      work_email: "bystander@acme.com",
+      personal_email: null,
+      affiliation_confidence: 0.9,
+    },
+  ];
 };
 
 /** Every payload handed to `.update()`, in call order. */
 const updates: Array<Record<string, unknown>> = [];
 
-type Chain = {
-  select: (cols: string) => Chain;
-  update: (payload: Record<string, unknown>) => Chain;
-  eq: () => Chain;
-  maybeSingle: () => Promise<{ data: unknown; error: null }>;
-  single: () => Promise<{ data: unknown; error: null }>;
-  then: (
-    onF: (v: unknown) => unknown,
-    onR?: (e: unknown) => unknown,
-  ) => Promise<unknown>;
-};
-
-/**
- * The post-enrichment read is the only select in this path that asks for
- * work_email, so the columns it requests are enough to tell the two reads
- * apart without counting calls.
- */
-function chain(): Chain {
-  let columns = "";
-  const c: Chain = {
-    select: (cols: string) => {
-      columns = cols;
-      return c;
-    },
-    update: (payload: Record<string, unknown>) => {
-      updates.push(payload);
-      return c;
-    },
-    eq: () => c,
-    maybeSingle: async () => ({ data: null, error: null }),
-    single: async () => ({
-      data: columns.includes("work_email") ? personAfter : person,
-      error: null,
-    }),
-    then: (onF, onR) =>
-      Promise.resolve({ data: null, error: null }).then(onF, onR),
-  };
-  return c;
-}
-
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi.fn(async () => ({ from: () => chain() })),
+  createClient: vi.fn(async () =>
+    createSupabaseFake({
+      tables: { people: () => people, organizations: () => [] },
+      relations: {
+        people: { organization: { localKey: "organization_id" } },
+      },
+      onQuery: (q) => {
+        if (q.kind === "update" && q.payload) updates.push(q.payload);
+      },
+    }),
+  ),
 }));
 
 import {
@@ -118,7 +122,9 @@ import {
   summarizeContactEnrichment,
 } from "@/lib/tools/enrichment-tools";
 
-const PERSON_ID = "11111111-1111-1111-1111-111111111111";
+beforeEach(() => {
+  seed();
+});
 
 describe("summarizeContactEnrichment", () => {
   it("collapses a full enrichment blob to counts/flags", () => {
@@ -162,11 +168,7 @@ describe("email discovery is gated on affiliation", () => {
     // A pattern-guessed address at the company domain is the single most
     // convincing thing on the row. Minting one for a person we cannot place at
     // the company manufactures the confirmation the user is looking for.
-    personAfter = {
-      work_email: null,
-      personal_email: null,
-      affiliation_confidence: 0.2,
-    };
+    seed({ affiliation_confidence: 0.2 });
 
     await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
 
@@ -176,11 +178,7 @@ describe("email discovery is gated on affiliation", () => {
   it("still looks for an email for a confirmed contact", async () => {
     // The gate has to be satisfied by the confidence check, not by email
     // discovery quietly never running at all.
-    personAfter = {
-      work_email: null,
-      personal_email: null,
-      affiliation_confidence: 0.9,
-    };
+    seed({ affiliation_confidence: 0.9 });
 
     await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
 
@@ -194,11 +192,7 @@ describe("title write-back", () => {
     summarizePerson.mockClear();
     summarizePerson.mockResolvedValue(null);
     // Already has an address, so email discovery stays out of the way.
-    personAfter = {
-      work_email: "victor@anthropic.com",
-      personal_email: null,
-      affiliation_confidence: 0.9,
-    };
+    seed({ work_email: "victor@anthropic.com" });
   });
 
   /** The bio write is the only update carrying either of these keys. */

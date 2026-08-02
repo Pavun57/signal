@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+import { createSupabaseFake } from "./helpers/supabase-fake";
+
 /**
  * The affiliation half of `searchPeople`, the second judge-and-store path.
  *
@@ -73,8 +75,9 @@ vi.mock("@/lib/services/affiliation", () => ({
   }),
 }));
 
-/** The one org row every query in this path resolves to. */
+/** The company the search is about. `findOrCreateOrganization` returns its id. */
 const org = {
+  id: "org-1",
   name: "Browserbase",
   domain: "browserbase.com",
   industry: "developer tools",
@@ -82,26 +85,34 @@ const org = {
   description: null,
 };
 
-function chain(table: string) {
-  const c: Record<string, unknown> & PromiseLike<unknown> = {
-    select: () => c,
-    eq: () => c,
-    update: () => c,
-    single: () => c,
-    maybeSingle: () => c,
-    then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
-      Promise.resolve({
-        data: table === "organizations" ? org : null,
-        error: null,
-      }).then(onF, onR),
-  } as unknown as Record<string, unknown> & PromiseLike<unknown>;
-  return c;
-}
+/**
+ * A second company in the table. The org context read is scoped by
+ * `.eq("id", organizationId)`, and with a single row in the fixtures that
+ * predicate was free to delete.
+ */
+const otherOrg = {
+  id: "org-2",
+  name: "Chronicle Labs",
+  domain: "chroniclelabs.com",
+  industry: "developer tools",
+  location: "NYC",
+  description: null,
+};
 
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi.fn(async () => ({
-    from: (table: string) => chain(table),
-  })),
+  createClient: vi.fn(async () =>
+    createSupabaseFake({
+      tables: {
+        organizations: () => [org, otherOrg],
+        // Written to only when a person comes back `pending`, which the
+        // findOrCreatePerson mock above never does.
+        people: () => [],
+        campaign_people: () => [],
+        campaign_organizations: () => [],
+      },
+      relations: { campaign_people: { person: { localKey: "person_id" } } },
+    }),
+  ),
 }));
 
 import { searchPeople } from "@/lib/tools/enrichment-tools";

@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   AFFILIATION_WEIGHT,
@@ -10,6 +9,7 @@ import {
   recordAffiliation,
 } from "@/lib/services/affiliation";
 import { normalizeLinkedInUrl } from "@/lib/services/knowledge-base";
+import { createSupabaseFake } from "./helpers/supabase-fake";
 
 // ─── Fake supabase ────────────────────────────────────────────────────────
 
@@ -30,58 +30,49 @@ let people: PersonRow[] = [];
  */
 let updateError: { message: string } | null = null;
 
-function client(): SupabaseClient {
-  const chain = () => {
-    let mode: "select" | "update" = "select";
-    let updates: Record<string, unknown> = {};
-    const preds: Array<(r: Record<string, unknown>) => boolean> = [];
-    const c: Record<string, unknown> & PromiseLike<unknown> = {
-      select: () => c,
-      update: (v: Record<string, unknown>) => {
-        mode = "update";
-        updates = v;
-        return c;
-      },
-      eq: (col: string, val: unknown) => {
-        preds.push((r) => r[col] === val);
-        return c;
-      },
-      maybeSingle: () => c,
-      then(onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) {
-        const matches = people.filter((r) => preds.every((p) => p(r)));
-        if (mode === "update") {
-          if (updateError) {
-            return Promise.resolve({ data: null, error: updateError }).then(
-              onF,
-              onR,
-            );
-          }
-          for (const r of matches) Object.assign(r, updates);
-          return Promise.resolve({ data: null, error: null }).then(onF, onR);
-        }
-        return Promise.resolve({ data: matches[0] ?? null, error: null }).then(
-          onF,
-          onR,
-        );
-      },
-    } as unknown as Record<string, unknown> & PromiseLike<unknown>;
-    return c;
-  };
-  return { from: () => chain() } as unknown as SupabaseClient;
-}
+const client = () =>
+  createSupabaseFake({
+    tables: { people: () => people },
+    updateError: () => updateError,
+  });
+
+/** The person under test. Always `people[0]`. */
+const SUBJECT = "p1";
+
+/**
+ * The row the query is not about.
+ *
+ * Every test here used to seed exactly one person, so `.eq("id", personId)`
+ * could be deleted from both legs of `recordAffiliation` and the whole suite
+ * still passed: with one row in the table, "the row that matched" and "row zero"
+ * are the same thing. A bystander at a different company, carrying evidence
+ * strong enough to change the answer if it were ever read, is what makes the
+ * predicate load-bearing.
+ */
+const bystander = (): PersonRow => ({
+  id: "p2",
+  organization_id: "org-elsewhere",
+  affiliation_source: "team_page",
+  affiliation_confidence: AFFILIATION_WEIGHT.team_page,
+  affiliation_detached_from: null,
+});
 
 function seed(over: Partial<PersonRow> = {}) {
   people = [
     {
-      id: "p1",
+      id: SUBJECT,
       organization_id: null,
       affiliation_source: null,
       affiliation_confidence: null,
       affiliation_detached_from: null,
       ...over,
     },
+    bystander(),
   ];
 }
+
+/** True when the write stayed inside the row it named. */
+const bystanderUntouched = () => expect(people[1]).toEqual(bystander());
 
 beforeEach(() => {
   seed();
@@ -93,13 +84,17 @@ beforeEach(() => {
 describe("recordAffiliation reports what it did", () => {
   it("says it wrote when it wrote", async () => {
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "team_page",
       evidence: "listed on acme.com/team",
     });
 
     expect(result).toEqual({ written: true });
+    // The UPDATE is scoped by id. Without that predicate it rewrites every row
+    // in the table, and `people` is a pool shared across every user on an
+    // instance.
+    bystanderUntouched();
   });
 
   it("says it refused, and why, when the guard blocks the write", async () => {
@@ -110,7 +105,7 @@ describe("recordAffiliation reports what it did", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "llm_verified",
       evidence: "an LLM read the headline",
@@ -131,7 +126,7 @@ describe("recordAffiliation reports what it did", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "former_employee",
       detachedFrom: "org-a",
@@ -152,7 +147,7 @@ describe("recordAffiliation reports what it did", () => {
     };
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "team_page",
       evidence: "listed on acme.com/team",
@@ -165,8 +160,8 @@ describe("recordAffiliation reports what it did", () => {
   });
 
   it("says it refused when the person does not exist", async () => {
-    people = [];
-
+    // The table is not empty: other people exist, they are just not this one.
+    // Emptying it would let a missing `.eq("id", ...)` pass this test too.
     const result = await recordAffiliation(client(), {
       personId: "ghost",
       organizationId: "org-a",
@@ -181,7 +176,7 @@ describe("recordAffiliation reports what it did", () => {
 describe("recordAffiliation", () => {
   it("records the source, confidence and evidence", async () => {
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "team_page",
       evidence: "listed on acme.com/team",
@@ -201,7 +196,7 @@ describe("recordAffiliation", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "search_stamp",
       evidence: "appeared in a search",
@@ -220,7 +215,7 @@ describe("recordAffiliation", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "linkedin_profile",
       evidence: "profile reads 'Wafer'",
@@ -236,7 +231,7 @@ describe("recordAffiliation", () => {
     seed({ organization_id: "org-a" });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "llm_verified",
       evidence: "headline names org-b",
@@ -254,7 +249,7 @@ describe("recordAffiliation", () => {
     seed({ organization_id: "org-a" }); // legacy: no recorded source
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "search_stamp",
       evidence: "showed up in a search for org-b",
@@ -267,7 +262,7 @@ describe("recordAffiliation", () => {
     seed({ organization_id: "org-a" });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "search_stamp",
       detachedFrom: "org-a",
@@ -285,7 +280,7 @@ describe("recordAffiliation", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "llm_verified",
       evidence: "also looks like org-b",
@@ -302,7 +297,7 @@ describe("recordAffiliation", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "linkedin_profile",
       detachedFrom: "org-a",
@@ -324,7 +319,7 @@ describe("detaching sources", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-a",
@@ -343,7 +338,7 @@ describe("detaching sources", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "former_employee",
       detachedFrom: "org-a",
@@ -365,7 +360,7 @@ describe("detaching sources", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-a",
@@ -384,7 +379,7 @@ describe("detaching sources", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-a",
@@ -408,7 +403,7 @@ describe("detaching sources", () => {
     });
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "llm_verified",
       evidence: "headline looks right",
@@ -435,7 +430,7 @@ describe("a detach is about one company", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-browserbase",
@@ -456,7 +451,7 @@ describe("a detach is about one company", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-a",
@@ -466,6 +461,8 @@ describe("a detach is about one company", () => {
     expect(result.written).toBe(true);
     expect(people[0].organization_id).toBeNull();
     expect(people[0].affiliation_detached_from).toBe("org-a");
+    // A detach is one row's business. Unscoped, it empties the table.
+    bystanderUntouched();
   });
 
   it("refuses a detach that does not say which company it is about", async () => {
@@ -477,7 +474,7 @@ describe("a detach is about one company", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       evidence: "profile names Chronicle Labs",
@@ -499,7 +496,7 @@ describe("a detach is about one company", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "employer_mismatch",
       detachedFrom: "org-b",
@@ -531,7 +528,7 @@ describe("a detached person can still be placed somewhere", () => {
     detached();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "llm_verified",
       evidence: "profile shows Chronicle Labs, Present",
@@ -549,7 +546,7 @@ describe("a detached person can still be placed somewhere", () => {
     detached();
 
     await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "llm_verified",
       evidence: "profile shows Chronicle Labs, Present",
@@ -564,7 +561,7 @@ describe("a detached person can still be placed somewhere", () => {
     detached();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "llm_verified",
       evidence: "headline looks right",
@@ -580,7 +577,7 @@ describe("a detached person can still be placed somewhere", () => {
     detached();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "team_page",
       evidence: "listed on acme.com/team",
@@ -612,7 +609,7 @@ describe("a human's rejection outranks the machine", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "user_rejected",
       detachedFrom: "org-a",
@@ -634,7 +631,7 @@ describe("a human's rejection outranks the machine", () => {
     rejected();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "search_stamp",
       evidence: "returned by a search for Acme",
@@ -656,7 +653,7 @@ describe("a human's rejection outranks the machine", () => {
       rejected();
 
       const result = await recordAffiliation(client(), {
-        personId: "p1",
+        personId: SUBJECT,
         organizationId: "org-a",
         source,
         evidence: `evidence from ${source}`,
@@ -673,7 +670,7 @@ describe("a human's rejection outranks the machine", () => {
     rejected();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-b",
       source: "llm_verified",
       evidence: "profile shows Chronicle Labs, Present",
@@ -691,7 +688,7 @@ describe("a human's rejection outranks the machine", () => {
     rejected();
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: "org-a",
       source: "user_entered",
       evidence: "assigned by the user",
@@ -714,7 +711,7 @@ describe("a human's rejection outranks the machine", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "user_rejected",
       detachedFrom: "org-a",
@@ -735,7 +732,7 @@ describe("a human's rejection outranks the machine", () => {
     });
 
     const result = await recordAffiliation(client(), {
-      personId: "p1",
+      personId: SUBJECT,
       organizationId: null,
       source: "user_rejected",
       detachedFrom: "org-browserbase",
