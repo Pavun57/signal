@@ -218,3 +218,140 @@ describe("filterContactsByCompany", () => {
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
 });
+
+const withEvidence: CandidateContact[] = [
+  {
+    name: "Dana D",
+    title: null,
+    linkedinUrl: "https://www.linkedin.com/in/d",
+    rawHeadline: "Dana D - Head of DevRel | Founder devreluni.com",
+    pageText:
+      "Experience: Head of Developer Relations, Chronicle Labs, May 2024 - Present. Founder, DevRel Uni, Feb 2023 - Present.",
+    pageDate: "2026-07-23",
+  },
+];
+
+describe("evidence in the prompt", () => {
+  it("puts the page text and its date in front of the model", async () => {
+    reply([
+      {
+        index: 0,
+        name: "Dana D",
+        title: null,
+        verdict: "rejected",
+        evidence: "x",
+      },
+    ]);
+
+    await filterContactsByCompany(company, withEvidence);
+
+    const prompt = generateObjectMock.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("Chronicle Labs");
+    expect(prompt).toContain("2026-07-23");
+  });
+
+  it("says the page text is missing rather than omitting the line", async () => {
+    // A silently absent field reads to the model as "not applicable". An
+    // explicit "(none)" is what makes `uncertain` the honest answer.
+    reply([
+      {
+        index: 0,
+        name: "Ann A",
+        title: null,
+        verdict: "uncertain",
+        evidence: "x",
+      },
+    ]);
+
+    await filterContactsByCompany(company, candidates);
+
+    const prompt = generateObjectMock.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("(none)");
+  });
+});
+
+describe("former_employee", () => {
+  it("passes the verdict through", async () => {
+    reply([
+      {
+        index: 0,
+        name: "Dana D",
+        title: "Engineer",
+        verdict: "former_employee",
+        employerSeen: "Browserbase",
+        datesSeen: "Oct 2024 - Mar 2026",
+        evidence: "profile shows the role ended in Mar 2026",
+      },
+    ]);
+
+    const out = await filterContactsByCompany(company, withEvidence);
+
+    expect(out[0].verdict).toBe("former_employee");
+    expect(out[0].employerSeen).toBe("Browserbase");
+    expect(out[0].datesSeen).toBe("Oct 2024 - Mar 2026");
+  });
+});
+
+describe("stale snapshots", () => {
+  it("downgrades a verified call made on an old page", async () => {
+    // The Victor Lue case. His archived page was dated 2026-03-29 and said
+    // "Browserbase, Present" while his live headline said Anthropic. A
+    // four-month-old snapshot saying "Present" only proves where they worked
+    // four months ago, so it cannot clear the send gate on its own.
+    reply([
+      {
+        index: 0,
+        name: "Dana D",
+        title: null,
+        verdict: "verified",
+        evidence: "says Present",
+      },
+    ]);
+
+    const out = await filterContactsByCompany(company, [
+      { ...withEvidence[0], pageDate: "2026-01-01" },
+    ]);
+
+    expect(out[0].verdict).toBe("uncertain");
+    expect(out[0].evidence).toMatch(/months old/i);
+  });
+
+  it("leaves a verified call on a fresh page alone", async () => {
+    reply([
+      {
+        index: 0,
+        name: "Dana D",
+        title: null,
+        verdict: "verified",
+        evidence: "says Present",
+      },
+    ]);
+
+    const out = await filterContactsByCompany(company, [
+      { ...withEvidence[0], pageDate: new Date().toISOString().slice(0, 10) },
+    ]);
+
+    expect(out[0].verdict).toBe("verified");
+  });
+
+  it("does not downgrade a rejection just because the page is old", async () => {
+    // Staleness cuts one way. "They worked somewhere else in January" is still
+    // evidence they were not here in January, and re-running the search will
+    // not produce a fresher page.
+    reply([
+      {
+        index: 0,
+        name: "Dana D",
+        title: null,
+        verdict: "rejected",
+        evidence: "Chronicle Labs",
+      },
+    ]);
+
+    const out = await filterContactsByCompany(company, [
+      { ...withEvidence[0], pageDate: "2026-01-01" },
+    ]);
+
+    expect(out[0].verdict).toBe("rejected");
+  });
+});
