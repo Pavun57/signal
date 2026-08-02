@@ -148,22 +148,18 @@ export const INTEGRATIONS: Integration[] = [
       "Generate with `openssl rand -base64 32` and add `EMAIL_CREDENTIALS_KEY=...` to .env.local, then connect a mailbox in Settings > Email",
   },
   {
-    id: "qstash",
-    name: "QStash",
+    id: "cron",
+    name: "Job scheduler",
     category: "scheduling",
     severity: "optional",
-    feature: "Scheduled signal runs, background jobs",
+    feature:
+      "Scheduled signal runs, reply tracking, follow-ups, background jobs",
     consequence:
-      "Signals run only when triggered manually from the UI — no scheduled cadence.",
-    envVars: [
-      "QSTASH_TOKEN",
-      "QSTASH_CURRENT_SIGNING_KEY",
-      "QSTASH_NEXT_SIGNING_KEY",
-    ],
-    signupUrl: "https://upstash.com",
-    keysUrl: "https://console.upstash.com/qstash",
-    fixHint:
-      "Add QSTASH_TOKEN + QSTASH_CURRENT_SIGNING_KEY + QSTASH_NEXT_SIGNING_KEY",
+      "Recurring jobs never run: signals only run when triggered manually, replies and bounces go undetected, and sequence follow-ups never send.",
+    envVars: ["CRON_SECRET"],
+    signupUrl: "https://vercel.com/docs/cron-jobs",
+    keysUrl: "https://vercel.com/docs/cron-jobs",
+    fixHint: "Set CRON_SECRET (openssl rand -hex 32) locally and in Vercel",
   },
   {
     id: "exa",
