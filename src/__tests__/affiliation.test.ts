@@ -18,6 +18,8 @@ interface PersonRow extends Record<string, unknown> {
   organization_id: string | null;
   affiliation_source: string | null;
   affiliation_confidence: number | null;
+  /** Which company a detach was about. Null means no detach on record. */
+  affiliation_detached_from: string | null;
 }
 
 let people: PersonRow[] = [];
@@ -75,6 +77,7 @@ function seed(over: Partial<PersonRow> = {}) {
       organization_id: null,
       affiliation_source: null,
       affiliation_confidence: null,
+      affiliation_detached_from: null,
       ...over,
     },
   ];
@@ -131,6 +134,7 @@ describe("recordAffiliation reports what it did", () => {
       personId: "p1",
       organizationId: null,
       source: "former_employee",
+      detachedFrom: "org-a",
       evidence: "role ended Mar 2026",
     });
 
@@ -266,6 +270,7 @@ describe("recordAffiliation", () => {
       personId: "p1",
       organizationId: null,
       source: "search_stamp",
+      detachedFrom: "org-a",
       evidence: "rejected by the judge",
     });
 
@@ -300,6 +305,7 @@ describe("recordAffiliation", () => {
       personId: "p1",
       organizationId: null,
       source: "linkedin_profile",
+      detachedFrom: "org-a",
       evidence: "profile names a different employer",
     });
 
@@ -321,6 +327,7 @@ describe("detaching sources", () => {
       personId: "p1",
       organizationId: null,
       source: "employer_mismatch",
+      detachedFrom: "org-a",
       evidence: "profile shows Chronicle Labs, Jan 2024 to Present",
     });
 
@@ -339,6 +346,7 @@ describe("detaching sources", () => {
       personId: "p1",
       organizationId: null,
       source: "former_employee",
+      detachedFrom: "org-a",
       evidence: "profile shows Browserbase, Oct 2024 to Mar 2026",
     });
 
@@ -360,6 +368,7 @@ describe("detaching sources", () => {
       personId: "p1",
       organizationId: null,
       source: "employer_mismatch",
+      detachedFrom: "org-a",
       evidence: "profile names another employer",
     });
 
@@ -378,6 +387,7 @@ describe("detaching sources", () => {
       personId: "p1",
       organizationId: null,
       source: "employer_mismatch",
+      detachedFrom: "org-a",
       evidence: "profile names another employer",
     });
 
@@ -386,10 +396,15 @@ describe("detaching sources", () => {
   });
 
   it("keeps a detached person from being re-filed by a weaker search", async () => {
+    // Re-filing them under the company that just rejected them is the case the
+    // stickiness was designed for, so the detach has to name that company:
+    // without affiliation_detached_from this rule had no way to tell it apart
+    // from attaching them to a company nobody has judged them against.
     seed({
       organization_id: null,
       affiliation_source: "employer_mismatch",
       affiliation_confidence: 0,
+      affiliation_detached_from: "org-a",
     });
 
     await recordAffiliation(client(), {
@@ -400,6 +415,180 @@ describe("detaching sources", () => {
     });
 
     expect(people[0].organization_id).toBeNull();
+  });
+});
+
+// ─── Detaches are scoped to the company that was judged ───────────────────
+
+describe("a detach is about one company", () => {
+  it("does not detach someone filed under a company nobody judged", async () => {
+    // The Carter Rabasa case, measured on the live pipeline. He genuinely works
+    // at Box and is correctly stored there. A "find more people" run on
+    // Browserbase pulls him back out of Exa's semantic search, the judge
+    // correctly says rejected, and the write said "detach from wherever you
+    // are", so being RIGHT about Browserbase deleted him from Box, for every
+    // user on the instance, with no review queue to find him in.
+    seed({
+      organization_id: "org-box",
+      affiliation_source: "llm_verified",
+      affiliation_confidence: AFFILIATION_WEIGHT.llm_verified,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-browserbase",
+      evidence: "profile names Box, not Browserbase",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.notAtJudgedOrg).toBe(true);
+    expect(people[0].organization_id).toBe("org-box");
+    expect(people[0].affiliation_source).toBe("llm_verified");
+  });
+
+  it("detaches when the company judged is the one they are filed under", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "search_stamp",
+      affiliation_confidence: AFFILIATION_WEIGHT.search_stamp,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-a",
+      evidence: "profile names Chronicle Labs",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBeNull();
+    expect(people[0].affiliation_detached_from).toBe("org-a");
+  });
+
+  it("refuses a detach that does not say which company it is about", async () => {
+    // "Detach from wherever you are" is not expressible. It is the bug.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "search_stamp",
+      affiliation_confidence: AFFILIATION_WEIGHT.search_stamp,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      evidence: "profile names Chronicle Labs",
+    });
+
+    expect(result.written).toBe(false);
+    expect(people[0].organization_id).toBe("org-a");
+  });
+
+  it("does not touch a detached row when another company judges them", async () => {
+    // Already detached from org-a, now rejected at org-b. There is nothing at
+    // org-b to detach, and overwriting the row would replace the record of the
+    // org they were actually rejected from.
+    seed({
+      organization_id: null,
+      affiliation_source: "employer_mismatch",
+      affiliation_confidence: 0,
+      affiliation_detached_from: "org-a",
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-b",
+      evidence: "profile names Chronicle Labs",
+    });
+
+    expect(result.written).toBe(false);
+    expect(people[0].affiliation_detached_from).toBe("org-a");
+  });
+});
+
+describe("a detached person can still be placed somewhere", () => {
+  const detached = () =>
+    seed({
+      organization_id: null,
+      affiliation_source: "employer_mismatch",
+      affiliation_confidence: 0,
+      affiliation_detached_from: "org-a",
+    });
+
+  it("attaches them to a different company on ordinary evidence", async () => {
+    // A row at organization_id = null is attached nowhere, so putting them
+    // somewhere is not a cross-org move and must not be measured against the
+    // detaching weight. Before this, employer_mismatch (0.8) outranked
+    // llm_verified (0.6) forever and email_domain (0.95) could not rescue them
+    // either, because that source is only ever recorded for a person who
+    // already has an organization. One correct rejection removed them from
+    // every user's reach, permanently and invisibly.
+    detached();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-b",
+      source: "llm_verified",
+      evidence: "profile shows Chronicle Labs, Present",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBe("org-b");
+    expect(people[0].affiliation_source).toBe("llm_verified");
+  });
+
+  it("clears the detach record once they are attached somewhere", async () => {
+    // A stale value here would later apply the stickiness rule to a company
+    // this person was never rejected from, and leave the row claiming a detach
+    // that no longer describes it.
+    detached();
+
+    await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-b",
+      source: "llm_verified",
+      evidence: "profile shows Chronicle Labs, Present",
+    });
+
+    expect(people[0].affiliation_detached_from).toBeNull();
+  });
+
+  it("still refuses to re-file them under the company that rejected them", async () => {
+    // The stickiness the original design wanted: they cannot be re-filed under
+    // the same wrong company by evidence no stronger than what rejected them.
+    detached();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(result.written).toBe(false);
+    expect(people[0].organization_id).toBeNull();
+  });
+
+  it("lets stronger evidence overrule the company that rejected them", async () => {
+    // team_page (0.9) beats employer_mismatch (0.8): if the company itself
+    // lists them, a scraped profile snapshot does not get to argue.
+    detached();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "team_page",
+      evidence: "listed on acme.com/team",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBe("org-a");
+    expect(people[0].affiliation_detached_from).toBeNull();
   });
 });
 

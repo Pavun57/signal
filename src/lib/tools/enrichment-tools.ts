@@ -325,15 +325,23 @@ export const searchPeople = tool({
       // write is attempted and there is nothing to refuse.
       let refused = false;
       let refusedReason: string | undefined;
+      let notAtJudgedOrg = false;
       if (organizationId) {
         const write = await recordAffiliation(supabase, {
           personId: person.id,
           organizationId: attachTo,
           source,
           evidence,
+          // The judge was asked about THIS company and answered about it.
+          // Without saying so, a detaching write means "detach from wherever
+          // you are", so correctly rejecting someone here unlinks them from the
+          // unrelated company they actually work at. Same rule as
+          // contact-discovery, deliberately.
+          detachedFrom: detaching ? organizationId : null,
         });
         refused = !write.written;
         refusedReason = write.reason;
+        notAtJudgedOrg = write.notAtJudgedOrg === true;
       }
 
       if (person.enrichment_status === "pending") {
@@ -356,6 +364,17 @@ export const searchPeople = tool({
       // still null, blocked at the send gate), and a refused detach reported as
       // departed and dropped from the list while the person stayed attached and
       // fully sendable. Same rule as contact-discovery, deliberately.
+      //
+      // The one refusal that does NOT mean "leave them in the list": the person
+      // is filed under a different company, so nothing here was ever about
+      // them. They are not a contact at this company, and reporting them as an
+      // unchanged one is the same lie in a quieter voice.
+      if (notAtJudgedOrg) {
+        if (v.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
+        continue;
+      }
+
       if (refused) {
         affiliationUnchanged++;
       } else if (v.verdict === "rejected") {

@@ -61,7 +61,9 @@ const affiliations: Array<Record<string, unknown>> = [];
  * refusing a write is a normal outcome, not an error, and the storage loop has
  * to read it rather than assume the verdict landed.
  */
-const writeResult: { current: { written: boolean; reason?: string } } = {
+const writeResult: {
+  current: { written: boolean; reason?: string; notAtJudgedOrg?: boolean };
+} = {
   current: { written: true },
 };
 vi.mock("@/lib/services/affiliation", () => ({
@@ -441,7 +443,28 @@ describe("acting on the verdicts", () => {
     expect(last.source).toBe("employer_mismatch");
     expect(last.organizationId).toBeNull();
     expect(last.evidence).toContain("Chronicle Labs");
+    // The verdict is about THIS company. Without saying which, the write means
+    // "detach from wherever you are", so a correct rejection here detaches the
+    // person from the unrelated company they really do work at.
+    expect(last.detachedFrom).toBe("org-1");
     expect(result.rejectedAsWrongCompany).toBe(1);
+  });
+
+  it("scopes a departure to the company that was judged", async () => {
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "former_employee",
+        evidence: "role ended Mar 2026",
+      },
+    ]);
+
+    await run();
+
+    expect(affiliations[affiliations.length - 1].detachedFrom).toBe("org-1");
   });
 
   it("still keeps uncertain people attached and flagged", async () => {
@@ -540,6 +563,35 @@ describe("when the write is refused", () => {
     expect(result.rejectedAsWrongCompany).toBe(0);
     expect(result.affiliationUnchanged).toBe(1);
     expect(result.contacts).toHaveLength(1);
+  });
+
+  it("does not list a stranger as a contact here when the detach did not apply", async () => {
+    // The other refusal, and it means the opposite thing. "You are not at the
+    // company that was judged" leaves the row untouched AND leaves the person
+    // filed under someone else, so putting them in this company's contact list
+    // as "unchanged" is the same lie in a quieter voice.
+    writeResult.current = {
+      written: false,
+      reason: "not_attached_to_judged_org",
+      notAtJudgedOrg: true,
+    };
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        employerSeen: "Box",
+        evidence: "profile names Box",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.contacts).toHaveLength(0);
+    expect(result.affiliationUnchanged).toBe(0);
+    expect(result.rejectedAsWrongCompany).toBe(1);
   });
 
   it("counts a refused team page write as unchanged, not verified", async () => {

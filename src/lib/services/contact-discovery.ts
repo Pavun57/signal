@@ -109,7 +109,11 @@ export interface ContactDiscoveryResult {
   verifiedCount: number;
   /** Kept but unproven — surfaced to the user, blocked from outreach. */
   uncertainCount: number;
-  /** Positively placed at a different company; stored unattached. */
+  /**
+   * Positively placed at a different company, so not a contact here. Detached
+   * from this company if they were filed under it, and left exactly as they
+   * were if they were already filed under someone else.
+   */
   rejectedAsWrongCompany: number;
   /** Worked here once, and the evidence shows the role has ended. Detached. */
   departedCount: number;
@@ -454,6 +458,11 @@ export async function findContactsForOrganization(
         organizationId: attachTo,
         source,
         evidence,
+        // The judge was asked about THIS company and answered about it. Without
+        // saying so, a detaching write means "detach from wherever you are", so
+        // correctly rejecting someone here unlinks them from the unrelated
+        // company they actually work at.
+        detachedFrom: detaching ? organizationId : null,
       });
 
       // The verdict is what the judge concluded; the write is what actually
@@ -463,6 +472,17 @@ export async function findContactsForOrganization(
       // still null, blocked at the send gate), and a refused detach reported as
       // departed and dropped from the list while the person stayed attached and
       // fully sendable.
+      //
+      // The one refusal that does NOT mean "leave them in the list": the person
+      // is filed under a different company, so nothing here was ever about
+      // them. They are not a contact at this company, and reporting them as an
+      // unchanged one is the same lie in a quieter voice.
+      if (!write.written && write.notAtJudgedOrg) {
+        if (judged.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
+        continue;
+      }
+
       if (!write.written) {
         affiliationUnchanged++;
       } else if (judged.verdict === "rejected") {

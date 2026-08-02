@@ -61,7 +61,9 @@ const affiliations: Array<Record<string, unknown>> = [];
  * refusing a write is a normal outcome, not an error, and the storage loop has
  * to read it rather than assume the verdict landed.
  */
-const writeResult: { current: { written: boolean; reason?: string } } = {
+const writeResult: {
+  current: { written: boolean; reason?: string; notAtJudgedOrg?: boolean };
+} = {
   current: { written: true },
 };
 vi.mock("@/lib/services/affiliation", () => ({
@@ -208,6 +210,10 @@ describe("acting on the verdicts", () => {
     const last = affiliations[affiliations.length - 1];
     expect(last.source).toBe("former_employee");
     expect(last.organizationId).toBeNull();
+    // The verdict is about THIS company, so the write has to say so. Otherwise
+    // it reads as "detach from wherever you are" and a correct verdict here
+    // unlinks the person from the unrelated company they moved on to.
+    expect(last.detachedFrom).toBe("org-1");
     expect(created[0].organization_id).toBeNull();
     expect(result.departedCount).toBe(1);
     // Reporting them as a contact at this company one line after detaching
@@ -237,6 +243,7 @@ describe("acting on the verdicts", () => {
     // Without the employer folded in, the row reads "profile names a different
     // employer" and the user has to go and look up which one.
     expect(last.evidence).toContain("Chronicle Labs");
+    expect(last.detachedFrom).toBe("org-1");
     expect(result.rejectedAsWrongCompany).toBe(1);
     expect(result.contacts).toHaveLength(0);
   });
@@ -372,6 +379,34 @@ describe("when the write is refused", () => {
     expect(result.rejectedAsWrongCompany).toBe(0);
     expect(result.affiliationUnchanged).toBe(1);
     expect(result.contacts).toHaveLength(1);
+  });
+
+  it("does not list a stranger as a contact here when the detach did not apply", async () => {
+    // Same rule as contact-discovery: "you are not at the company that was
+    // judged" leaves the person filed under someone else, so they are not a
+    // contact here and must not appear as one.
+    writeResult.current = {
+      written: false,
+      reason: "not_attached_to_judged_org",
+      notAtJudgedOrg: true,
+    };
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "rejected",
+        employerSeen: "Box",
+        evidence: "profile names Box",
+      },
+    ]);
+
+    const result = await run();
+
+    expect(result.contacts).toHaveLength(0);
+    expect(result.affiliationUnchanged).toBe(0);
+    expect(result.rejectedAsWrongCompany).toBe(1);
   });
 
   it("tells the agent nothing changed for them", async () => {

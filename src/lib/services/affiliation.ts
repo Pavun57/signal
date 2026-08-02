@@ -83,6 +83,19 @@ export const AFFILIATION_SEND_THRESHOLD = 0.6;
 export interface AffiliationWrite {
   written: boolean;
   reason?: string;
+  /**
+   * True when a detaching write was refused because the person is not filed
+   * under the company the verdict was about.
+   *
+   * A flag rather than a string the caller has to match, because the two
+   * refusals mean opposite things to a caller and getting them the wrong way
+   * round is silent. Every other refusal says "this person is filed HERE and
+   * the evidence on file outranks yours", so they belong in the contact list,
+   * unchanged. This one says "this person is filed somewhere else entirely", so
+   * they are not a contact here at all. A test fake that does not model the
+   * field reads `undefined` and takes the conservative branch.
+   */
+  notAtJudgedOrg?: boolean;
 }
 
 /**
@@ -105,14 +118,34 @@ export async function recordAffiliation(
     organizationId: string | null;
     source: AffiliationSource;
     evidence: string;
+    /**
+     * Which company the verdict was about. Required on a detaching write
+     * (organizationId null), ignored on an attaching one.
+     *
+     * Without it, `organizationId: null` means "detach from wherever you are",
+     * and a verdict about one company acts on every other. Measured on the live
+     * pipeline: a "find more people" run on Browserbase pulls back someone who
+     * works at Box, the judge correctly rejects them, and the write deletes
+     * them from Box. Being right about the judged company was what caused the
+     * damage, and `people` is a shared pool across every user on an instance.
+     */
+    detachedFrom?: string | null;
   },
 ): Promise<AffiliationWrite> {
-  const { personId, organizationId, source, evidence } = args;
+  const {
+    personId,
+    organizationId,
+    source,
+    evidence,
+    detachedFrom = null,
+  } = args;
   const incoming = AFFILIATION_WEIGHT[source];
 
   const { data: person } = await supabase
     .from("people")
-    .select("organization_id, affiliation_source, affiliation_confidence")
+    .select(
+      "organization_id, affiliation_source, affiliation_confidence, affiliation_detached_from",
+    )
     .eq("id", personId)
     .maybeSingle();
 
@@ -128,20 +161,6 @@ export async function recordAffiliation(
       ? AFFILIATION_WEIGHT.search_stamp
       : -1;
 
-  const sameOrg = person.organization_id === organizationId;
-
-  // Moving someone between companies — or detaching them entirely — requires
-  // STRICTLY stronger evidence than whatever put them where they are.
-  //
-  // This was `incoming < existingWeight` with the equal-weight guard applied
-  // only to same-org writes, which meant equal evidence could reassign across
-  // orgs. Since no row is backfilled, every pre-existing person is
-  // organization_id-set + source-NULL, which this function scores as
-  // search_stamp (0.2) — so a single `rejected` verdict, also 0.2, was enough to
-  // silently orphan any legacy contact. `people` is a shared pool across users
-  // on an instance, so one person's search could empty someone else's contact
-  // list. Two equal-confidence LLM calls would also ping-pong the same contact
-  // between two companies on alternate runs.
   // A person explicitly assigned by a human always moves. Requiring strictly
   // more than the existing weight would make someone already at `user_entered`
   // (1.0) unmovable — nothing outranks 1.0 — so reassigning a contact you had
@@ -149,18 +168,90 @@ export async function recordAffiliation(
   // returned success.
   const humanOverride = source === "user_entered";
 
+  const detaching = organizationId === null;
+  const wasDetached = person.organization_id === null;
+
+  // Scope first, and before the human override, because this is not a question
+  // of how strong the evidence is. Detaching someone from a company they are
+  // not filed under is a claim about a row that was never in scope, however
+  // authoritative the source. The check compares the person's CURRENT employer
+  // rather than the stored affiliation_detached_from, so a stale value in that
+  // column can never block a legitimate detach.
+  if (detaching) {
+    if (!detachedFrom) {
+      // "Detach from wherever you are" is deliberately not expressible.
+      return { written: false, reason: "detach_did_not_name_a_company" };
+    }
+    if (person.organization_id !== detachedFrom) {
+      return {
+        written: false,
+        reason: "not_attached_to_the_company_that_was_judged",
+        notAtJudgedOrg: true,
+      };
+    }
+  }
+
+  // Four cases, not two. The first two are the pre-existing rules; the last two
+  // are the difference between a person who is attached somewhere and a person
+  // who is attached nowhere, which the old sameOrg / cross-org split could not
+  // express and which made every detach permanent.
   if (!humanOverride) {
-    if (sameOrg) {
+    if (detaching) {
+      // Case 1: detaching a person from the company they are filed under (the
+      // scope check above proves that is what this is). Requires STRICTLY
+      // stronger evidence than what put them there, so a scraped snapshot at
+      // 0.8 cannot overrule the company's own team page at 0.9.
+      if (incoming <= existingWeight) {
+        return { written: false, reason: "not_stronger_than_existing" };
+      }
+    } else if (wasDetached) {
+      // Case 2: attaching someone who is attached NOWHERE.
+      if (organizationId === person.affiliation_detached_from) {
+        // 2a: back to the company that rejected them. This is the one case the
+        // original stickiness was actually about ("cannot re-file them under
+        // the same wrong company"), so it keeps the strictly-greater rule:
+        // team_page (0.9) still can, another llm_verified (0.6) still cannot.
+        if (incoming <= existingWeight) {
+          return { written: false, reason: "not_stronger_than_the_detach" };
+        }
+      } else if (incoming <= 0) {
+        // 2b: to any other company. A row at organization_id = null is not
+        // "attached somewhere weaker", it is attached nowhere, so placing them
+        // is not a cross-org move and must not be measured against the
+        // detaching weight. Measuring it that way is what made a detach
+        // irreversible: employer_mismatch (0.8) outranked llm_verified (0.6)
+        // for every company forever, and email_domain (0.95) could not rescue
+        // them either because that source is only recorded for a person who
+        // already has an organization. One correct rejection removed the person
+        // from every user's reach, with no review queue to find them in (the
+        // Confirm button needs an organizationId).
+        //
+        // Every source in AFFILIATION_WEIGHT is positive today, so this refuses
+        // nothing. It states the rule that applies: positive evidence attaches,
+        // an absence of evidence does not.
+        return { written: false, reason: "no_positive_evidence" };
+      }
+    } else if (person.organization_id === organizationId) {
+      // Case 3: same company, better (or equal) evidence for the same claim.
       if (incoming < existingWeight) {
         return { written: false, reason: "weaker_than_existing" };
       }
       if (incoming === existingWeight && existingSource) {
         return { written: false, reason: "already_recorded_at_same_strength" };
       }
-      // A detaching write is never sameOrg (organizationId is null and the
-      // person has an org), so both refusals below cover it: the row stays
-      // attached to whoever it was attached to.
     } else if (incoming <= existingWeight) {
+      // Case 4: a cross-org move between two companies, which is a job change
+      // or a correction of a bad stamp. STRICTLY stronger, never equal.
+      //
+      // This was `incoming < existingWeight` with the equal-weight guard applied
+      // only to same-org writes, which meant equal evidence could reassign across
+      // orgs. Since no row is backfilled, every pre-existing person is
+      // organization_id-set + source-NULL, which this function scores as
+      // search_stamp (0.2), so a single `rejected` verdict, also 0.2, was enough
+      // to silently orphan any legacy contact. `people` is a shared pool across
+      // users on an instance, so one person's search could empty someone else's
+      // contact list. Two equal-confidence LLM calls would also ping-pong the
+      // same contact between two companies on alternate runs.
       return { written: false, reason: "not_stronger_than_existing" };
     }
   }
@@ -184,6 +275,11 @@ export async function recordAffiliation(
       affiliation_confidence: storedConfidence,
       affiliation_evidence: evidence.slice(0, 500),
       affiliation_verified_at: new Date().toISOString(),
+      // Cleared the moment they are attached to anyone. The column means "the
+      // company this row was rejected from", and once they are filed somewhere
+      // that is no longer what the row is about: a stale value would apply the
+      // re-attachment rule above to a company nobody ever judged them against.
+      affiliation_detached_from: detaching ? detachedFrom : null,
     })
     .eq("id", personId);
 
