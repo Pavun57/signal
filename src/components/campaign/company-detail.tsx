@@ -10,6 +10,7 @@ import type {
   CampaignCompany,
   CompanyEnrichmentData,
 } from "@/lib/types/campaign";
+import type { ClaimStatus, CompanyClaim } from "@/lib/types/claims";
 
 const LINK_FOCUS =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded";
@@ -49,6 +50,21 @@ function formatDate(iso: string) {
   });
 }
 
+/** Compact source date, e.g. "Feb 2026". Null when the string does not parse. */
+function formatMonthYear(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+function hostname(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
 interface CompanyDetailProps {
   company: CampaignCompany;
   onRefresh?: (companyId: string) => void;
@@ -79,6 +95,7 @@ export function CompanyDetail({
   const teamSearch = searches.find(
     (s) => s.category === "team" || s.category === "executive",
   );
+  const claims = data.claims ?? [];
   const hiring = data.hiring;
   const jobsToShow = hiring
     ? showAllJobs
@@ -182,6 +199,19 @@ export function CompanyDetail({
               </ul>
             </div>
           )}
+        </section>
+      )}
+
+      {claims.length > 0 && (
+        <section className="space-y-1">
+          <h4 className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
+            Claims ({claims.length})
+          </h4>
+          <ul className="divide-border divide-y">
+            {claims.map((claim, i) => (
+              <ClaimRow key={i} claim={claim} />
+            ))}
+          </ul>
         </section>
       )}
 
@@ -292,6 +322,82 @@ export function CompanyDetail({
   );
 }
 
+// Same tone tokens as provenance-badge.tsx (success/destructive/muted) plus
+// the warn token status-pill.tsx already uses, so claim states read exactly
+// like the contact provenance pills elsewhere in the app.
+const CLAIM_STATUS_STYLE: Record<ClaimStatus, string> = {
+  verified: "bg-success/10 text-success",
+  unverified: "bg-muted text-muted-foreground",
+  stale: "bg-warn/15 text-warn",
+  contradicted: "bg-muted text-muted-foreground",
+  superseded: "bg-muted text-muted-foreground",
+};
+
+const CLAIM_STATUS_TITLE: Record<ClaimStatus, string> = {
+  verified: "Confirmed by the newest dated source or the live careers page.",
+  unverified: "Extracted from a source but not yet confirmed.",
+  stale: "The source is old enough that this may no longer be true.",
+  contradicted: "The live careers page says otherwise.",
+  superseded: "A newer claim of the same type replaced this one.",
+};
+
+function ClaimRow({ claim }: { claim: CompanyClaim }) {
+  const dismissed =
+    claim.status === "contradicted" || claim.status === "superseded";
+  const published = claim.publishedDate
+    ? formatMonthYear(claim.publishedDate)
+    : null;
+  const host = hostname(claim.sourceUrl);
+
+  return (
+    <li className="py-2 first:pt-1">
+      <div className="flex items-start gap-2">
+        <p
+          className={cn(
+            "flex-1 text-xs",
+            dismissed
+              ? "text-muted-foreground line-through"
+              : "text-foreground font-medium",
+          )}
+        >
+          {claim.statement}
+        </p>
+        <span
+          title={CLAIM_STATUS_TITLE[claim.status]}
+          className={cn(
+            "inline-block shrink-0 rounded-full px-1.5 py-0.5 text-xs font-medium",
+            CLAIM_STATUS_STYLE[claim.status],
+          )}
+        >
+          {claim.status}
+        </span>
+      </div>
+      {(published || host) && (
+        <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+          {published && <span className="tabular-nums">{published}</span>}
+          {published && host && (
+            <span className="text-muted-foreground/40">·</span>
+          )}
+          {host && (
+            <a
+              href={claim.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
+                "hover:text-foreground inline-flex items-center gap-1 transition-colors",
+                LINK_FOCUS,
+              )}
+            >
+              {host}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function SearchSection({
   title,
   items,
@@ -313,12 +419,20 @@ function SearchSection({
       <ul className="divide-border divide-y">
         {items.map((r, i) => {
           const body = r.summary ?? r.text ?? "";
+          const published = r.publishedDate
+            ? formatMonthYear(r.publishedDate)
+            : null;
           return (
             <li key={i} className="py-2 first:pt-1">
               <div className="flex items-start gap-1.5">
                 <p className="line-clamp-1 flex-1 text-xs font-medium">
                   {r.title}
                 </p>
+                {published && (
+                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    {published}
+                  </span>
+                )}
                 <a
                   href={r.url}
                   target="_blank"

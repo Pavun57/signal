@@ -1,3 +1,5 @@
+import type { CompanyClaim } from "@/lib/types/claims";
+
 export interface ICP {
   industry?: string;
   companySize?: string;
@@ -138,6 +140,7 @@ export interface CompanyEnrichmentData {
     isHiring: boolean;
     scrapedAt: string;
   };
+  claims?: CompanyClaim[];
   enrichedAt?: string;
   errors?: string[];
 }
