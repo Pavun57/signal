@@ -1,4 +1,5 @@
 import type { JobRow } from "@/lib/services/jobs";
+import { cleanupEmails } from "@/lib/jobs/executors/email-cleanup";
 import { trackEmailReplies } from "@/lib/jobs/executors/email-track";
 
 export type JobExecutor = (
@@ -9,4 +10,5 @@ export type JobExecutor = (
 /** type → executor. Every job type the tick can claim must be registered. */
 export const executors: Record<string, JobExecutor> = {
   "email.track": () => trackEmailReplies(),
+  "email.cleanup": () => cleanupEmails(),
 };
