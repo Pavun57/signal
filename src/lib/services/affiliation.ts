@@ -25,11 +25,25 @@ export type AffiliationSource =
   | "llm_verified"
   | "search_stamp"
   | "former_employee"
-  | "employer_mismatch";
+  | "employer_mismatch"
+  | "user_rejected";
 
 export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
   /** A human said so. Nothing outranks it. */
   user_entered: 1.0,
+  /**
+   * A human said the opposite: "not here", from the review queue or the org
+   * chart. Level with user_entered because it is the same authority pointed the
+   * other way, and the table only worked in one direction before.
+   *
+   * A rejection used to be written as nothing at all: the endpoint nulled
+   * organization_id and all four provenance columns, which this function scores
+   * at -1, below a bare search stamp. So the next discovery run re-attached the
+   * person at 0.2 and they reappeared in the queue the user had just cleared.
+   * Recording the decision at 1.0 is what terminates that loop, since no machine
+   * source is strictly stronger.
+   */
+  user_rejected: 1.0,
   /**
    * A verifier confirmed a deliverable mailbox at the company's own domain.
    * The strongest machine signal available: someone who answers mail at
@@ -166,7 +180,16 @@ export async function recordAffiliation(
   // (1.0) unmovable — nothing outranks 1.0 — so reassigning a contact you had
   // previously assigned by hand would silently no-op while the endpoint
   // returned success.
-  const humanOverride = source === "user_entered";
+  //
+  // `user_rejected` is in here for exactly the same reason, in the other
+  // direction: it is also 1.0, so "not here" on someone a human had confirmed
+  // is not STRICTLY stronger and case 1 would refuse it. That is the org
+  // chart's Remove button failing on precisely the people its Add dialog put
+  // there, and a human being locked out of changing their own mind. It does not
+  // widen what a detach can reach: the scope check below runs first, so
+  // rejecting someone at a company they are not filed under is still refused
+  // however authoritative the source.
+  const humanOverride = source === "user_entered" || source === "user_rejected";
 
   const detaching = organizationId === null;
   const wasDetached = person.organization_id === null;

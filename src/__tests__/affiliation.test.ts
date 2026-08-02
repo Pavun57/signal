@@ -592,6 +592,162 @@ describe("a detached person can still be placed somewhere", () => {
   });
 });
 
+// ─── "Not here" is remembered ─────────────────────────────────────────────
+
+describe("a human's rejection outranks the machine", () => {
+  /** Someone the review queue rejected by hand at org-a. */
+  const rejected = () =>
+    seed({
+      organization_id: null,
+      affiliation_source: "user_rejected",
+      affiliation_confidence: 0,
+      affiliation_detached_from: "org-a",
+    });
+
+  it("records the rejection rather than blanking the row", async () => {
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "search_stamp",
+      affiliation_confidence: AFFILIATION_WEIGHT.search_stamp,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "user_rejected",
+      detachedFrom: "org-a",
+      evidence: "the user said this person does not work here",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBeNull();
+    expect(people[0].affiliation_source).toBe("user_rejected");
+    expect(people[0].affiliation_detached_from).toBe("org-a");
+    // Detached, so there is no employer for a confidence score to be about.
+    expect(people[0].affiliation_confidence).toBe(0);
+  });
+
+  it("cannot be undone by the search that put them there", async () => {
+    // The loop this closes: nulling the provenance scored the row at -1, below
+    // search_stamp (0.2), so the next discovery run re-attached them and they
+    // reappeared in the queue the user had just cleared them out of.
+    rejected();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "search_stamp",
+      evidence: "returned by a search for Acme",
+    });
+
+    expect(result.written).toBe(false);
+    expect(people[0].organization_id).toBeNull();
+  });
+
+  it("cannot be undone by any machine evidence at all", async () => {
+    // Case 2a keeps the strictly-greater rule for the company that rejected
+    // them, and nothing outranks 1.0. That is what makes the answer stick.
+    for (const source of [
+      "team_page",
+      "email_domain",
+      "linkedin_profile",
+      "llm_verified",
+    ] as const) {
+      rejected();
+
+      const result = await recordAffiliation(client(), {
+        personId: "p1",
+        organizationId: "org-a",
+        source,
+        evidence: `evidence from ${source}`,
+      });
+
+      expect(result.written, source).toBe(false);
+      expect(people[0].organization_id, source).toBeNull();
+    }
+  });
+
+  it("does not stop them being placed at a different company", async () => {
+    // The rejection was about org-a. It says nothing about org-b, and case 2b
+    // measures an attach-from-nowhere on its own evidence.
+    rejected();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-b",
+      source: "llm_verified",
+      evidence: "profile shows Chronicle Labs, Present",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBe("org-b");
+    expect(people[0].affiliation_detached_from).toBeNull();
+  });
+
+  it("does not lock the user out of changing their own mind", async () => {
+    // user_entered is a human override, so it bypasses the weight guard
+    // entirely. Without that, clicking "Not here" would be irreversible by the
+    // very person who clicked it.
+    rejected();
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: "org-a",
+      source: "user_entered",
+      evidence: "assigned by the user",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBe("org-a");
+    expect(people[0].affiliation_detached_from).toBeNull();
+  });
+
+  it("lets the user reject someone they had confirmed by hand", async () => {
+    // The same escape hatch in the other direction. user_rejected (1.0) is not
+    // strictly stronger than user_entered (1.0), so without the human override
+    // removing a hand-added person would be refused: the org chart's Remove
+    // button would fail on exactly the people the Add dialog put there.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "user_entered",
+      affiliation_confidence: AFFILIATION_WEIGHT.user_entered,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "user_rejected",
+      detachedFrom: "org-a",
+      evidence: "the user said this person does not work here",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBeNull();
+  });
+
+  it("still only rejects the company the user was looking at", async () => {
+    // The human override must not reopen the "detach from wherever you are"
+    // hole: the scope check runs before it for that reason.
+    seed({
+      organization_id: "org-box",
+      affiliation_source: "llm_verified",
+      affiliation_confidence: AFFILIATION_WEIGHT.llm_verified,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: "p1",
+      organizationId: null,
+      source: "user_rejected",
+      detachedFrom: "org-browserbase",
+      evidence: "the user said this person does not work here",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.notAtJudgedOrg).toBe(true);
+    expect(people[0].organization_id).toBe("org-box");
+  });
+});
+
 // ─── Send gate ────────────────────────────────────────────────────────────
 
 describe("send gate: employer required", () => {

@@ -333,13 +333,25 @@ export function CompaniesList({
     }
   };
 
-  /** Detach the person from this company and drop them from the campaign. */
-  const detachContact = async (contact: CampaignContact) => {
+  /**
+   * Record the user's judgement that this person does NOT work here, and drop
+   * them from the campaign.
+   *
+   * Names the company the row was drawn under rather than letting the endpoint
+   * read it off the person. The two can disagree: the tab may have been open a
+   * while, and `people` is a shared pool, so someone else may have moved this
+   * person since. A rejection aimed at a company they are no longer filed under
+   * is refused rather than applied to whichever company they are at now.
+   */
+  const detachContact = async (
+    contact: CampaignContact,
+    organizationId: string,
+  ) => {
     markPending(contact.id, true);
     setRemovedContactIds((prev) => new Set(prev).add(contact.id));
     try {
       const res = await apiFetch(
-        `/api/people/${contact.person_id}/from-company?campaignId=${encodeURIComponent(campaignId)}`,
+        `/api/people/${contact.person_id}/from-company?campaignId=${encodeURIComponent(campaignId)}&organizationId=${encodeURIComponent(organizationId)}`,
         { method: "DELETE" },
       );
       if (!res.ok) {
@@ -789,7 +801,7 @@ interface ContactsReview {
   /** Rows confirmed in this session, before the refetch lands. */
   confirmedIds: Set<string>;
   onConfirm: (contact: CampaignContact, organizationId: string) => void;
-  onNotHere: (contact: CampaignContact) => void;
+  onNotHere: (contact: CampaignContact, organizationId: string) => void;
 }
 
 interface ContactsTableProps {
@@ -1040,7 +1052,12 @@ function ContactsTable({
                                 size="xs"
                                 variant="ghost"
                                 title={`Remove ${contact.name} from this company and this campaign. You can add them back later.`}
-                                onClick={() => review.onNotHere(contact)}
+                                onClick={() =>
+                                  review.onNotHere(
+                                    contact,
+                                    review.organizationId,
+                                  )
+                                }
                               >
                                 Not here
                               </Button>

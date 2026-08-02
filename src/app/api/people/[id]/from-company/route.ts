@@ -1,16 +1,29 @@
 import { z } from "zod";
 
+import { recordAffiliation } from "@/lib/services/affiliation";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
 const QuerySchema = z.object({
   campaignId: z.string().uuid().optional(),
+  organizationId: z.string().uuid().optional(),
 });
 
 /**
- * Remove a person from a company's org chart context.
+ * Remove a person from a company: the user saying "not here".
  *
- * Always: clears `people.organization_id` so they no longer appear in the
- * standalone /companies/[id] view.
+ * Always: records the rejection through `recordAffiliation` as `user_rejected`,
+ * which clears `people.organization_id` (so they leave the standalone
+ * /companies/[id] view) while KEEPING the memory of why.
+ *
+ * This used to null organization_id and all four provenance columns together.
+ * A row with no org and no source is scored -1 by recordAffiliation, below a
+ * bare search stamp at 0.2, so the next discovery run at that company pulled the
+ * same person back out of Exa, the judge returned `uncertain` again, and the
+ * stamp re-attached them. They reappeared under "Needs review" and the queue
+ * never terminated: a human's rejection was recorded as nothing at all, so the
+ * machine outranked it. At 1.0 nothing machine-made is strictly stronger, and
+ * `user_entered` (also a human override) is still free to put them back if the
+ * user changes their mind.
  *
  * If `campaignId` is provided: also deletes the matching campaign_people
  * row so they disappear from the campaign's embedded chart and flat list.
@@ -33,6 +46,7 @@ export async function DELETE(
   const url = new URL(request.url);
   const queryParse = QuerySchema.safeParse({
     campaignId: url.searchParams.get("campaignId") ?? undefined,
+    organizationId: url.searchParams.get("organizationId") ?? undefined,
   });
   if (!queryParse.success) {
     return Response.json(
@@ -40,7 +54,7 @@ export async function DELETE(
       { status: 400 },
     );
   }
-  const { campaignId } = queryParse.data;
+  const { campaignId, organizationId } = queryParse.data;
 
   // Ownership: person must be linked to at least one of the user's campaigns.
   const { data: ownership } = await supabase
@@ -70,23 +84,72 @@ export async function DELETE(
     }
   }
 
-  // Clear the provenance alongside the employer. Detaching while leaving
-  // affiliation_source/confidence in place would let the next passing search
-  // re-attach the person to a DIFFERENT company that then inherits the old
-  // company's confidence and passes the send gate.
-  const { error: orgErr } = await supabase
-    .from("people")
-    .update({
-      organization_id: null,
-      affiliation_source: null,
-      affiliation_confidence: null,
-      affiliation_evidence: null,
-      affiliation_verified_at: null,
-    })
-    .eq("id", personId);
+  // Which company is being rejected. Preferring the caller's value is the whole
+  // reason the check is worth anything: the UI knows which company it drew the
+  // row under, and reading the company off the person instead would compare the
+  // row to itself and pass no matter what changed since the page loaded. A
+  // stale tab, or another user on the same shared `people` pool having moved
+  // them first, is then a refusal rather than a rejection recorded against a
+  // company the user never looked at.
+  //
+  // The fallback exists for the callers that do not name one (the org chart's
+  // Remove button and the standalone company page). recordAffiliation refuses a
+  // detach that names no company at all, so without it those callers would
+  // simply stop working.
+  let detachedFrom = organizationId ?? null;
+  if (!detachedFrom) {
+    const { data: person } = await supabase
+      .from("people")
+      .select("organization_id")
+      .eq("id", personId)
+      .maybeSingle();
+    if (!person) {
+      return Response.json({ error: "Person not found" }, { status: 404 });
+    }
+    detachedFrom = (person.organization_id as string | null) ?? null;
+    if (!detachedFrom) {
+      return Response.json(
+        {
+          error:
+            "This contact is not linked to any company, so there is nothing to remove them from.",
+        },
+        { status: 409 },
+      );
+    }
+  }
 
-  if (orgErr) {
-    return Response.json({ error: orgErr.message }, { status: 500 });
+  // Goes through recordAffiliation rather than writing the columns directly, so
+  // the removal is recorded as evidence instead of erased, and so it inherits
+  // the scope check: a detach is about one company, never "detach from wherever
+  // you are".
+  const write = await recordAffiliation(supabase, {
+    personId,
+    organizationId: null,
+    source: "user_rejected",
+    detachedFrom,
+    evidence: "the user said this person does not work here",
+  });
+
+  if (!write.written) {
+    if (write.reason === "person_not_found") {
+      return Response.json({ error: "Person not found" }, { status: 404 });
+    }
+    if (write.notAtJudgedOrg) {
+      // They are filed somewhere else now. Deleting the campaign link on top of
+      // this would drop a contact out of the campaign over a click aimed at a
+      // company they are not at.
+      return Response.json(
+        {
+          error:
+            "This contact is no longer linked to that company. Refresh and try again.",
+        },
+        { status: 409 },
+      );
+    }
+    return Response.json(
+      { error: `Could not remove this contact: ${write.reason}` },
+      { status: 500 },
+    );
   }
 
   let unlinkedFromCampaign = false;
