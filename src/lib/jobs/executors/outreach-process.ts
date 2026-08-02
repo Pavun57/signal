@@ -1,6 +1,4 @@
-import { NextResponse } from "next/server";
 import { getAdminClient } from "@/lib/supabase/admin";
-import { verifyQStashSignature } from "@/lib/services/qstash";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { sendApprovedDraft } from "@/lib/services/outreach-sender";
 import {
@@ -15,8 +13,6 @@ import {
 import { composeEmail } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { saveDraft } from "@/lib/email-composition/save";
-
-export const maxDuration = 120;
 
 /**
  * Outreach processor. Handles two jobs:
@@ -43,34 +39,28 @@ interface FollowupPayload {
 
 type Payload = SignalPayload | FollowupPayload;
 
-export async function POST(request: Request) {
-  // This route is public (QStash can't send Clerk cookies) and sends real
-  // email through the admin client, so the signature check is the only thing
-  // standing between the internet and the user's outbox. All callers must go
-  // through QStash: the signal path publishes from /api/tracking/run, and the
-  // followups schedule must be a QStash schedule, not a bare cron.
-  let payload: Payload | null;
-  try {
-    payload = await verifyQStashSignature<Payload>(request);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Invalid signature";
-    return NextResponse.json({ error: msg }, { status: 401 });
-  }
-  if (!payload) {
-    return NextResponse.json({ error: "Missing payload" }, { status: 400 });
-  }
+export type { Payload, SignalPayload, FollowupPayload };
 
+/**
+ * Job-queue entry point for outreach processing. This executor sends real
+ * email through the admin client, and the /api/jobs routes that reach it are
+ * public (Vercel Cron / pg_cron can't send Clerk cookies), so the CRON_SECRET
+ * bearer check on those routes is the only thing standing between the
+ * internet and the user's outbox. All callers must go through the job queue:
+ * the signal path enqueues from the tracking.run executor, and the followups
+ * schedule is the seeded recurring {"type":"followups"} job, not a bare cron.
+ */
+export async function processOutreach(payload: Payload) {
   const supabase = getAdminClient();
-
   if (payload.type === "signal") {
     return handleSignalTrigger(supabase, payload);
   }
-
   if (payload.type === "followups") {
     return handleFollowups(supabase);
   }
-
-  return NextResponse.json({ error: "Unknown payload type" }, { status: 400 });
+  throw new Error(
+    `Unknown outreach payload type: ${(payload as { type?: string }).type}`,
+  );
 }
 
 // ── Signal-triggered sends ─────────────────────────────────────────────────
@@ -88,7 +78,7 @@ async function handleSignalTrigger(
     .eq("status", "active");
 
   if (!sequences || sequences.length === 0) {
-    return NextResponse.json({ sent: 0, reason: "no matching sequences" });
+    return { sent: 0, reason: "no matching sequences" };
   }
 
   const sequenceIds = sequences.map((s) => s.id);
@@ -121,11 +111,11 @@ async function handleSignalTrigger(
       .select("id")
       .eq("organization_id", payload.organizationId);
     if (!people || people.length === 0) {
-      return NextResponse.json({
+      return {
         sent: 0,
         drafted,
         reason: "no contacts at this org -- run findContacts for this org",
-      });
+      };
     }
     enrollmentQuery = enrollmentQuery.in(
       "person_id",
@@ -136,7 +126,7 @@ async function handleSignalTrigger(
   const { data: enrollments } = await enrollmentQuery;
 
   if (!enrollments || enrollments.length === 0) {
-    return NextResponse.json({ sent: 0, drafted, reason: "no enrollments" });
+    return { sent: 0, drafted, reason: "no enrollments" };
   }
 
   let sent = 0;
@@ -153,12 +143,12 @@ async function handleSignalTrigger(
     }
   }
 
-  return NextResponse.json({
+  return {
     sent,
     drafted,
     total: enrollments.length,
     failures,
-  });
+  };
 }
 
 // ── Contact selection + auto-draft for org-scoped fires ────────────────────
@@ -501,7 +491,7 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
   const enrollments = [...(dueEnrollments ?? []), ...(approvedWaiting ?? [])];
 
   if (enrollments.length === 0) {
-    return NextResponse.json({ sent: 0 });
+    return { sent: 0 };
   }
 
   let sent = 0;
@@ -567,7 +557,7 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
       sent++;
     } else {
       // Never swallow the reason: capped, unconfigured, and claimed-elsewhere
-      // outcomes must be distinguishable in QStash logs.
+      // outcomes must be distinguishable in job logs.
       console.error(
         `[outreach/process] followup send failed for enrollment ${enrollment.id}: ${result.reason}`,
       );
@@ -575,12 +565,12 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
     }
   }
 
-  return NextResponse.json({
+  return {
     sent,
     skipped,
     total: enrollments.length,
     failures,
-  });
+  };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

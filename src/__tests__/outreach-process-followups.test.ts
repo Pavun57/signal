@@ -1,17 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { verifySignatureMock, sendApprovedDraftMock, getAdminClientMock } =
-  vi.hoisted(() => ({
-    verifySignatureMock: vi.fn(),
-    sendApprovedDraftMock: vi.fn(),
-    getAdminClientMock: vi.fn(),
-  }));
-
-vi.mock("@/lib/services/qstash", () => ({
-  verifyQStashSignature: verifySignatureMock,
-  getQStashClient: vi.fn(),
-  getBaseUrl: () => "http://localhost:3000",
+const { sendApprovedDraftMock, getAdminClientMock } = vi.hoisted(() => ({
+  sendApprovedDraftMock: vi.fn(),
+  getAdminClientMock: vi.fn(),
 }));
+
 vi.mock("@/lib/supabase/admin", () => ({
   getAdminClient: getAdminClientMock,
 }));
@@ -34,7 +27,7 @@ vi.mock("@/lib/email-composition/save", () => ({
   saveDraft: vi.fn(),
 }));
 
-import { POST } from "@/app/api/outreach/process/route";
+import { processOutreach } from "@/lib/jobs/executors/outreach-process";
 
 /** Same thenable query-builder fake as outreach-sender.test.ts. */
 function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
@@ -77,13 +70,6 @@ function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
   return { client: { from } as never, calls };
 }
 
-function followupsRequest(): Request {
-  return new Request("http://localhost:3000/api/outreach/process", {
-    method: "POST",
-    body: JSON.stringify({ type: "followups" }),
-  });
-}
-
 const waitingEnrollment = {
   id: "enr_w1",
   sequence_id: "seq_1",
@@ -93,8 +79,6 @@ const waitingEnrollment = {
 };
 
 beforeEach(() => {
-  verifySignatureMock.mockReset();
-  verifySignatureMock.mockResolvedValue({ type: "followups" });
   sendApprovedDraftMock.mockReset();
   getAdminClientMock.mockReset();
 });
@@ -115,8 +99,7 @@ describe("followups handler — approved waiting enrollments", () => {
       draftId: "d1",
     });
 
-    const res = await POST(followupsRequest());
-    const body = await res.json();
+    const body = await processOutreach({ type: "followups" });
 
     expect(sendApprovedDraftMock).toHaveBeenCalledTimes(1);
     expect(sendApprovedDraftMock).toHaveBeenCalledWith(
@@ -134,8 +117,7 @@ describe("followups handler — approved waiting enrollments", () => {
     ]);
     getAdminClientMock.mockReturnValue(client);
 
-    const res = await POST(followupsRequest());
-    const body = await res.json();
+    const body = await processOutreach({ type: "followups" });
 
     expect(sendApprovedDraftMock).not.toHaveBeenCalled();
     expect(body.sent).toBe(0);
@@ -155,8 +137,10 @@ describe("followups handler — approved waiting enrollments", () => {
       reason: "Daily send limit reached (5/day, warmup ramp)",
     });
 
-    const res = await POST(followupsRequest());
-    const body = await res.json();
+    const body = (await processOutreach({ type: "followups" })) as {
+      sent: number;
+      failures: Record<string, number>;
+    };
 
     expect(body.sent).toBe(0);
     expect(body.failures).toEqual({
