@@ -61,7 +61,7 @@ pnpm typecheck                                        # rm -rf .next/types first
 
 ## Task 1: The send gate requires an employer
 
-Defensive groundwork and a hard prerequisite for Task 2. Until this lands, detaching someone makes them _more_ sendable, not less: `canSendTo` never reads `organization_id`, so a detached row carrying confidence 0.6 still passes the affiliation half of the gate, and a person already enrolled in a sequence is reachable through the enrollment query in `src/app/api/outreach/process/route.ts:110` with no org at all.
+Defensive groundwork and a hard prerequisite for Task 2. Until this lands, detaching someone makes them _more_ sendable, not less: `canSendTo` never reads `organization_id`, so a detached row carrying confidence 0.6 still passes the affiliation half of the gate, and a person already enrolled in a sequence is reachable through the enrollment query in `src/lib/jobs/executors/outreach-process.ts` with no org at all. (That query moved off `src/app/api/outreach/process/route.ts` when the job scheduler landed on main.)
 
 **Files:**
 
@@ -153,7 +153,7 @@ Expected: PASS, clean typecheck. `organization_id` is optional so existing calle
 
 Run: `grep -rn "canSendTo\|canDraftFor" src | grep -v affiliation`
 
-For each hit, confirm the row it passes was selected with `SEND_GATE_COLUMNS` or otherwise includes `organization_id`. A row that omits the column reads `undefined` and is now blocked. `src/app/api/outreach/process/route.ts` is the main one.
+For each hit, confirm the row it passes was selected with `SEND_GATE_COLUMNS` or otherwise includes `organization_id`. A row that omits the column reads `undefined` and is now blocked. `src/lib/services/outreach-sender.ts` and `src/lib/jobs/executors/outreach-process.ts` are the two production call sites; both already select `SEND_GATE_COLUMNS`. The likelier casualties are hand-built test fixtures standing in for those rows, which fail closed once the guard lands. Widen them.
 
 > **Stop and report** if any call site hand-picks columns without `organization_id`. Widening those selects is in scope; leaving them to fail closed silently is not.
 
@@ -724,7 +724,9 @@ return judged.map((v) => downgradeStale(v, indexed[v.index]?.pageDate, now));
 **Step 6: Run to verify pass**
 
 Run: `pnpm vitest run src/__tests__/contact-filter.test.ts && pnpm typecheck`
-Expected: PASS, including the three pre-existing failure-path tests (hallucinated indices, omitted candidates, LLM unavailable). Typecheck will now flag `contact-discovery.ts` and `enrichment-tools.ts` for not handling `former_employee`; that is Task 4 and Task 5.
+Expected: PASS, including the three pre-existing failure-path tests (hallucinated indices, omitted candidates, LLM unavailable), and a clean typecheck.
+
+> Widening `ContactVerdict` does not break the `===` comparisons in `contact-discovery.ts` and `enrichment-tools.ts`, so nothing fails to compile. What it does create is a transient behaviour gap inside the branch: between this commit and Task 4, a `former_employee` verdict falls through those comparisons and is treated as `uncertain`, so the person stays attached at `search_stamp`. That is wrong but not worse than today, and Task 4 closes it. Do not try to patch the callers here; that is Task 4's job and doing it twice is how the two judge-and-store paths drifted apart before.
 
 **Step 7: Commit**
 
