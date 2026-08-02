@@ -18,8 +18,14 @@ import {
   normalizeLinkedInUrl,
 } from "@/lib/services/knowledge-base";
 import { findContactsForOrganization } from "@/lib/services/contact-discovery";
-import { filterContactsByCompany } from "@/lib/services/contact-filter";
-import { recordAffiliation } from "@/lib/services/affiliation";
+import {
+  filterContactsByCompany,
+  type VerifiedContact,
+} from "@/lib/services/contact-filter";
+import {
+  recordAffiliation,
+  type AffiliationSource,
+} from "@/lib/services/affiliation";
 import { runDataQualityAudit } from "@/lib/services/data-quality";
 import { summarizePerson } from "@/lib/services/enrichment-summarizer";
 import { extractClaims } from "@/lib/services/claim-extractor";
@@ -172,6 +178,8 @@ export const searchPeople = tool({
       linkedin_url: string | null;
       rawTitle: string;
       text: string | null;
+      /** When the scraped page was published. Null when the source is undated. */
+      publishedDate: string | null;
     }
     const candidates: SearchCandidate[] = [];
     const seenUrls = new Set<string>();
@@ -206,6 +214,7 @@ export const searchPeople = tool({
         linkedin_url: linkedinUrl,
         rawTitle: result.title,
         text: result.text ?? null,
+        publishedDate: result.publishedDate ?? null,
       });
     }
 
@@ -218,7 +227,7 @@ export const searchPeople = tool({
     // removed because it hard-required the company name in the headline, which
     // deletes real employees at small companies; the three-way verdict exists
     // precisely so we no longer have to choose between those two failures.
-    const judged = organizationId
+    const judged: VerifiedContact[] = organizationId
       ? await filterContactsByCompany(
           {
             name: orgContext?.name ?? input.companyName ?? "",
@@ -232,6 +241,13 @@ export const searchPeople = tool({
             title: c.title,
             linkedinUrl: c.linkedin_url,
             rawHeadline: c.rawTitle,
+            // The search already pays for this text (includeText above) and it
+            // usually carries a dated experience section. Capturing it and then
+            // dropping it before the judge is why people who had never worked
+            // at the target company were stored as staff: a headline that names
+            // no employer is the weakest evidence available.
+            pageText: c.text,
+            pageDate: c.publishedDate,
           })),
         )
       : candidates.map((_, index) => ({
@@ -251,23 +267,43 @@ export const searchPeople = tool({
     }> = [];
     let rejectedAsWrongCompany = 0;
     let uncertainCount = 0;
+    let departedCount = 0;
 
     for (const v of judged) {
       const c = candidates[v.index];
       if (!c) continue;
 
-      // A rejected candidate is a real person who works somewhere else. Keep
-      // them, unattached, rather than filing them under this company — but
-      // only when we can identify them. findOrCreatePerson dedups by LinkedIn
-      // URL or by name-within-org; a rejected candidate has no org, so one
-      // without a profile URL matches neither path and would be INSERTED fresh
-      // on every run. Same rule as contact-discovery.
-      if (v.verdict === "rejected" && !c.linkedin_url) {
-        rejectedAsWrongCompany++;
+      const detaching =
+        v.verdict === "rejected" || v.verdict === "former_employee";
+
+      // A detached candidate is a real person who works somewhere else, or
+      // used to work here. Keep them, unattached, rather than filing them under
+      // this company, but only when we can identify them. findOrCreatePerson
+      // dedups by LinkedIn URL or by name-within-org; a detached candidate has
+      // no org, so one without a profile URL matches neither path and would be
+      // INSERTED fresh on every run. Same rule as contact-discovery.
+      if (detaching && !c.linkedin_url) {
+        if (v.verdict === "rejected") rejectedAsWrongCompany++;
+        else departedCount++;
         continue;
       }
 
-      const attachTo = v.verdict === "rejected" ? null : organizationId;
+      const attachTo = detaching ? null : organizationId;
+      const source: AffiliationSource =
+        v.verdict === "verified"
+          ? "llm_verified"
+          : v.verdict === "former_employee"
+            ? "former_employee"
+            : v.verdict === "rejected"
+              ? "employer_mismatch"
+              : "search_stamp";
+
+      // Fold what the judge saw into the stored evidence. Without it the row
+      // says "profile names a different employer" and the user has to go and
+      // look up which one.
+      const evidence = v.employerSeen
+        ? `${v.evidence} (saw: ${v.employerSeen}${v.datesSeen ? `, ${v.datesSeen}` : ""})`
+        : v.evidence;
 
       const person = await findOrCreatePerson({
         name: v.name,
@@ -281,8 +317,8 @@ export const searchPeople = tool({
         await recordAffiliation(supabase, {
           personId: person.id,
           organizationId: attachTo,
-          source: v.verdict === "verified" ? "llm_verified" : "search_stamp",
-          evidence: v.evidence,
+          source,
+          evidence,
         });
       }
 
@@ -303,6 +339,10 @@ export const searchPeople = tool({
         rejectedAsWrongCompany++;
         continue;
       }
+      if (v.verdict === "former_employee") {
+        departedCount++;
+        continue;
+      }
       if (v.verdict === "uncertain") uncertainCount++;
 
       if (input.campaignId) {
@@ -316,6 +356,21 @@ export const searchPeople = tool({
         linkedin_url: person.linkedin_url,
         verdict: v.verdict,
       });
+    }
+
+    // Both counts describe people the agent will not find in `contacts`, so
+    // saying nothing about them reads as "the search found fewer people" rather
+    // than "some of what it found was not staff here".
+    const notes: string[] = [];
+    if (uncertainCount > 0) {
+      notes.push(
+        `${uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed.`,
+      );
+    }
+    if (departedCount > 0) {
+      notes.push(
+        `${departedCount} contact(s) have left this company: their profile shows a stint here that has already ended, so they were detached from it and are not in the contact list.`,
+      );
     }
 
     return {
@@ -332,11 +387,9 @@ export const searchPeople = tool({
       duplicatesSkipped,
       uncertainCount,
       rejectedAsWrongCompany,
+      departedCount,
       query: input.query,
-      note:
-        uncertainCount > 0
-          ? `${uncertainCount} contact(s) could not be confirmed as employees of this company. They are stored and flagged, but are blocked from outreach until confirmed.`
-          : undefined,
+      note: notes.length > 0 ? notes.join(" ") : undefined,
     };
   },
 });
