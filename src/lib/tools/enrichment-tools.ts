@@ -31,6 +31,15 @@ import { withTimeout } from "@/lib/utils/timeout";
 /** Ceiling for one company's full enrichment chain. */
 const PER_COMPANY_TIMEOUT_MS = 150_000;
 
+/**
+ * Ceiling for the careers-page scrape inside enrichment. Runs in parallel
+ * with website extraction (~120s worst case), so this keeps the whole
+ * parallel phase inside PER_COMPANY_TIMEOUT_MS. withTimeout does not cancel
+ * the underlying scrape; a slow scrape may still finish and merge hiring
+ * data into the DB later, it just misses this enrichment's claims.
+ */
+const HIRING_SCRAPE_TIMEOUT_MS = 90_000;
+
 /** Rough worst case for one contact-enrichment chunk (Exa + socials). */
 const PER_CONTACT_CHUNK_ESTIMATE_MS = 120_000;
 
@@ -1205,8 +1214,17 @@ async function enrichCompanyById(
       numResults: 5,
       includeText: true,
     }),
+    // Bounded: Stagehand's observe/act/extract steps have no timeouts of
+    // their own, and an unbounded scrape would pierce PER_COMPANY_TIMEOUT_MS
+    // and fail the whole company. On timeout allSettled records a rejection,
+    // careers stays null, and hiring is reported unknown, which is the
+    // designed fail-open behavior.
     org.domain
-      ? tryScrapeHiringData(organizationId, org.domain as string)
+      ? withTimeout(
+          tryScrapeHiringData(organizationId, org.domain as string),
+          HIRING_SCRAPE_TIMEOUT_MS,
+          `Careers scrape ${org.domain}`,
+        )
       : Promise.resolve(null),
   ]);
 
