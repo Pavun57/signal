@@ -13,6 +13,7 @@
 **Branch:** create `feat/enrichment-claims` off `origin/main` before Task 1. The user works on other branches concurrently; never commit unrelated working-tree files.
 
 **House rules that will bite you:**
+
 - No em dashes in any string/copy — eslint blocks them (`no-restricted-syntax`).
 - All LLM calls follow the `src/lib/services/relevance-filter.ts` pattern exactly: `generateObject` + `llmTimeout()` abort signal + `trackUsage` + `UNTRUSTED_NOTICE`/`wrapUntrusted`/`stringify` from `@/lib/prompt-safety` + fail-open catch.
 - Run `pnpm exec eslint <files>` and `pnpm typecheck` before every commit. (If typecheck fails on `.next/types` referencing deleted routes, `rm -rf .next/types` first — stale cache.)
@@ -23,6 +24,7 @@
 ### Task 1: Claim types + pure reconciler (TDD)
 
 **Files:**
+
 - Create: `src/lib/types/claims.ts`
 - Create: `src/lib/services/claim-reconciler.ts`
 - Test: `src/__tests__/claim-reconciler.test.ts`
@@ -300,6 +302,7 @@ Note: the design mentions a Haiku judge for date-less conflicting claims. Delibe
 ### Task 2: Claim extractor service (TDD, mocked LLM)
 
 **Files:**
+
 - Create: `src/lib/services/claim-extractor.ts`
 - Test: `src/__tests__/claim-extractor.test.ts`
 
@@ -541,8 +544,7 @@ ${wrapUntrusted(sourceBlocks.join("\n\n"))}`,
         type: c.type,
         statement: c.statement,
         sourceUrl: sources[c.sourceIndex].url,
-        publishedDate:
-          c.publishedDate ?? sources[c.sourceIndex].publishedDate,
+        publishedDate: c.publishedDate ?? sources[c.sourceIndex].publishedDate,
         confidence: c.confidence,
         extractedAt,
         status: "unverified" as const,
@@ -569,6 +571,7 @@ git commit -m "feat(claims): Haiku claim extractor with source-index provenance"
 ### Task 3: Careers scrape + claims inside `enrichCompanyById`
 
 **Files:**
+
 - Modify: `src/lib/tools/enrichment-tools.ts` (function `enrichCompanyById`, currently ~line 1100; Promise.allSettled at ~1172; search storage loop at ~1234)
 - Modify: `src/lib/services/hiring-scraper.ts` (export a non-throwing wrapper)
 
@@ -617,7 +620,7 @@ const [websiteResult, productResult, fundingResult, teamResult, hiringResult] =
 
 (`scrapeHiringData` already writes `enrichment_data.hiring` itself via `mergeEnrichmentData`; the returned value here is only for claim building.)
 
-**Step 3: Store the real executed query.** In the search storage loop, the entries become `["product", productResult, productQuery]` etc., and `query: `${org.name} ${label}`` becomes `query` from the tuple.
+**Step 3: Store the real executed query.** In the search storage loop, the entries become `["product", productResult, productQuery]` etc., and `query: `${org.name} ${label}``becomes`query` from the tuple.
 
 **Step 4: Extract + reconcile claims after the loop**, before `enrichmentData.searches = searches`:
 
@@ -645,18 +648,17 @@ const extracted = await extractClaims({
 });
 
 // Scraped jobs become verified hiring claims directly; no LLM needed.
-const hiringClaims: CompanyClaim[] =
-  careers?.careersUrl
-    ? careers.jobs.map((j) => ({
-        type: "hiring_role" as const,
-        statement: `Hiring: ${j.title}${j.location ? ` (${j.location})` : ""}`,
-        sourceUrl: careers.careersUrl as string,
-        publishedDate: careers.scrapedAt,
-        confidence: 1,
-        extractedAt: careers.scrapedAt,
-        status: "verified" as const,
-      }))
-    : [];
+const hiringClaims: CompanyClaim[] = careers?.careersUrl
+  ? careers.jobs.map((j) => ({
+      type: "hiring_role" as const,
+      statement: `Hiring: ${j.title}${j.location ? ` (${j.location})` : ""}`,
+      sourceUrl: careers.careersUrl as string,
+      publishedDate: careers.scrapedAt,
+      confidence: 1,
+      extractedAt: careers.scrapedAt,
+      status: "verified" as const,
+    }))
+  : [];
 
 enrichmentData.claims = [
   ...reconcileClaims(extracted, { now: new Date(), careers }),
@@ -684,6 +686,7 @@ git commit -m "feat(enrich): careers scrape and reconciled claims in company enr
 ### Task 4: Unify `/api/enrich-company` onto the same claims path
 
 **Files:**
+
 - Modify: `src/app/api/enrich-company/route.ts` (~lines 199-430)
 
 Full extraction of a shared `enrichCompanyCore` was considered and cut (YAGNI for now): the route has signal-gated searches, Google Reviews, and summarization the tool path deliberately lacks, and merging those is a refactor with its own risk. Instead, give the route the same claims tail:
@@ -705,6 +708,7 @@ git commit -m "feat(enrich): claims and careers scrape on the UI enrichment path
 ### Task 5: System prompt: hiring hard rule + claims-based scoring
 
 **Files:**
+
 - Modify: `src/lib/system-prompt.ts` (~lines 88, 97-104, 205-215, 226)
 
 **Step 1:** In the Full Pipeline list (~line 88), delete step 2 ("Scrape hiring data with `scrapeJobListingsBatch`...") and renumber: the scrape now runs inside `enrichCompany`. Keep `scrapeJobListings` mentioned as a refresh tool only.
@@ -748,6 +752,7 @@ git commit -m "feat(prompt): hiring hard rule, claims-based scoring, grounding a
 ### Task 6: UI: claims with status badges, dates on search results
 
 **Files:**
+
 - Modify: `src/components/campaign/company-detail.tsx` (sections at ~lines 95-260, `SearchSection` at ~295)
 - Modify or create the enrichment types it casts to (`CompanyEnrichmentData`, wherever defined; likely `src/lib/types/enrichment.ts`) to add `claims?: CompanyClaim[]`
 
@@ -768,7 +773,33 @@ git commit -m "feat(ui): claim status badges and source dates on company detail"
 
 ---
 
-### Task 7: Full verification + PR
+### Task 7: Cheap-first careers scrape (owner request, added mid-execution)
+
+**Files:**
+
+- Modify: `src/lib/services/hiring-scraper.ts`
+- Test: `src/__tests__/hiring-scraper-cheap.test.ts`
+
+Today `scrapeHiringData` goes straight to the most expensive tier: a full Stagehand browser session (60s init plus un-timed LLM observe/act/extract) for every company. Rebuild its internals cheap-first; the exported signature, `HiringScrapeResult` shape, `tryScrapeHiringData`, `HIRING_SCRAPE_TIMEOUT_MS`, and the `mergeEnrichmentData` write must not change, so every caller (both enrichment paths, the agent tools, the tracking executor) is untouched.
+
+**Tier order:**
+
+1. **Find the careers URL without a browser.** Probe the existing common-paths list with `fetchWithTimeout` (see `src/lib/fetch-with-timeout.ts`) and accept the first 2xx. If none hit, fetch the homepage and look for careers/jobs links in the HTML. Optionally one Exa search scoped to the domain as the last resort.
+2. **ATS shortcut, zero LLM.** If the careers page (or homepage) links to a hosted board, hit the board's public JSON API for structured listings: Greenhouse (`https://boards-api.greenhouse.io/v1/boards/{slug}/jobs`), Lever (`https://api.lever.co/v0/postings/{slug}?mode=json`), Ashby (`https://api.ashbyhq.com/posting-api/job-board/{slug}`), Workable (`https://apply.workable.com/api/v1/widget/accounts/{slug}`). Extract the slug from the link URL. Verify each URL pattern against the provider's current docs during implementation; do not trust this list blindly. Map into the existing `jobs` shape.
+3. **Fetched-HTML extraction.** Otherwise run `WebExtractionService.extract(careersUrl)` (its internal tiers: free fetch, then Browserbase Fetch) and one Haiku `generateObject` pass (relevance-filter house pattern) to pull `{title, department?, location?, url?}` from the text.
+4. **Stagehand only as last resort.** Keep the current implementation as a private fallback, invoked only when tiers 1-3 produce no careers URL or thin content (< ~200 chars of job-relevant text).
+
+**TDD:** mock `fetch`/`fetchWithTimeout` and test: ATS link detection + slug extraction per provider, JSON mapping into `jobs`, tier fall-through order (ATS hit never calls WebExtraction; thin content falls through to the Stagehand fallback, which in tests is a stub). Follow the repo's existing mock style in `src/__tests__/`.
+
+**Verify:** eslint, typecheck, full vitest run. Commit:
+
+```bash
+git commit -m "perf(hiring): cheap-first careers scrape with ATS shortcut, browser as last resort"
+```
+
+---
+
+### Task 8: Full verification + PR
 
 **Step 1:** `pnpm exec eslint . && pnpm typecheck && pnpm vitest run` — all clean (minus known pre-existing failures, list them in the PR if still present).
 
