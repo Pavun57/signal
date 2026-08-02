@@ -43,18 +43,15 @@ test.describe("middleware redirects", () => {
   });
 
   test("public webhook routes do NOT require auth", async ({ request }) => {
-    // /api/outreach/process is a QStash-signed handler — must accept POSTs
-    // without a Clerk session. Without a valid QStash signature it'll return
-    // 401 from the handler, NOT a 307 redirect to /login.
-    const res = await request.post(
-      "http://localhost:3000/api/outreach/process",
-      {
-        data: {},
-        failOnStatusCode: false,
-      },
-    );
+    // The job routes must be publicly reachable (Vercel Cron / pg_cron can't
+    // send Clerk cookies) but refuse work without the CRON_SECRET bearer.
+    // Without that bearer the handler returns 401, NOT a 307 redirect to
+    // /login.
+    const res = await request.post("http://localhost:3000/api/jobs/tick", {
+      data: {},
+    });
     expect(res.status()).not.toBe(307);
-    expect([200, 400, 401, 422]).toContain(res.status());
+    expect(res.status()).toBe(401);
   });
 });
 

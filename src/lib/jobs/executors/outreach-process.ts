@@ -17,10 +17,10 @@ import { saveDraft } from "@/lib/email-composition/save";
 /**
  * Outreach processor. Handles two jobs:
  *
- * 1. Signal-triggered sends: called by /api/tracking/run after a threshold
- *    crossing. Payload: { signalId, campaignId, organizationId }
+ * 1. Signal-triggered sends: enqueued by the tracking.run executor after a
+ *    threshold crossing. Payload: { signalId, campaignId, organizationId }
  *
- * 2. Time-delayed follow-ups: called by cron/QStash. Payload: { type: "followups" }
+ * 2. Time-delayed follow-ups: the seeded recurring job. Payload: { type: "followups" }
  *    Checks sequence_enrollments where next_send_at <= now and conditions are met.
  */
 
