@@ -156,14 +156,12 @@ describe("buildRefinementTranscript", () => {
         source_transcript: {
           judged: [judged("Release notes", true)],
           instructions: ["shorter"],
-          samples: ["Hi Dana, quick one."],
         },
       },
       "Make it blunter",
     );
     expect(t.judged).toHaveLength(1);
     expect(t.instructions).toEqual(["shorter", "Make it blunter"]);
-    expect(t.samples).toEqual(["Hi Dana, quick one."]);
   });
 
   it("ignores an interview transcript instead of mistaking it for a run", () => {
@@ -192,7 +190,6 @@ describe("buildRefinementTranscript", () => {
       "Less blunt",
     );
     expect(t.judged).toEqual([]);
-    expect(t.samples).toBeUndefined();
     expect(t.prior?.summary).toBeNull();
   });
 });
