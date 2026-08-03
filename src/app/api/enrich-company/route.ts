@@ -118,27 +118,15 @@ export async function POST(request: Request) {
     .eq("id", companyId)
     .single();
 
+  // No link, no claim. This used to retry the id against `organizations`
+  // directly and enrich whatever came back. Organizations are shared and carry
+  // no owner, so that read can never establish ownership: any id would run,
+  // writing to the row and spending search credits on it. The optional
+  // campaignId check above is not a substitute either -- it proves the caller
+  // owns that campaign, not that this company has anything to do with it.
+  // Every caller in the app sends a link id, so there is nothing to keep.
   if (linkError || !link) {
-    // Try as a direct organization ID. Organizations are not user-scoped,
-    // so the only ownership signal here is the campaignId check above (if
-    // supplied). Without a campaign context, fall back to RLS + the
-    // authenticated session.
-    const { data: org, error: orgError } = await supabase
-      .from("organizations")
-      .select("*")
-      .eq("id", companyId)
-      .single();
-
-    if (orgError || !org) {
-      return Response.json({ error: "Company not found" }, { status: 404 });
-    }
-
-    return enrichOrganization(
-      org as Record<string, unknown>,
-      companyId,
-      activeSlugs,
-      campaignId,
-    );
+    return Response.json({ error: "Company not found" }, { status: 404 });
   }
 
   // Ownership check via the link's parent campaign.
