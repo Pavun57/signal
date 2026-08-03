@@ -152,4 +152,21 @@ describe("html to text", () => {
   it("turns paragraph and break structure into newlines", () => {
     expect(htmlToDisplayText("<p>a<br>b</p><p>c</p>")).toBe("a\nb\n\nc");
   });
+
+  it("leaves no markup behind on tags nested to survive a naive strip", () => {
+    // Asserts the property that matters (no tags out), NOT that a single pass
+    // would have failed: for this pattern a second pass changes nothing, which
+    // I verified rather than assumed. These outputs are React text children
+    // and React escapes them, so this was never a live injection either way.
+    const nasty = "<p>hi <scr<script>ipt>alert(1)</script></p>";
+    expect(htmlToDisplayText(nasty)).not.toContain("<");
+    expect(htmlToPlain(nasty)).not.toContain("<");
+  });
+
+  it("is unchanged for ordinary content", () => {
+    // The fixed-point loop must be a no-op on anything real.
+    expect(htmlToPlain("<p>Hi Dana,</p><p>Thanks.</p>")).toBe(
+      "Hi Dana,\n\nThanks.",
+    );
+  });
 });

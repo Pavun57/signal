@@ -35,6 +35,35 @@ function blockToNewlines(html: string): string {
 }
 
 /**
+ * Removes tags, repeating until the string stops changing.
+ *
+ * Being straight about what this is and is not:
+ *
+ * NOT a sanitizer, and nothing here may be used as one. These outputs become
+ * React text children, which React escapes, so markup surviving would render
+ * as visible text rather than an element. If a caller ever needs real HTML,
+ * the answer is a sandboxed iframe, not this.
+ *
+ * The loop is defence in depth, not a fix for a live hole. CodeQL flags a
+ * single-pass tag strip (js/incomplete-multi-character-sanitization) because
+ * removing an inner tag can reassemble an outer one. For THIS pattern that
+ * turns out not to happen -- `<scr<script>ipt>` becomes `ipt>` in one pass and
+ * a second pass changes nothing, which I checked rather than assumed. The loop
+ * earns its place by making that property hold for whatever the pattern
+ * becomes later, instead of resting on a hand-check of today's regex.
+ *
+ * Terminates because any pass that changes the string strictly shortens it.
+ */
+function stripTags(input: string): string {
+  let out = input;
+  for (;;) {
+    const next = out.replace(/<[^>]+>/g, "");
+    if (next === out) return out;
+    out = next;
+  }
+}
+
+/**
  * Lossy conversion used by the draft editor's round-trip.
  *
  * Anchors collapse to their text and the href is discarded. That is wrong for
@@ -47,9 +76,7 @@ function blockToNewlines(html: string): string {
  */
 export function htmlToPlain(html: string): string {
   if (!html) return "";
-  return decodeEntities(
-    blockToNewlines(html).replace(/<[^>]+>/g, ""),
-  ).trim();
+  return decodeEntities(stripTags(blockToNewlines(html))).trim();
 }
 
 /**
@@ -69,12 +96,12 @@ export function htmlToDisplayText(html: string): string {
   const withLinks = blockToNewlines(html).replace(
     /<a\b[^>]*href\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_match, href: string, inner: string) => {
-      const text = decodeEntities(inner.replace(/<[^>]+>/g, "")).trim();
+      const text = decodeEntities(stripTags(inner)).trim();
       const url = decodeEntities(href).trim();
       if (!url) return text;
       if (!text) return url;
       return text === url ? url : `${text} (${url})`;
     },
   );
-  return decodeEntities(withLinks.replace(/<[^>]+>/g, "")).trim();
+  return decodeEntities(stripTags(withLinks)).trim();
 }
