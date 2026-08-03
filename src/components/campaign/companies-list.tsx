@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { CompanyDetail } from "@/components/campaign/company-detail";
 import { ContactDetail } from "@/components/campaign/contact-detail";
 import { EmbeddedOrgChart } from "@/components/company/embedded-org-chart";
+import { EnrichAllButton } from "@/components/company/enrich-all-button";
 import { TogglePill } from "@/components/ui/toggle-pill";
 import { ReadinessBadge } from "@/components/tracking/readiness-badge";
 import { AffiliationBadge } from "@/components/ui/provenance-badge";
@@ -595,6 +596,18 @@ export function CompaniesList({
                           <Loader2 className="h-3 w-3 animate-spin" />
                           Enriching
                         </span>
+                      )}
+                      {company.organization_id && (
+                        <EnrichAllButton
+                          campaignId={campaignId}
+                          organizationId={company.organization_id}
+                          // Only what is actually left to do, so the number on
+                          // the button matches what the confirm will charge for.
+                          unenrichedCount={
+                            companyContacts.length - enrichedCount
+                          }
+                          onDone={onDataChanged}
+                        />
                       )}
                       {missingEmailCount > 0 &&
                         company.organization_id &&
