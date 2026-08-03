@@ -8,6 +8,62 @@ import {
 
 export const maxDuration = 120;
 
+/** The RLS-scoped client the route handler is given. */
+type ScopedClient = NonNullable<
+  Awaited<ReturnType<typeof getSupabaseAndUser>>
+>["supabase"];
+
+/** The user_id on a `campaigns` row reached through an !inner join, if any. */
+function campaignOwner(row: { campaign?: unknown } | null): string | null {
+  return (
+    (row?.campaign as unknown as { user_id?: string } | null)?.user_id ?? null
+  );
+}
+
+/**
+ * Whether the caller has any claim on a bare people.id.
+ *
+ * `people` is a shared pool with no owner column, so the claim has to come
+ * from something that is scoped. Two things are: the contact sitting in one
+ * of the caller's campaigns, and the company they are filed under sitting in
+ * one of the caller's campaigns.
+ *
+ * The second is not decoration. The standalone company page enriches by bare
+ * person id, and "Find more people" on that page stores contacts with no
+ * campaign link at all, so a contact-only test would refuse the people it had
+ * just created. It is also the same gate that route, classify-departments and
+ * to-company already use to authorise themselves, rather than a new one.
+ */
+async function callerHoldsPerson(
+  supabase: ScopedClient,
+  userId: string,
+  personId: string,
+): Promise<boolean> {
+  const { data: personLink } = await supabase
+    .from("campaign_people")
+    .select("campaign:campaigns!inner(user_id)")
+    .eq("person_id", personId)
+    .limit(1)
+    .maybeSingle();
+  if (campaignOwner(personLink) === userId) return true;
+
+  const { data: person } = await supabase
+    .from("people")
+    .select("organization_id")
+    .eq("id", personId)
+    .maybeSingle();
+  const organizationId = (person?.organization_id as string | null) ?? null;
+  if (!organizationId) return false;
+
+  const { data: orgLink } = await supabase
+    .from("campaign_organizations")
+    .select("campaign:campaigns!inner(user_id)")
+    .eq("organization_id", organizationId)
+    .limit(1)
+    .maybeSingle();
+  return campaignOwner(orgLink) === userId;
+}
+
 export async function POST(request: Request) {
   const ctx = await getSupabaseAndUser();
   if (!ctx) {
@@ -49,9 +105,15 @@ export async function POST(request: Request) {
     }
     personId = link.person_id;
   } else {
-    // Bare person ID path -- people rows aren't user-scoped; RLS on the
-    // subsequent select is the only layer we have here.
+    // Bare person ID path. This used to proceed on the assumption that the
+    // select below was user-scoped. It is not -- `people` is shared across
+    // campaigns by design and carries no owner -- so the id had to be checked
+    // here or not at all, and the route would return the stored dossier for
+    // any id it was handed.
     personId = contactId;
+    if (!(await callerHoldsPerson(supabase, user.id, personId))) {
+      return Response.json({ error: "Forbidden" }, { status: 403 });
+    }
   }
 
   const { data: personData, error: fetchError } = await supabase
