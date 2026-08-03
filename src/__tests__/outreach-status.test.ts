@@ -8,7 +8,10 @@ import {
 describe("outreach status registry", () => {
   it("exposes a single canonical status for every lifecycle stage", () => {
     const keys = Object.keys(OUTREACH_STATUS) as OutreachStatus[];
+    // Exact on purpose. A new status is a product decision, so adding one
+    // should require saying so here rather than sliding in unnoticed.
     expect(keys).toEqual([
+      // review lifecycle
       "needs_review",
       "ready",
       "waiting",
@@ -16,7 +19,22 @@ describe("outreach status registry", () => {
       "replied",
       "blocked",
       "rejected",
+      // states the activity feed adds
+      "bounced",
+      "queued",
+      "scheduled",
+      "deferred",
+      "failed",
     ]);
+  });
+
+  it("keeps deferred visually distinct from the real failures", () => {
+    // Hitting the daily cap is routine and resolves itself tomorrow. Showing
+    // it in the same red as a bounce or an SMTP error would train users to
+    // ignore the states that actually need them.
+    expect(OUTREACH_STATUS.deferred.tone).toBe("muted");
+    expect(OUTREACH_STATUS.failed.tone).toBe("danger");
+    expect(OUTREACH_STATUS.bounced.tone).toBe("danger");
   });
 
   it("maps DB enrollment status to canonical status", () => {
@@ -30,9 +48,14 @@ describe("outreach status registry", () => {
     for (const def of Object.values(OUTREACH_STATUS)) {
       expect(def.label.length).toBeGreaterThan(0);
       expect(def.description.length).toBeGreaterThan(0);
-      expect(["primary", "warn", "muted", "success", "neutral"]).toContain(
-        def.tone,
-      );
+      expect([
+        "primary",
+        "warn",
+        "muted",
+        "success",
+        "neutral",
+        "danger",
+      ]).toContain(def.tone);
     }
   });
 });

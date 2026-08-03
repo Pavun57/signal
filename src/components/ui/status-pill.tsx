@@ -11,6 +11,9 @@ const TONE_STYLES: Record<OutreachTone, string> = {
   muted: "bg-muted text-muted-foreground",
   success: "bg-success/10 text-success",
   neutral: "bg-muted text-muted-foreground",
+  // Matches outreachStatusStyles.bounced in lib/status-styles.ts, so the two
+  // status vocabularies stay visually consistent while remaining separate.
+  danger: "bg-destructive/10 text-destructive",
 };
 
 interface StatusPillProps {
