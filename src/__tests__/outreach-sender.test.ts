@@ -136,6 +136,36 @@ describe("sendApprovedDraft claim semantics", () => {
     process.env.EMAIL_CREDENTIALS_KEY = savedKey;
   });
 
+  it("refuses when sending is paused, before the gate read and the claim", async () => {
+    const { client, calls } = fakeSupabase([
+      { data: { id: "step_1" } }, // step select
+      { data: draft }, // draft select
+      { data: settingsRow({ sending_paused: true }) }, // sender config
+      {}, // refuse() bookkeeping: last_error update on the draft
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("paused"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+    // The kill switch fires before JIT verification and the claim: no gate
+    // read, no credits, no claim. The only write is refuse()'s bookkeeping,
+    // which records the reason on the draft as a deferred (retryable) refusal.
+    expect(calls.map((c) => c.table)).toEqual([
+      "sequence_steps",
+      "email_drafts",
+      "user_settings",
+      "email_drafts",
+    ]);
+    expect(calls[3].ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ last_error_kind: "deferred" })],
+    });
+  });
+
   it("sends after winning the claim", async () => {
     const { client, calls } = fakeSupabase([
       ...preSendResponses(),

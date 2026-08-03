@@ -112,6 +112,19 @@ export async function claimAndSendDraft(
 ): Promise<SendResult> {
   const now = new Date().toISOString();
 
+  // Kill switch. Checked before everything else so a paused send spends
+  // nothing (no JIT verification credits, no claim) and the draft stays
+  // sendable for the moment sending resumes. "deferred": resuming sends it,
+  // nothing about the draft or contact needs fixing.
+  if (sender.sendingPaused) {
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      "Sending is paused in Settings > Email. Unpause to resume.",
+    );
+  }
+
   // Data-quality gate, before the claim so a blocked draft stays sendable once
   // the contact is fixed rather than being parked in "queued".
   //

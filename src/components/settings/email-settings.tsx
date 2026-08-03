@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { apiFetch } from "@/lib/api-fetch";
 
@@ -45,6 +46,8 @@ export function EmailSettings() {
   const [fromName, setFromName] = useState("");
   const [replyTo, setReplyTo] = useState("");
   const [dailyLimit, setDailyLimit] = useState("30");
+  const [sendingPaused, setSendingPaused] = useState(false);
+  const [pauseToggling, setPauseToggling] = useState(false);
 
   const [testTo, setTestTo] = useState("");
   const [testSending, setTestSending] = useState(false);
@@ -82,6 +85,7 @@ export function EmailSettings() {
       setFromName(data.settings.from_name ?? "");
       setReplyTo(data.settings.reply_to_email ?? "");
       setDailyLimit(String(configured));
+      setSendingPaused(data.settings.sending_paused ?? false);
 
       const testRes = await apiFetch("/api/settings/email/test");
       if (!testRes.ok || !mountedRef.current) return;
@@ -296,6 +300,31 @@ export function EmailSettings() {
     }
   };
 
+  const handleTogglePause = async (paused: boolean) => {
+    // Optimistic: a kill switch must flip instantly, not after a form save.
+    setSendingPaused(paused);
+    setPauseToggling(true);
+    try {
+      const res = await apiFetch("/api/settings/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_sending_paused", paused }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSendingPaused(!paused);
+        toast.error(data.error ?? "Failed to update pause state");
+        return;
+      }
+      toast.success(paused ? "All sending paused" : "Sending resumed");
+    } catch {
+      setSendingPaused(!paused);
+      toast.error("Failed to update pause state");
+    } finally {
+      setPauseToggling(false);
+    }
+  };
+
   if (loading) {
     return (
       <SettingsSection
@@ -505,6 +534,28 @@ export function EmailSettings() {
             </Button>
           </div>
         )}
+
+        {/* Kill switch */}
+        <div
+          className={`flex items-center justify-between gap-4 rounded-lg border p-4 ${
+            sendingPaused ? "border-destructive/50 bg-destructive/5" : ""
+          }`}
+        >
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Pause all sending</p>
+            <p className="text-muted-foreground text-xs">
+              {sendingPaused
+                ? "No emails will leave your mailbox. Follow-ups, send now, and agent sends are all blocked until you resume."
+                : "Kill switch for every outbound email: follow-ups, send now, and agent sends. Drafting and reply tracking keep running."}
+            </p>
+          </div>
+          <Switch
+            checked={sendingPaused}
+            onCheckedChange={handleTogglePause}
+            disabled={pauseToggling}
+            aria-label="Pause all sending"
+          />
+        </div>
 
         {/* From Name */}
         <div className="space-y-1.5">
