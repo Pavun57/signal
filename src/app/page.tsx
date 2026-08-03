@@ -29,14 +29,12 @@ interface DashboardData {
   totals: {
     leads: number;
     sent: number;
-    opened: number;
     replied: number;
     bounced: number;
   };
   timeSeries: Array<{
     date: string;
     sent: number;
-    opened: number;
     replied: number;
     bounced: number;
   }>;
@@ -46,8 +44,6 @@ interface DashboardData {
     status: string;
     leads: number;
     sent: number;
-    opened: number;
-    openRate: number;
     replied: number;
     replyRate: number;
   }>;

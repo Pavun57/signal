@@ -1,4 +1,10 @@
-export type OutreachTone = "primary" | "warn" | "muted" | "success" | "neutral";
+export type OutreachTone =
+  | "primary"
+  | "warn"
+  | "muted"
+  | "success"
+  | "neutral"
+  | "danger";
 
 export interface OutreachStatusDef {
   label: string;
@@ -41,6 +47,38 @@ export const OUTREACH_STATUS = {
     label: "Rejected",
     description: "Won't send; here for reference",
     tone: "neutral",
+  },
+  // ── states the activity feed adds ────────────────────────────────────────
+  // These describe a piece of mail rather than a review decision, which is why
+  // they live here beside the others rather than in status-styles.ts: that map
+  // renders the campaign_people.outreach_status enum, and these are not values
+  // of it.
+  bounced: {
+    label: "Bounced",
+    description: "The address rejected it; verification was cleared",
+    tone: "danger",
+  },
+  queued: {
+    label: "Queued",
+    description: "Claimed and about to go out",
+    tone: "muted",
+  },
+  scheduled: {
+    label: "Scheduled",
+    description: "Approved, waiting for its send time",
+    tone: "muted",
+  },
+  // Deliberately muted, not danger. Hitting the daily cap is routine, and the
+  // draft goes out tomorrow on its own.
+  deferred: {
+    label: "Deferred",
+    description: "Daily send limit reached; will go tomorrow",
+    tone: "muted",
+  },
+  failed: {
+    label: "Failed",
+    description: "The send errored and can be retried",
+    tone: "danger",
   },
 } as const satisfies Record<string, OutreachStatusDef>;
 

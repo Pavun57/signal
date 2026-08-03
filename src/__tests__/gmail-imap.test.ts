@@ -30,6 +30,7 @@ vi.mock("imapflow", () => {
         envelope: {
           from: [{ address: "mailer-daemon@googlemail.com" }],
           inReplyTo: "",
+          messageId: null,
           subject: "Delivery Status Notification (Failure)",
           date: new Date("2026-07-30T14:30:00Z"),
         },
@@ -40,6 +41,7 @@ vi.mock("imapflow", () => {
         envelope: {
           from: [{ address: "prospect@example.com" }],
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           subject: "Re: Signal test",
           date: new Date("2026-07-30T14:32:00Z"),
         },

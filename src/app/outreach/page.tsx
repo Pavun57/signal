@@ -10,6 +10,9 @@ import {
 } from "@/components/outreach/outreach-drafts-panel";
 import { ReadyToSendHero } from "@/components/outreach/ready-to-send-hero";
 import { OutreachTabs } from "@/components/outreach/outreach-tabs";
+import { apiFetch } from "@/lib/api-fetch";
+import type { ActivityItem } from "@/lib/outreach/activity";
+import type { ActivityFilter } from "@/components/outreach/outreach-activity-panel";
 
 export interface SequenceRow {
   id: string;
@@ -42,6 +45,8 @@ export default function OutreachPage() {
   const [sequences, setSequences] = useState<SequenceRow[]>([]);
   const [enrollments, setEnrollments] = useState<EnrollmentCard[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
 
@@ -55,6 +60,7 @@ export default function OutreachPage() {
       draftsRes,
       settingsRes,
       stepRowsRes,
+      activityRes,
     ] = await Promise.all([
       supabase
         .from("sequences")
@@ -91,6 +97,18 @@ export default function OutreachPage() {
         .limit(200),
       supabase.from("user_settings").select("gmail_address").maybeSingle(),
       supabase.from("sequence_steps").select("sequence_id, step_number"),
+      // In the same batch rather than after it, so the activity feed rides
+      // the page's existing visibility-aware 10s poll without adding a second
+      // timer or an extra round trip. Goes through apiFetch because it is an
+      // API route, not a direct Supabase read like everything above.
+      //
+      // Fetched unfiltered and narrowed in the client: the whole set is what
+      // the Sent tab's reply count is derived from, so refetching per chip
+      // click would make that badge flicker between filters.
+      apiFetch("/api/outreach/activity")
+        .then((r) => r.json())
+        // A failed activity fetch must not blank the rest of the page.
+        .catch(() => ({ items: [] as ActivityItem[] })),
     ]);
 
     if (!mountedRef.current) return;
@@ -211,6 +229,11 @@ export default function OutreachPage() {
     setSequences(sequenceRows);
     setEnrollments(enrollmentCards);
     setDrafts(draftRows);
+    setActivity(
+      Array.isArray(activityRes?.items)
+        ? (activityRes.items as ActivityItem[])
+        : [],
+    );
     setLoading(false);
   }, []);
 
@@ -269,7 +292,10 @@ export default function OutreachPage() {
             <Loader2 className="text-muted-foreground h-4 w-4 animate-spin" />
             <span className="text-muted-foreground text-sm">Loading...</span>
           </div>
-        ) : sequences.length === 0 ? (
+        ) : // Also gated on activity: mail sent through the agent's sendEmail
+        // tool has no sequence, and this empty state would otherwise hide the
+        // whole Sent tab from anyone who has only ever sent that way.
+        sequences.length === 0 && activity.length === 0 ? (
           <div className="border-border flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-12 text-center">
             <p className="text-sm font-medium">No outreach sequences yet</p>
             <p className="text-muted-foreground text-xs">
@@ -287,6 +313,10 @@ export default function OutreachPage() {
               drafts={drafts}
               sequences={sequences}
               enrollments={enrollments}
+              activity={activity}
+              activityFilter={activityFilter}
+              onActivityFilterChange={setActivityFilter}
+              activityLoading={loading}
               onRefresh={load}
             />
           </>

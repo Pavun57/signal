@@ -22,23 +22,12 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import type { CampaignContact, EnrichmentData } from "@/lib/types/campaign";
 import { apiFetch } from "@/lib/api-fetch";
+import { htmlToPlain } from "@/lib/email/html-to-plain";
 
-function htmlToPlain(html: string): string {
-  if (!html) return "";
-  return html
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>\s*<p[^>]*>/gi, "\n\n")
-    .replace(/<p[^>]*>/gi, "")
-    .replace(/<\/p>/gi, "")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim();
-}
+// Moved to src/lib/email/html-to-plain.ts so the read-only activity view can
+// share it. Deliberately the LOSSY variant: this feeds a textarea that
+// plainToHtml re-serialises on save, so a link-preserving version here would
+// write "text (url)" back into the body as literal text.
 
 function plainToHtml(text: string): string {
   const paragraphs = text

@@ -43,6 +43,57 @@ export type SendResult =
   | { ok: false; reason: string };
 
 /**
+ * Why a send did not happen, classified at the point of refusal.
+ *
+ * `deferred` is the important one to keep separate. Hitting the daily cap is
+ * the most common non-send and is completely normal, so folding it in with
+ * real failures would fill the failed list with noise within a week of any new
+ * mailbox connecting, and the user would stop reading it.
+ */
+export type SendErrorKind = "deferred" | "blocked" | "failed";
+
+/**
+ * Records why a draft did not send, so the reason survives to the UI.
+ *
+ * These sentences are already written for a person to read ("Not sending to
+ * x@y.com: ...", "Draft is addressed to ... but the contact's verified address
+ * on file is ..."). Storing them verbatim beats paraphrasing at read time.
+ *
+ * Never throws: bookkeeping about a refusal must not become a second failure
+ * on top of it, matching how recordBounce is treated in email-tracking.
+ */
+async function recordSendFailure(
+  supabase: SupabaseClient,
+  draftId: string,
+  kind: SendErrorKind,
+  reason: string,
+): Promise<void> {
+  try {
+    await supabase
+      .from("email_drafts")
+      .update({
+        last_error: reason,
+        last_error_at: new Date().toISOString(),
+        last_error_kind: kind,
+      })
+      .eq("id", draftId);
+  } catch (err) {
+    console.error("[outreach-sender] recordSendFailure failed:", err);
+  }
+}
+
+/** Refuse, and leave the reason on the draft for the user to act on. */
+async function refuse(
+  supabase: SupabaseClient,
+  draftId: string,
+  kind: SendErrorKind,
+  reason: string,
+): Promise<{ ok: false; reason: string }> {
+  await recordSendFailure(supabase, draftId, kind, reason);
+  return { ok: false, reason };
+}
+
+/**
  * The one path an email leaves through. Enforces the warmup-ramped daily
  * cap, claims the draft atomically, sends via the user's Gmail, and does the
  * bookkeeping. Every sender — the followups cron, send-now, and the agent's
@@ -82,10 +133,12 @@ export async function claimAndSendDraft(
     // that a database hiccup disables. Not sending is always recoverable;
     // sending is not.
     if (personError || !person) {
-      return {
-        ok: false,
-        reason: `Not sending to ${draft.to_email}: could not load the contact to check it (${personError?.message ?? "no such person"}).`,
-      };
+      return refuse(
+        supabase,
+        draft.id,
+        "failed",
+        `Not sending to ${draft.to_email}: could not load the contact to check it (${personError?.message ?? "no such person"}).`,
+      );
     }
 
     // Just-in-time verification — the only place provider credits are spent.
@@ -115,10 +168,12 @@ export async function claimAndSendDraft(
       if (jit.outcome !== "verified") {
         // blocked and unavailable both refuse; only `blocked` wrote a verdict.
         // Unavailable is retryable — the next attempt re-checks for free.
-        return {
-          ok: false,
-          reason: `Not sending to ${draft.to_email}: ${jit.reason}.`,
-        };
+        return refuse(
+          supabase,
+          draft.id,
+          "blocked",
+          `Not sending to ${draft.to_email}: ${jit.reason}.`,
+        );
       }
 
       // The service just wrote verification (and possibly an affiliation
@@ -131,20 +186,24 @@ export async function claimAndSendDraft(
         .eq("id", draft.person_id)
         .maybeSingle();
       if (refreshError || !refreshed) {
-        return {
-          ok: false,
-          reason: `Not sending to ${draft.to_email}: could not re-read the contact after verification (${refreshError?.message ?? "no such person"}).`,
-        };
+        return refuse(
+          supabase,
+          draft.id,
+          "failed",
+          `Not sending to ${draft.to_email}: could not re-read the contact after verification (${refreshError?.message ?? "no such person"}).`,
+        );
       }
       gated = refreshed as unknown as typeof gated;
     }
 
     const check = canSendTo(gated);
     if (!check.ok) {
-      return {
-        ok: false,
-        reason: `Not sending to ${draft.to_email}: ${check.reason}.`,
-      };
+      return refuse(
+        supabase,
+        draft.id,
+        "blocked",
+        `Not sending to ${draft.to_email}: ${check.reason}.`,
+      );
     }
 
     // The gate's verdict is about the person's address on file — but the mail
@@ -159,10 +218,12 @@ export async function claimAndSendDraft(
       personEmail &&
       draft.to_email.toLowerCase() !== personEmail.toLowerCase()
     ) {
-      return {
-        ok: false,
-        reason: `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail}. Regenerate the draft so it uses the current address.`,
-      };
+      return refuse(
+        supabase,
+        draft.id,
+        "blocked",
+        `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail}. Regenerate the draft so it uses the current address.`,
+      );
     }
   }
 
@@ -206,12 +267,14 @@ export async function claimAndSendDraft(
       .update({ status: "draft", updated_at: new Date().toISOString() })
       .eq("id", draft.id)
       .eq("status", "queued");
-    return {
-      ok: false,
-      reason: `Daily send limit reached (${effectiveLimit}/day${
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      `Daily send limit reached (${effectiveLimit}/day${
         effectiveLimit < sender.dailyLimit ? ", warmup ramp" : ""
       }), draft left for tomorrow`,
-    };
+    );
   }
 
   // Only a failure of the send itself releases the claim. Once the email has
@@ -242,7 +305,7 @@ export async function claimAndSendDraft(
       .eq("status", "queued");
 
     const reason = err instanceof Error ? err.message : "Send failed";
-    return { ok: false, reason };
+    return refuse(supabase, draft.id, "failed", reason);
   }
 
   // message_id is the RFC 5322 Message-ID — the key IMAP reply/bounce
@@ -297,7 +360,17 @@ export async function claimAndSendDraft(
 
   await supabase
     .from("email_drafts")
-    .update({ status: "sent", sent_at: now, updated_at: now })
+    .update({
+      status: "sent",
+      sent_at: now,
+      updated_at: now,
+      // Clear any earlier refusal. A draft that was blocked on Monday for an
+      // unverified address and sends on Tuesday must not keep showing the
+      // Monday reason next to a sent email.
+      last_error: null,
+      last_error_at: null,
+      last_error_kind: null,
+    })
     .eq("id", draft.id);
 
   if (draft.campaign_people_id) {

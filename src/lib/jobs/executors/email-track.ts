@@ -3,11 +3,27 @@ import { decryptSecret } from "@/lib/crypto";
 import {
   classifyInboundMessage,
   fetchInboundSince,
+  fetchMessageText,
+  type InboundSummary,
 } from "@/lib/services/gmail-service";
 import {
   applyInboundStatus,
+  recordInboundReply,
+  replyDedupeKey,
   type TrackedEmail,
 } from "@/lib/services/email-tracking";
+import { stripQuotedReply } from "@/lib/services/email-test";
+
+/**
+ * Reply bodies downloaded per run, across all users.
+ *
+ * Each one is its own short-lived IMAP connection (fetchMessageText opens its
+ * own client on purpose). Gmail allows roughly 15 simultaneous connections per
+ * account, and the job runs inside a 300s budget, so this bounds a first run
+ * against a busy mailbox without starving the status updates that matter more.
+ * Anything skipped is picked up by the next poll ten minutes later.
+ */
+const MAX_BODY_FETCHES_PER_RUN = 25;
 
 /**
  * Reply/bounce tracking (recurring job, every 10 min). Polls each user's
@@ -25,6 +41,7 @@ import {
 export async function trackEmailReplies(): Promise<{
   checked: number;
   updated: number;
+  captured: number;
 }> {
   const supabase = getAdminClient();
 
@@ -35,7 +52,7 @@ export async function trackEmailReplies(): Promise<{
   const { data: emails, error } = await supabase
     .from("sent_emails")
     .select(
-      "id, message_id, campaign_people_id, user_id, status, sent_at, person_id, to_email",
+      "id, message_id, campaign_people_id, user_id, status, sent_at, person_id, to_email, campaign_id",
     )
     .in("status", ["sent", "delivered", "opened"])
     .gte("sent_at", windowStart)
@@ -43,7 +60,7 @@ export async function trackEmailReplies(): Promise<{
     .limit(100);
 
   if (error || !emails || emails.length === 0) {
-    return { checked: 0, updated: 0 };
+    return { checked: 0, updated: 0, captured: 0 };
   }
 
   // Load gmail credentials for the affected users
@@ -79,6 +96,30 @@ export async function trackEmailReplies(): Promise<{
   }
 
   let updated = 0;
+  let captured = 0;
+  let bodyFetches = 0;
+
+  // Replies already captured, so a re-poll never re-downloads a body it has.
+  // Loaded once for every candidate send rather than per user: without it,
+  // every 10-minute run opens a fresh IMAP connection for every reply inside
+  // the 14-day window, which is the single most expensive mistake available
+  // in this file.
+  const capturedKeys = new Set<string>();
+  {
+    const { data: existing } = await supabase
+      .from("email_replies")
+      .select("sent_email_id, dedupe_key, body_text")
+      .in(
+        "sent_email_id",
+        emails.map((e) => e.id),
+      );
+    for (const row of existing ?? []) {
+      // A row whose body was never captured is deliberately NOT counted as
+      // done: leaving it out lets a later poll retry the download that failed.
+      if (row.body_text)
+        capturedKeys.add(`${row.sent_email_id}|${row.dedupe_key}`);
+    }
+  }
 
   for (const [userId, userEmails] of emailsByUser) {
     const creds = credsByUser.get(userId);
@@ -97,19 +138,78 @@ export async function trackEmailReplies(): Promise<{
       userEmails[0].sent_at,
     );
 
+    let inbound: InboundSummary[];
     try {
-      const inbound = await fetchInboundSince(creds, new Date(oldest));
-      for (const message of inbound) {
-        const hit = classifyInboundMessage(message, pending, creds.address);
-        if (!hit) continue;
-        const email = userEmails.find((e) => e.id === hit.sentEmailId);
-        if (!email) continue;
-        if (await applyInboundStatus(supabase, email, hit.status)) updated++;
-      }
+      inbound = await fetchInboundSince(creds, new Date(oldest));
     } catch {
-      // One user's IMAP failure must not break the whole run
+      // One user's IMAP failure must not break the whole run.
+      continue;
+    }
+
+    // Phase 1: classify. Deliberately separate from the body downloads below.
+    // fetchInboundSince returns a fully-drained array today, but interleaving a
+    // download with the fetch generator deadlocks imapflow, and keeping the two
+    // phases textually apart is what stops a future refactor reintroducing it.
+    // See the regression test in gmail-imap.test.ts.
+    const hits: Array<{
+      email: TrackedEmail;
+      status: "replied" | "bounced";
+      message: InboundSummary;
+    }> = [];
+    for (const message of inbound) {
+      const hit = classifyInboundMessage(message, pending, creds.address);
+      if (!hit) continue;
+      const email = userEmails.find((e) => e.id === hit.sentEmailId);
+      if (!email) continue;
+      hits.push({ email, status: hit.status, message });
+    }
+
+    // Phase 2: apply status, then capture content. Each step is guarded on its
+    // own so a failure to store a reply body can never cost the status update,
+    // which is the more important of the two.
+    for (const { email, status, message } of hits) {
+      try {
+        if (await applyInboundStatus(supabase, email, status)) updated++;
+      } catch (err) {
+        console.error("[email-track] applyInboundStatus failed:", err);
+      }
+
+      const key = `${email.id}|${replyDedupeKey(message)}`;
+      if (capturedKeys.has(key)) continue;
+
+      let bodyText: string | null = null;
+      if (status === "bounced") {
+        // Already downloaded by fetchInboundSince to match the quoted
+        // Message-ID, so bounce capture costs nothing extra.
+        bodyText = message.bodyText || null;
+      } else if (
+        message.uid !== null &&
+        bodyFetches < MAX_BODY_FETCHES_PER_RUN
+      ) {
+        bodyFetches++;
+        try {
+          const raw = await fetchMessageText(creds, message.uid);
+          bodyText = raw ? stripQuotedReply(raw) : null;
+        } catch (err) {
+          // A missing body is cosmetic. The row is still worth storing, and
+          // leaving body_text null lets a later poll retry the download.
+          console.error("[email-track] fetchMessageText failed:", err);
+        }
+      }
+
+      if (
+        await recordInboundReply(supabase, {
+          email,
+          message,
+          kind: status === "bounced" ? "bounce" : "reply",
+          bodyText,
+        })
+      ) {
+        captured++;
+        if (bodyText) capturedKeys.add(key);
+      }
     }
   }
 
-  return { checked: emails.length, updated };
+  return { checked: emails.length, updated, captured };
 }

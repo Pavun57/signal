@@ -298,6 +298,142 @@ describe("send_confirmed", () => {
   });
 });
 
+// ─── why a send did not happen ────────────────────────────────────────────
+
+/**
+ * The seven refusal sites in claimAndSendDraft each return a sentence written
+ * for a person to read, and until now every one of them was thrown away to a
+ * console.error. An approved draft that could not send just sat there with no
+ * explanation anywhere in the product.
+ *
+ * The classification is the part worth protecting. `deferred` (daily cap) is
+ * the most common non-send by far and is completely normal; letting it read as
+ * a failure would bury the two kinds that genuinely need attention.
+ */
+describe("send failure recording", () => {
+  // sendResponses() calls encryptSecret, which needs the key. The block above
+  // sets it in its own beforeEach, which does not reach here.
+  let key: string | undefined;
+  beforeEach(() => {
+    key = process.env.EMAIL_CREDENTIALS_KEY;
+    process.env.EMAIL_CREDENTIALS_KEY = Buffer.alloc(32, 7).toString("base64");
+    sendGmailMock
+      .mockReset()
+      .mockResolvedValue({ messageId: "<m1@sahnan.co>" });
+    recordVerifiedMock.mockClear();
+  });
+  afterEach(() => {
+    process.env.EMAIL_CREDENTIALS_KEY = key;
+  });
+
+  /** Like fakeSupabase, but keeps every update payload for assertions. */
+  function observingSupabase(responses: FakeResponse[]) {
+    const updates: Array<Record<string, unknown>> = [];
+    let i = 0;
+    const from = () => {
+      const builder: Record<string, unknown> = {};
+      for (const name of [
+        "select",
+        "eq",
+        "in",
+        "gte",
+        "insert",
+        "single",
+        "maybeSingle",
+        "order",
+        "limit",
+      ]) {
+        builder[name] = () => builder;
+      }
+      builder.update = (payload: Record<string, unknown>) => {
+        updates.push(payload);
+        return builder;
+      };
+      builder.then = (
+        resolve: (v: unknown) => unknown,
+        reject: (e: unknown) => unknown,
+      ) =>
+        Promise.resolve(responses[i++] ?? { data: null, error: null }).then(
+          resolve,
+          reject,
+        );
+      return builder;
+    };
+    return { client: { from } as never, updates };
+  }
+
+  const errorWrites = (updates: Array<Record<string, unknown>>) =>
+    updates.filter((u) => "last_error_kind" in u);
+
+  it("classifies the daily cap as deferred, not failed", async () => {
+    const responses = sendResponses("per_1");
+    responses[5] = { count: 999 }; // over the cap
+
+    const { client, updates } = observingSupabase(responses);
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result.ok).toBe(false);
+    const written = errorWrites(updates);
+    expect(written).toHaveLength(1);
+    // Not "failed". Hitting the cap is routine, and a failed list full of it
+    // is a list nobody reads.
+    expect(written[0].last_error_kind).toBe("deferred");
+    expect(written[0].last_error).toMatch(/daily send limit/i);
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
+  it("classifies a stale address as blocked, with the reason kept verbatim", async () => {
+    const responses = sendResponses("per_1");
+    responses[3] = {
+      data: {
+        work_email: "corrected@example.com",
+        work_email_source: "user_entered",
+        work_email_verification: null,
+        affiliation_confidence: 0.9,
+        affiliation_source: "team_page",
+        organization_id: "org_1",
+      },
+    };
+
+    const { client, updates } = observingSupabase(responses);
+    await sendApprovedDraft(client, enrollment);
+
+    const written = errorWrites(updates);
+    expect(written).toHaveLength(1);
+    expect(written[0].last_error_kind).toBe("blocked");
+    // The stored sentence is the one the user reads, so it has to survive
+    // intact rather than being paraphrased at read time.
+    expect(written[0].last_error).toMatch(/regenerate the draft/i);
+  });
+
+  it("classifies an SMTP throw as failed", async () => {
+    sendGmailMock.mockRejectedValueOnce(new Error("535 auth failed"));
+
+    const { client, updates } = observingSupabase(sendResponses("per_1"));
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result.ok).toBe(false);
+    const written = errorWrites(updates);
+    expect(written).toHaveLength(1);
+    expect(written[0].last_error_kind).toBe("failed");
+    expect(written[0].last_error).toMatch(/535 auth failed/);
+  });
+
+  it("clears a previous error once the draft sends", async () => {
+    const { client, updates } = observingSupabase(sendResponses("per_1"));
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result.ok).toBe(true);
+    // A draft blocked on Monday that sends on Tuesday must not still show
+    // Monday's reason next to a delivered email.
+    const cleared = updates.find((u) => u.status === "sent");
+    expect(cleared).toBeDefined();
+    expect(cleared?.last_error).toBeNull();
+    expect(cleared?.last_error_kind).toBeNull();
+    expect(cleared?.last_error_at).toBeNull();
+  });
+});
+
 // ─── recordBounce from the tracking cron ──────────────────────────────────
 
 describe("bounce feedback", () => {
@@ -314,6 +450,7 @@ describe("bounce feedback", () => {
     sent_at: new Date().toISOString(),
     person_id: "per_1",
     to_email: "dead@acme.com",
+    campaign_id: "camp_1",
     ...over,
   });
 
