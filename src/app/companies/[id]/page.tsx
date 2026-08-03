@@ -298,7 +298,11 @@ export default function CompanyPage() {
             uncategorizedCount={uncategorizedCount}
             onComplete={fetchCore}
           />
-          <FindMoreButton companyId={companyId} onComplete={fetchCore} />
+          <FindMoreButton
+            companyId={companyId}
+            campaignId={campaignId ?? undefined}
+            onComplete={fetchCore}
+          />
         </div>
       </div>
 
