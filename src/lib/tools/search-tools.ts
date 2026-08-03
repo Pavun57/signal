@@ -14,6 +14,7 @@ import {
   isDirectoryTitle,
 } from "@/lib/services/directory-domains";
 import { ExaService, type SearchCategory } from "@/lib/services/exa-service";
+import { resolveOrganizationDomain } from "@/lib/services/domain-resolver";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
   estimateClaudeCostFromUsage,
@@ -30,6 +31,9 @@ import {
   stringify,
   wrapUntrusted,
 } from "@/lib/prompt-safety";
+
+/** Parallel website lookups per batch. One paid lookup each, so keep it low. */
+const DOMAIN_RESOLVE_CONCURRENCY = 4;
 
 export const searchCompanies = tool({
   description:
@@ -640,6 +644,41 @@ ${wrapUntrusted(combinedContent.slice(0, 15000))}`,
       newCompanies.push(c);
     }
 
+    // Resolve the ones the directory listed without a website.
+    //
+    // A listing routinely carries no site for the business, and a company with
+    // no domain cannot hold contacts at all, so storing them as-is created
+    // campaigns that were structurally incapable of holding a lead. Bounded
+    // concurrency because this is one paid lookup per company, and every
+    // failure is swallowed inside the resolver: an unresolved company is still
+    // a real lead, and the campaign page can fix it by hand.
+    const needResolving = newCompanies.filter((c) => !c.domain);
+    let domainsResolved = 0;
+    for (let i = 0; i < needResolving.length; i += DOMAIN_RESOLVE_CONCURRENCY) {
+      const batch = needResolving.slice(i, i + DOMAIN_RESOLVE_CONCURRENCY);
+      const found = await Promise.all(
+        batch.map((c) =>
+          resolveOrganizationDomain({
+            name: c.name,
+            location: c.location,
+            industry: c.industry || input.industry,
+          }),
+        ),
+      );
+      for (const [index, resolved] of found.entries()) {
+        if (!resolved) continue;
+        batch[index].domain = resolved.domain;
+        batch[index].url = resolved.url;
+        domainsResolved++;
+      }
+    }
+    const domainsStillMissing = needResolving.length - domainsResolved;
+    if (needResolving.length > 0) {
+      console.log(
+        `[discoverCompanies] ${domainsResolved}/${needResolving.length} missing websites resolved; ${domainsStillMissing} still unusable for contacts.`,
+      );
+    }
+
     // Create orgs and link to campaign
     for (const c of newCompanies) {
       const domain = c.domain ? normalizeDomain(c.domain) : null;
@@ -671,6 +710,11 @@ ${wrapUntrusted(combinedContent.slice(0, 15000))}`,
       duplicatesSkipped,
       directoriesSearched: scrapedContent.length,
       queries: directoryQueries,
+      domainsResolved,
+      // Companies that still cannot hold a contact. Silence here reads as "12
+      // companies found" when none of the 12 is usable, which is the report
+      // this whole change came from.
+      domainsStillMissing,
     };
   },
 });
