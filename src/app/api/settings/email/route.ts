@@ -20,7 +20,7 @@ export async function GET() {
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit",
+      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused",
     )
     .eq("user_id", user.id)
     .maybeSingle();
@@ -34,6 +34,7 @@ export async function GET() {
       from_name: null,
       reply_to_email: null,
       daily_send_limit: 30,
+      sending_paused: false,
     },
     is_configured: !!settings?.gmail_address,
     effective_daily_limit: getEffectiveDailyLimit(
@@ -102,6 +103,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     return NextResponse.json({ connected: true, gmail_address: address });
+  }
+
+  // Kill switch. Its own action rather than part of the plain settings save,
+  // so toggling is atomic and can never be lost to a half-filled form.
+  if (body.action === "set_sending_paused") {
+    if (typeof body.paused !== "boolean") {
+      return NextResponse.json(
+        { error: "paused must be a boolean" },
+        { status: 400 },
+      );
+    }
+    const { error } = await supabase.from("user_settings").upsert(
+      {
+        user_id: user.id,
+        sending_paused: body.paused,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ sending_paused: body.paused });
   }
 
   if (body.action === "disconnect_gmail") {
