@@ -2,10 +2,12 @@ import { tool } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import {
+  callerHoldsOrganization,
   callerHoldsPerson,
   notFound,
   toolSession,
 } from "@/lib/tools/ownership";
+import { saveOrganizationWebsite } from "@/lib/services/organization-website";
 import { parseLinkedInTitle } from "@/lib/utils";
 import { ExaService } from "@/lib/services/exa-service";
 import { filterRelevantResults } from "@/lib/services/relevance-filter";
@@ -1575,6 +1577,55 @@ export const enrichCompanies = tool({
           ? "Turn time budget ran out before these companies were enriched. They were NOT processed. Call enrichCompanies again with the `deferred` IDs to finish."
           : undefined,
     };
+  },
+});
+
+export const setCompanyWebsite = tool({
+  description:
+    "Save the website of a company that has none on record, so contacts can be attached to it. Pass url when you know the address; pass resolve: true to look it up (Google Places, then a web search). Use this instead of re-running searchCompanies with a domain, which creates a SECOND company row and leaves the original unusable. If another company already holds that domain, the two are merged and the response says so.",
+  inputSchema: z.object({
+    organizationId: z
+      .string()
+      .uuid()
+      .describe("organizations.id (not campaign_organizations.id)."),
+    url: z
+      .string()
+      .optional()
+      .describe(
+        "The company's own web address. Omit to have it looked up instead.",
+      ),
+    resolve: z
+      .boolean()
+      .optional()
+      .describe("Look the website up. Ignored when url is given."),
+  }),
+  execute: async (input) => {
+    // `organizations` is a shared pool with no owner column, so reading or
+    // writing the row says nothing about whether the caller may have it. The
+    // campaign link is the only thing that does.
+    const session = await toolSession();
+    if (!session) {
+      return {
+        error:
+          "No authenticated session available in tool context. Ask the user to sign in.",
+      };
+    }
+    const { supabase, userId } = session;
+
+    if (
+      !(await callerHoldsOrganization(supabase, userId, input.organizationId))
+    ) {
+      return notFound("Company");
+    }
+
+    const result = await saveOrganizationWebsite(supabase, {
+      organizationId: input.organizationId,
+      url: input.url ?? null,
+      resolve: input.resolve ?? !input.url,
+    });
+
+    if (!result.ok) return { error: result.error };
+    return result;
   },
 });
 

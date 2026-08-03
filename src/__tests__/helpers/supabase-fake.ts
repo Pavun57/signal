@@ -40,7 +40,7 @@ export interface FakeRelation {
   foreignKey?: string;
 }
 
-export type QueryKind = "select" | "update";
+export type QueryKind = "select" | "update" | "delete";
 
 export interface ObservedQuery {
   table: string;
@@ -323,8 +323,29 @@ export function createSupabaseFake(
       return { data: null, error: null };
     };
 
+    /**
+     * Removes the matched rows from the array the table getter returned.
+     *
+     * Mutating in place rather than reassigning, because the getter owns the
+     * fixture and a test that reads it after the call has to see the deletion.
+     * A delete with no filters empties the table, exactly as PostgREST would.
+     */
+    const runDelete = () => {
+      notify();
+      const error = options.updateError?.() ?? null;
+      if (error) return { data: null, error };
+      const all = rowsOf(table);
+      for (const row of raw()) {
+        const at = all.indexOf(row);
+        if (at >= 0) all.splice(at, 1);
+      }
+      return { data: null, error: null };
+    };
+
+    const runMutation = () => (kind === "delete" ? runDelete() : runUpdate());
+
     const resolve = () => {
-      if (kind === "update") return runUpdate();
+      if (kind !== "select") return runMutation();
       notify();
       return { data: rows(), error: null };
     };
@@ -337,6 +358,10 @@ export function createSupabaseFake(
       update: (payload: FakeRow) => {
         kind = "update";
         updates = payload;
+        return c;
+      },
+      delete: () => {
+        kind = "delete";
         return c;
       },
       eq: (column: string, value: unknown) => {
@@ -361,7 +386,7 @@ export function createSupabaseFake(
         return c;
       },
       single: async () => {
-        if (kind === "update") return runUpdate();
+        if (kind !== "select") return runMutation();
         notify();
         const found = rows();
         if (found.length !== 1) {
@@ -370,7 +395,7 @@ export function createSupabaseFake(
         return { data: found[0], error: null };
       },
       maybeSingle: async () => {
-        if (kind === "update") return runUpdate();
+        if (kind !== "select") return runMutation();
         notify();
         const found = rows();
         if (found.length > 1) {

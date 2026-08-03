@@ -204,3 +204,81 @@ describe("<CompaniesList> find leads", () => {
     expect(apiFetch).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The way out of the dead end. A domain-less company cannot hold contacts, and
+ * before this there was no way at all to give one a website: the field is
+ * written on INSERT and never again.
+ */
+describe("<CompaniesList> missing website", () => {
+  it("looks the website up on request", async () => {
+    respondWith({ merged: false, domain: "cedarlodge.co.uk" });
+    renderWithoutLeads([company({ domain: null })]);
+
+    fireEvent.click(
+      screen.getByLabelText("Find website for Cedar Lodge Nursing Home"),
+    );
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+    const [url, init] = vi.mocked(apiFetch).mock.calls[0];
+    // The organization id, not the campaign link id: this writes to the shared
+    // company row.
+    expect(url).toBe(
+      "/api/companies/11111111-1111-1111-1111-111111111111/website",
+    );
+    expect((init as RequestInit).method).toBe("PATCH");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      resolve: true,
+    });
+    await waitFor(() => expect(onDataChanged).toHaveBeenCalled());
+  });
+
+  it("saves an address the user types", async () => {
+    respondWith({ merged: false, domain: "cedarlodge.co.uk" });
+    renderWithoutLeads([company({ domain: null })]);
+
+    const input = screen.getByLabelText("Website for Cedar Lodge Nursing Home");
+    fireEvent.change(input, { target: { value: "cedarlodge.co.uk" } });
+    fireEvent.click(
+      screen.getByLabelText("Save website for Cedar Lodge Nursing Home"),
+    );
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+    const [, init] = vi.mocked(apiFetch).mock.calls[0];
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      url: "cedarlodge.co.uk",
+    });
+  });
+
+  it("says so when no website could be found", async () => {
+    respondWith({
+      error: 'Could not find a website for "Cedar Lodge Nursing Home".',
+    });
+    renderWithoutLeads([company({ domain: null })]);
+
+    fireEvent.click(
+      screen.getByLabelText("Find website for Cedar Lodge Nursing Home"),
+    );
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("reports a merge, since the row the user was looking at is gone", async () => {
+    respondWith({
+      merged: true,
+      into: "org-twin",
+      domain: "cedarlodge.co.uk",
+      message: "Merged into the existing record for cedarlodge.co.uk.",
+    });
+    renderWithoutLeads([company({ domain: null })]);
+
+    fireEvent.click(
+      screen.getByLabelText("Find website for Cedar Lodge Nursing Home"),
+    );
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    expect(vi.mocked(toast.success).mock.calls[0][0]).toMatch(/merged/i);
+    expect(onDataChanged).toHaveBeenCalled();
+  });
+});

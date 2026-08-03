@@ -848,6 +848,7 @@ export function CompaniesList({
           onToggle={toggleCompany}
           onEnrich={enrichCompanyHandler}
           onFindContacts={findContactsHandler}
+          onDataChanged={onDataChanged}
           isCompanyEnriched={isCompanyEnriched}
         />
       )}
@@ -1194,6 +1195,112 @@ function ContactsTable({
   );
 }
 
+/**
+ * The way out of a dead end: a company with no website cannot hold contacts,
+ * and until the website route existed there was no way to give it one. The
+ * domain is written when the company is created and never again, so a company
+ * that arrived from a directory listing with no site was stuck there for good.
+ */
+function MissingWebsite({
+  company,
+  onSaved,
+}: {
+  company: CampaignCompany;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async (payload: { url?: string; resolve?: boolean }) => {
+    if (!company.organization_id) return;
+    setBusy(true);
+    try {
+      const res = await apiFetch(
+        `/api/companies/${company.organization_id}/website`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const data = (await res.json().catch(() => null)) as {
+        domain?: string;
+        merged?: boolean;
+        message?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || data?.error) {
+        // "No website could be found" comes back as a 200 with an error, since
+        // having no site is an ordinary fact about a small business rather
+        // than a failed request.
+        toast.error(data?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      // A merge removes the row the user was looking at, so saying only
+      // "saved" would leave them hunting for a company that is now filed under
+      // its twin.
+      toast.success(
+        data?.merged
+          ? (data.message ?? `Merged into the existing ${data.domain} record.`)
+          : `Saved ${data?.domain}. You can find leads now.`,
+      );
+      onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save it.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 space-y-1">
+      <p className="text-muted-foreground text-xs">
+        No website on record, so contacts cannot be attached to this company.
+      </p>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={value}
+          disabled={busy}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim()) save({ url: value.trim() });
+          }}
+          placeholder="company.co.uk"
+          aria-label={`Website for ${company.name}`}
+          className={cn(
+            "border-border bg-background h-6 w-40 rounded border px-1.5 text-xs",
+            ROW_FOCUS,
+          )}
+        />
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || !value.trim()}
+          aria-label={`Save website for ${company.name}`}
+          onClick={() => save({ url: value.trim() })}
+        >
+          Save
+        </Button>
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={busy}
+          aria-label={`Find website for ${company.name}`}
+          onClick={() => save({ resolve: true })}
+        >
+          {busy ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
+          )}
+          Find it
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 interface CompaniesWithoutLeadsProps {
   companies: CampaignCompany[];
   expandedCompanyIds: Set<string>;
@@ -1202,6 +1309,7 @@ interface CompaniesWithoutLeadsProps {
   onToggle: (id: string) => void;
   onEnrich: (id: string) => void;
   onFindContacts: (id: string) => void;
+  onDataChanged: () => void;
   isCompanyEnriched: (company: CampaignCompany) => boolean | "" | undefined;
 }
 
@@ -1213,6 +1321,7 @@ function CompaniesWithoutLeads({
   onToggle,
   onEnrich,
   onFindContacts,
+  onDataChanged,
   isCompanyEnriched,
 }: CompaniesWithoutLeadsProps) {
   const isOpen = expandedCompanyIds.has("__no_leads__");
@@ -1292,15 +1401,10 @@ function CompaniesWithoutLeads({
                       </span>
                     )}
                     {!company.domain && (
-                      // Discovery refuses a company with no domain before it
-                      // searches, because two companies of the same name are
-                      // indistinguishable without one. Saying that here beats
-                      // a button whose only possible outcome is an error
-                      // toast, which is what the rest of this section is for.
-                      <p className="text-muted-foreground text-xs">
-                        No website on record, so contacts cannot be attached to
-                        this company.
-                      </p>
+                      <MissingWebsite
+                        company={company}
+                        onSaved={onDataChanged}
+                      />
                     )}
                   </div>
                   {company.domain &&
