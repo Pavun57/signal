@@ -217,14 +217,57 @@ export function CompaniesList({
   const findContactsHandler = async (companyId: string) => {
     setFindingContactsIds((prev) => new Set(prev).add(companyId));
     try {
-      await apiFetch("/api/find-contacts", {
+      const res = await apiFetch("/api/find-contacts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId, campaignId }),
       });
+      // This used to await the call and ignore everything it returned. apiFetch
+      // does not throw on a non-2xx, so the catch below never fired either: a
+      // 403, a refusal and a successful run all looked identical from here,
+      // which is to say they all looked like nothing happening.
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json().catch(() => null)) as {
+        contacts?: unknown[];
+        totalFound?: number;
+        uncertainCount?: number;
+        rejectedAsWrongCompany?: number;
+        error?: string;
+      } | null;
+
       onDataChanged();
+
+      // A refusal (most often: the company has no domain on record, so
+      // contacts cannot be told apart from another company of the same name)
+      // comes back 200 with an explanation. It is the normal outcome for a
+      // directory-sourced company, and swallowing it is what left the user
+      // staring at an empty campaign with nothing to act on. Worded as the
+      // "Find more people" button words it, deliberately: two buttons over one
+      // service must not describe it two ways.
+      if (data?.error) {
+        toast.error(data.error);
+        return;
+      }
+      const added = data?.contacts?.length ?? 0;
+      if (added === 0) {
+        toast.info("No new people found.");
+        return;
+      }
+      const notes = [];
+      if (data?.uncertainCount)
+        notes.push(`${data.uncertainCount} unconfirmed, blocked from outreach`);
+      if (data?.rejectedAsWrongCompany)
+        notes.push(`${data.rejectedAsWrongCompany} work elsewhere`);
+      toast.success(
+        `Found ${added} ${added === 1 ? "person" : "people"}.` +
+          (notes.length ? ` ${notes.join(", ")}.` : ""),
+      );
     } catch (err) {
       console.error(`[find-contacts] Failed:`, err);
+      toast.error(err instanceof Error ? err.message : "Failed to find leads.");
     } finally {
       setFindingContactsIds((prev) => {
         const next = new Set(prev);
@@ -801,8 +844,10 @@ export function CompaniesList({
           companies={companiesWithoutLeads}
           expandedCompanyIds={expandedCompanyIds}
           enrichingCompanyIds={enrichingCompanyIds}
+          findingContactsIds={findingContactsIds}
           onToggle={toggleCompany}
           onEnrich={enrichCompanyHandler}
+          onFindContacts={findContactsHandler}
           isCompanyEnriched={isCompanyEnriched}
         />
       )}
@@ -1153,8 +1198,10 @@ interface CompaniesWithoutLeadsProps {
   companies: CampaignCompany[];
   expandedCompanyIds: Set<string>;
   enrichingCompanyIds: Set<string>;
+  findingContactsIds: Set<string>;
   onToggle: (id: string) => void;
   onEnrich: (id: string) => void;
+  onFindContacts: (id: string) => void;
   isCompanyEnriched: (company: CampaignCompany) => boolean | "" | undefined;
 }
 
@@ -1162,8 +1209,10 @@ function CompaniesWithoutLeads({
   companies,
   expandedCompanyIds,
   enrichingCompanyIds,
+  findingContactsIds,
   onToggle,
   onEnrich,
+  onFindContacts,
   isCompanyEnriched,
 }: CompaniesWithoutLeadsProps) {
   const isOpen = expandedCompanyIds.has("__no_leads__");
@@ -1242,7 +1291,35 @@ function CompaniesWithoutLeads({
                         {company.industry}
                       </span>
                     )}
+                    {!company.domain && (
+                      // Discovery refuses a company with no domain before it
+                      // searches, because two companies of the same name are
+                      // indistinguishable without one. Saying that here beats
+                      // a button whose only possible outcome is an error
+                      // toast, which is what the rest of this section is for.
+                      <p className="text-muted-foreground text-xs">
+                        No website on record, so contacts cannot be attached to
+                        this company.
+                      </p>
+                    )}
                   </div>
+                  {company.domain &&
+                    (findingContactsIds.has(company.id) ? (
+                      <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Searching
+                      </span>
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        aria-label={`Find leads for ${company.name}`}
+                        onClick={() => onFindContacts(company.id)}
+                      >
+                        <UserSearch className="h-3 w-3" />
+                        Find leads
+                      </Button>
+                    ))}
                   {enrichingCompanyIds.has(company.id) ? (
                     <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs">
                       <Loader2 className="h-3 w-3 animate-spin" />
