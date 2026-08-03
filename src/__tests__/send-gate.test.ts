@@ -103,7 +103,7 @@ describe("canSendTo", () => {
     if (!result.ok) expect(result.reason).toMatch(/no evidence/i);
   });
 
-  it("allows an LLM-verified affiliation — exactly at the threshold", () => {
+  it("allows an LLM-verified affiliation, exactly at the threshold", () => {
     expect(
       canSendTo(
         p({

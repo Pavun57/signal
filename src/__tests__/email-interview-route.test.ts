@@ -426,7 +426,7 @@ describe("turn cap", () => {
     expect(body.move?.kind).toBe("complete");
   });
 
-  it("skips the campaign read at the cap — no sample copy is needed", async () => {
+  it("skips the campaign read at the cap, no sample copy is needed", async () => {
     const { calls } = wire([{ error: null }]);
     h.generateObject.mockResolvedValue({
       object: {

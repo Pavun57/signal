@@ -91,7 +91,7 @@ describe("deriveRules", () => {
     const warmRules = deriveRules(warm.kept, warm.passed);
 
     expect(bluntRules).toContain(
-      "Open on the signal itself — what they just shipped or announced.",
+      "Open on the signal itself: what they just shipped or announced.",
     );
     expect(warmRules).toContain("Keep it warm and conversational.");
     expect(bluntRules).not.toEqual(warmRules);

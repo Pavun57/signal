@@ -30,7 +30,7 @@ if (!clerkPublishableKey.startsWith("pk_test_")) {
   throw new Error(
     `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must start with pk_test_ for e2e tests ` +
       `(got prefix "${clerkPublishableKey.slice(0, 10)}…"). Create a separate ` +
-      `Clerk dev instance for testing — never run e2e against production keys.`,
+      `Clerk dev instance for testing. Never run e2e against production keys.`,
   );
 }
 if (!clerkSecretKey.startsWith("sk_test_")) {

@@ -103,7 +103,7 @@ export function getEmailProvider(): EmailProvider | null {
     const key = process.env.HUNTER_API_KEY;
     if (!key) {
       console.warn(
-        "[email-provider] EMAIL_PROVIDER=hunter but HUNTER_API_KEY is unset — falling back to free-only discovery.",
+        "[email-provider] EMAIL_PROVIDER=hunter but HUNTER_API_KEY is unset; falling back to free-only discovery.",
       );
       return null;
     }
@@ -111,7 +111,7 @@ export function getEmailProvider(): EmailProvider | null {
   }
 
   console.warn(
-    `[email-provider] Unknown EMAIL_PROVIDER "${configured}" — falling back to free-only discovery.`,
+    `[email-provider] Unknown EMAIL_PROVIDER "${configured}"; falling back to free-only discovery.`,
   );
   return null;
 }

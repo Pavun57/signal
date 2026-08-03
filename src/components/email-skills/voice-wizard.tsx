@@ -380,7 +380,7 @@ export function VoiceWizard({
               />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-muted-foreground text-xs">
-                  Describe it in your own words — the agent rewrites the rules.
+                  Describe it in your own words. The agent rewrites the rules.
                 </p>
                 <div className="flex gap-2">
                   <Button
@@ -457,12 +457,12 @@ function ProgressHeader({
   onExit: () => void;
 }) {
   const label = complete
-    ? "Done — review your voice below"
+    ? "Done, review your voice below"
     : askedCount === 0
-      ? `Starting — usually ${TYPICAL_MIN_TURNS} to ${TYPICAL_MAX_TURNS} questions`
+      ? `Starting, usually ${TYPICAL_MIN_TURNS} to ${TYPICAL_MAX_TURNS} questions`
       : askedCount > TYPICAL_MAX_TURNS
         ? `Question ${askedCount} of at most ${MAX_INTERVIEW_TURNS}`
-        : `Question ${askedCount} — usually ${TYPICAL_MIN_TURNS} to ${TYPICAL_MAX_TURNS} in total`;
+        : `Question ${askedCount}, usually ${TYPICAL_MIN_TURNS} to ${TYPICAL_MAX_TURNS} in total`;
 
   // Held short of full until the agent actually finishes, so the bar never
   // claims to be done while another question is coming.

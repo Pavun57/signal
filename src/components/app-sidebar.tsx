@@ -29,6 +29,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
 
@@ -158,6 +159,18 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         <SidebarSeparator />
         <NavUser user={defaultUser} />
       </SidebarFooter>
+      {/*
+        Click target over the divider between the sidebar and the content, so
+        the seam itself toggles the nav.
+
+        Two adjustments to the default rail. Position: nudged half a step left,
+        because the inset variant's p-2 leaves an 8px gutter there and this
+        centres the 16px strip on it rather than hanging half of it over the
+        content. Colour: the stock hover line is --sidebar-border (#edebeb),
+        which is invisible against this palette's background, so the seam gave
+        no sign it was clickable.
+      */}
+      <SidebarRail className="group-data-[side=left]:-right-3 hover:after:bg-sidebar-accent-foreground/25" />
     </Sidebar>
   );
 }

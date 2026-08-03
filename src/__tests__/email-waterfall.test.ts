@@ -256,7 +256,7 @@ describe("findEmailForPerson verification", () => {
     expect(row().enrichment_data.rejectedEmails).toContain("jdoe@acme.com");
   });
 
-  it("caps a catch-all 'deliverable' well below verified — it proves nothing", async () => {
+  it("caps a catch-all 'deliverable' well below verified, it proves nothing", async () => {
     provider.verifyEmail.mockResolvedValue({
       status: "deliverable",
       catchAll: true,

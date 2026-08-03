@@ -138,7 +138,7 @@ export async function runDataQualityAudit(
     findings.push({
       kind: "unresolved_company_with_people",
       severity: "high",
-      summary: `"${org.name}" has no domain but holds ${members.length} contact(s). Without a domain this company cannot be distinguished from any other of the same name — resolve its website, then re-verify the contacts.`,
+      summary: `"${org.name}" has no domain but holds ${members.length} contact(s). Without a domain this company cannot be distinguished from any other of the same name. Resolve its website, then re-verify the contacts.`,
       ids: [orgId],
     });
   }
@@ -177,7 +177,7 @@ export async function runDataQualityAudit(
       severity: "high",
       summary: `${dupes.length} rows share the LinkedIn profile ${url} (${dupes
         .map((d) => d.name)
-        .join(", ")}). Merge them — they are one person.`,
+        .join(", ")}). Merge them; they are one person.`,
       ids: dupes.map((d) => d.id),
     });
   }
@@ -197,7 +197,7 @@ export async function runDataQualityAudit(
     findings.push({
       kind: "unverified_affiliation",
       severity: "high",
-      summary: `${p.name} is filed under ${org.name}, but their own title reads "${p.title}" — which names ${named}.`,
+      summary: `${p.name} is filed under ${org.name}, but their own title reads "${p.title}", which names ${named}.`,
       ids: [p.id],
     });
   }
@@ -263,7 +263,7 @@ export async function runDataQualityAudit(
     // and a silent "no problems found" would be read as a clean bill of health.
     truncated:
       orgList.length >= MAX_ROWS || peopleList.length >= MAX_ROWS
-        ? `Scanned the first ${MAX_ROWS} rows only — findings are not exhaustive.`
+        ? `Scanned the first ${MAX_ROWS} rows only; findings are not exhaustive.`
         : undefined,
   };
 }

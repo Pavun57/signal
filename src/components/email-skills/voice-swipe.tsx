@@ -257,7 +257,7 @@ export function VoiceSwipe({
         if (nextKept.length >= 3 && avg <= 50) {
           add(
             "k-short",
-            `Everything you've kept is short — ${avg} words on average.`,
+            `Everything you've kept is short: ${avg} words on average.`,
           );
         }
       }
@@ -305,7 +305,7 @@ export function VoiceSwipe({
       say({
         who: "agent",
         applied: true,
-        text: `Keeping ${r.kept} of the last ${r.of} — not ${Math.round(TARGET_RATE * 100)}% yet. Writing more, closer to what you've kept.`,
+        text: `Keeping ${r.kept} of the last ${r.of}, not ${Math.round(TARGET_RATE * 100)}% yet. Writing more, closer to what you've kept.`,
       });
       const more = await fetchBatch("rewriting", REFILL);
       if (more.length) setQueue((q) => [...q, ...more]);
@@ -374,7 +374,7 @@ export function VoiceSwipe({
         setQueue(first);
         say({
           who: "agent",
-          text: `I've written ${first.length} to start, deliberately different from each other. Here's the first — keep it if it sounds like you, or just tell me what's off and I'll rewrite them.`,
+          text: `I've written ${first.length} to start, deliberately different from each other. Here's the first: keep it if it sounds like you, or just tell me what's off and I'll rewrite them.`,
         });
       }
       setOpened(true);
@@ -517,7 +517,7 @@ export function VoiceSwipe({
         { text: sel.text, note: selNote.trim() },
       ],
     }));
-    say({ who: "you", text: `“${sel.text}” — ${selNote.trim()}` });
+    say({ who: "you", text: `“${sel.text}”: ${selNote.trim()}` });
     // A phrase comment is the strongest signal available — they pointed at the
     // exact words — so it is sent as one instruction quoting them.
     void runInstruction(`About "${sel.text}": ${selNote.trim()}`);
@@ -728,8 +728,8 @@ export function VoiceSwipe({
                   ))}
                 </div>
                 <p className="text-muted-foreground text-xs leading-relaxed">
-                  Type below any time — “never open with a compliment”,
-                  “shorter” — and it changes what you see next.
+                  Type below any time, “never open with a compliment”,
+                  “shorter”, and it changes what you see next.
                 </p>
               </div>
             ) : (
@@ -925,11 +925,11 @@ function Progress({
   const need = needed();
   const line =
     judged < MIN_JUDGED
-      ? `Ends when you keep ${need} of any ${WINDOW} in a row — ${MIN_JUDGED - judged} more before that can happen.`
+      ? `Ends when you keep ${need} of any ${WINDOW} in a row, ${MIN_JUDGED - judged} more before that can happen.`
       : roll.of < WINDOW
         ? `Ends when you keep ${need} of any ${WINDOW} in a row.`
         : roll.kept >= need
-          ? `That's it — ${roll.kept} of ${WINDOW}.`
+          ? `That's it: ${roll.kept} of ${WINDOW}.`
           : need - roll.kept === 1
             ? `Keeping ${roll.kept} of the last ${WINDOW}. One more and it's done.`
             : `Keeping ${roll.kept} of the last ${WINDOW}. ${need - roll.kept} more to go.`;
@@ -974,8 +974,8 @@ function Progress({
                   rest.
                 </p>
                 <p className="text-muted-foreground text-xs leading-snug">
-                  Say anything a swipe can&apos;t — “never open with a
-                  compliment” — and it rewrites what&apos;s still to come.
+                  Say anything a swipe can&apos;t, like “never open with a
+                  compliment”, and it rewrites what&apos;s still to come.
                 </p>
               </div>
             )}
@@ -1082,7 +1082,7 @@ function StallPrompt({
       : `${stall.n} emails in and none of this is landing.`;
   const sub =
     stall.reason === "streak"
-      ? "I'm missing something. Tell me what's wrong and I'll rewrite the rest — it's faster than swiping through more of the same."
+      ? "I'm missing something. Tell me what's wrong and I'll rewrite the rest, it's faster than swiping through more of the same."
       : "You're keeping some, but not enough for me to trust the pattern. What would make these right?";
 
   return (
@@ -1204,7 +1204,7 @@ function Result({
             : skillState === "failed"
               ? "The rules could not be saved, so nothing was written. What's below is a local summary of the run, not your saved voice. "
               : didConverge
-                ? `You kept ${roll.kept} of the last ${roll.of} — it's writing emails you'd send. `
+                ? `You kept ${roll.kept} of the last ${roll.of}, it's writing emails you'd send. `
                 : `It didn't reach ${Math.round(TARGET_RATE * 100)}% before the drafts ran out. `}
         Built from {judged} judgement{judged === 1 ? "" : "s"}
         {comments.length

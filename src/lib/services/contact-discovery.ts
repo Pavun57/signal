@@ -210,7 +210,7 @@ export async function findContactsForOrganization(
   // unrelated businesses. Refuse, and say what would fix it.
   if (!canHoldPeople(org)) {
     return empty(
-      `"${org.name}" has no domain on record, so contacts cannot be attached to it — two different companies with this name would be indistinguishable. Resolve the company's website first, then retry.`,
+      `"${org.name}" has no domain on record, so contacts cannot be attached to it: two different companies with this name would be indistinguishable. Resolve the company's website first, then retry.`,
     );
   }
 

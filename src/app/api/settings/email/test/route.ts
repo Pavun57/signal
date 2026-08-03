@@ -212,7 +212,7 @@ export async function POST(request: Request) {
       // the test as broken because one IMAP connect blipped.
       return NextResponse.json({
         status: "waiting",
-        warning: "Could not reach Gmail over IMAP — will retry.",
+        warning: "Could not reach Gmail over IMAP. Will retry.",
         test: testState(settings),
       });
     }

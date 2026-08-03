@@ -334,8 +334,8 @@ export function EmailSettings() {
             {warmupDay !== null && (
               <p className="text-muted-foreground text-xs">
                 {ramping
-                  ? `Warming up: day ${warmupDay} — limited to ${effectiveLimit} sends/day today. The limit rises automatically over the first two weeks.`
-                  : `Connected ${warmupDay} day${warmupDay === 1 ? "" : "s"} ago — fully ramped at ${effectiveLimit}/day.`}
+                  ? `Warming up: day ${warmupDay}, limited to ${effectiveLimit} sends/day today. The limit rises automatically over the first two weeks.`
+                  : `Connected ${warmupDay} day${warmupDay === 1 ? "" : "s"} ago, fully ramped at ${effectiveLimit}/day.`}
               </p>
             )}
             <Button
@@ -369,7 +369,7 @@ export function EmailSettings() {
                   </Button>
                 </div>
                 <p className="text-muted-foreground text-xs">
-                  Send this to a different mailbox you own — Signal ignores
+                  Send this to a different mailbox you own. Signal ignores
                   replies from {gmailAddress}, so a test to yourself can never
                   show a reply. Test sends don&apos;t count against your daily
                   limit.
@@ -395,7 +395,7 @@ export function EmailSettings() {
                       {polling
                         ? testChecking
                           ? "Checking your inbox..."
-                          : `Watching for your reply — checking every ${POLL_MS / 1000}s.`
+                          : `Watching for your reply, checking every ${POLL_MS / 1000}s.`
                         : "No reply detected yet. Reply to the test, then check again."}
                     </p>
                   </div>
@@ -410,7 +410,7 @@ export function EmailSettings() {
                     onClick={() => void checkTest()}
                     disabled={testChecking}
                   >
-                    {testChecking ? "Checking..." : "I've replied — check now"}
+                    {testChecking ? "Checking..." : "I've replied, check now"}
                   </Button>
                 </div>
               )}
@@ -421,7 +421,7 @@ export function EmailSettings() {
                     {[
                       "Reply received",
                       testReply?.from ? ` from ${testReply.from}` : "",
-                      testReply?.subject ? ` — “${testReply.subject}”` : "",
+                      testReply?.subject ? `, “${testReply.subject}”` : "",
                       testReply ? ` at ${formatLocalTime(testReply.at)}` : "",
                       ". Reply tracking is confirmed working.",
                     ].join("")}
@@ -438,7 +438,7 @@ export function EmailSettings() {
 
               {testStatus === "bounced" && (
                 <p className="text-destructive text-xs">
-                  That address bounced. Sending works — your mailbox delivered
+                  That address bounced. Sending works: your mailbox delivered
                   the message and the recipient rejected it. This does not
                   confirm reply tracking; try again with a mailbox you can reply
                   from.
@@ -493,8 +493,8 @@ export function EmailSettings() {
               />
               <p className="text-muted-foreground text-xs">
                 Verified with a live login before saving, then stored encrypted.
-                Signal sends through Google&apos;s servers — best deliverability
-                for cold outreach.
+                Signal sends through Google&apos;s servers, the best
+                deliverability for cold outreach.
               </p>
             </div>
             <Button

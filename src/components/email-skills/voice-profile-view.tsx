@@ -94,7 +94,7 @@ export function VoiceProfileView({
           />
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-muted-foreground text-xs">
-              The agent takes it from here — it may ask a question or two before
+              The agent takes it from here. It may ask a question or two before
               rewriting the rules.
             </p>
             <div className="flex gap-2">

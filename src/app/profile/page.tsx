@@ -116,7 +116,7 @@ export default function ProfilePage() {
         toast.success("Profile saved");
       } else {
         if (!clerkUser?.id) {
-          toast.error("Still signing in — try again in a moment");
+          toast.error("Still signing in, try again in a moment");
           setSaving(false);
           return;
         }

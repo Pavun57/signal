@@ -44,7 +44,7 @@ export async function verifyAddressForSend(
     return {
       outcome: "unavailable",
       reason:
-        "no email provider is configured to verify this address — set EMAIL_PROVIDER and its key, or enter the address manually to vouch for it",
+        "no email provider is configured to verify this address; set EMAIL_PROVIDER and its key, or enter the address manually to vouch for it",
     };
   }
 
@@ -75,7 +75,7 @@ export async function verifyAddressForSend(
     return {
       outcome: "blocked",
       reason:
-        "the company's mail server accepts every address (catch-all), so this one cannot be confirmed — verify it manually and enter it to vouch for it",
+        "the company's mail server accepts every address (catch-all), so this one cannot be confirmed; verify it manually and enter it to vouch for it",
     };
   }
 
@@ -88,7 +88,7 @@ export async function verifyAddressForSend(
     return {
       outcome: "unavailable",
       reason:
-        "the email verifier is unavailable or out of quota — the send will work once it recovers, or enter the address manually",
+        "the email verifier is unavailable or out of quota; the send will work once it recovers, or enter the address manually",
     };
   }
 
@@ -115,7 +115,7 @@ export async function verifyAddressForSend(
       .eq("id", personId);
     return {
       outcome: "blocked",
-      reason: `${email} does not exist — find or enter a corrected address`,
+      reason: `${email} does not exist; find or enter a corrected address`,
     };
   }
 
@@ -126,7 +126,7 @@ export async function verifyAddressForSend(
       .eq("id", personId);
     return {
       outcome: "blocked",
-      reason: `${email} could not be confirmed (catch-all or risky mailbox) — verify it manually and enter it to vouch for it`,
+      reason: `${email} could not be confirmed (catch-all or risky mailbox); verify it manually and enter it to vouch for it`,
     };
   }
 

@@ -161,7 +161,7 @@ export async function claimAndSendDraft(
     ) {
       return {
         ok: false,
-        reason: `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail} — regenerate the draft so it uses the current address.`,
+        reason: `Draft is addressed to ${draft.to_email}, but the contact's verified address on file is ${personEmail}. Regenerate the draft so it uses the current address.`,
       };
     }
   }
@@ -210,7 +210,7 @@ export async function claimAndSendDraft(
       ok: false,
       reason: `Daily send limit reached (${effectiveLimit}/day${
         effectiveLimit < sender.dailyLimit ? ", warmup ramp" : ""
-      }) — draft left for tomorrow`,
+      }), draft left for tomorrow`,
     };
   }
 

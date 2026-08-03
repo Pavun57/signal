@@ -110,16 +110,16 @@ export function CompaniesList({
   const [removedContactIds, setRemovedContactIds] = useState<Set<string>>(
     new Set(),
   );
-  // Companies in this set use the flat-table view; everyone else defaults
-  // to chart. Keeping this per-company so toggling one row doesn't reset
+  // Companies in this set use the org-chart view; everyone else defaults to
+  // the flat list. Keeping this per-company so toggling one row doesn't reset
   // every other expanded row.
-  const [tableModeCompanyIds, setTableModeCompanyIds] = useState<Set<string>>(
+  const [chartModeCompanyIds, setChartModeCompanyIds] = useState<Set<string>>(
     new Set(),
   );
   const setCompanyView = (companyId: string, mode: "chart" | "table") => {
-    setTableModeCompanyIds((prev) => {
+    setChartModeCompanyIds((prev) => {
       const next = new Set(prev);
-      if (mode === "table") next.add(companyId);
+      if (mode === "chart") next.add(companyId);
       else next.delete(companyId);
       return next;
     });
@@ -657,16 +657,18 @@ export function CompaniesList({
                       ) : (
                         <>
                           {(() => {
-                            const tableMode = tableModeCompanyIds.has(
-                              company.id,
-                            );
+                            // A company with no organization id has no chart to
+                            // show, so it stays on the list whatever is stored.
+                            const chartMode =
+                              chartModeCompanyIds.has(company.id) &&
+                              !!company.organization_id;
                             return (
                               <div className="border-border flex items-center justify-end gap-1.5 border-t px-4 py-2">
                                 <span className="text-muted-foreground mr-1 text-xs">
                                   View:
                                 </span>
                                 <TogglePill
-                                  active={!tableMode}
+                                  active={chartMode}
                                   onClick={() =>
                                     setCompanyView(company.id, "chart")
                                   }
@@ -674,13 +676,13 @@ export function CompaniesList({
                                   title={
                                     company.organization_id
                                       ? "Org chart"
-                                      : "Chart unavailable — company has no organization id"
+                                      : "Chart unavailable: company has no organization id"
                                   }
                                 >
                                   Org chart
                                 </TogglePill>
                                 <TogglePill
-                                  active={tableMode}
+                                  active={!chartMode}
                                   onClick={() =>
                                     setCompanyView(company.id, "table")
                                   }
@@ -691,7 +693,7 @@ export function CompaniesList({
                             );
                           })()}
 
-                          {!tableModeCompanyIds.has(company.id) &&
+                          {chartModeCompanyIds.has(company.id) &&
                           company.organization_id ? (
                             <EmbeddedOrgChart
                               organizationId={company.organization_id}

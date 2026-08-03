@@ -33,7 +33,7 @@ function reportExpiredSession() {
   lastExpiryToast = now;
 
   toast.error("Your session expired", {
-    description: "Sign in again to continue — nothing was lost.",
+    description: "Sign in again to continue. Nothing was lost.",
     action: {
       label: "Sign in",
       onClick: () => {

@@ -1000,7 +1000,7 @@ export const fetchSitemap = tool({
 
 export const extractWebContent = tool({
   description:
-    "Extract content from a web page. Three-tier fallback: (1) direct HTTP fetch, (2) Browserbase Fetch with proxies, (3) full browser session. Returns TRUNCATED content (first 3000 chars) and up to 20 links to keep context small. `truncated` flags indicate if more exists — if you need more, refine the URL or call a different page. Use for About/Team/Leadership pages when finding contacts.",
+    "Extract content from a web page. Three-tier fallback: (1) direct HTTP fetch, (2) Browserbase Fetch with proxies, (3) full browser session. Returns TRUNCATED content (first 3000 chars) and up to 20 links to keep context small. `truncated` flags indicate if more exists; if you need more, refine the URL or call a different page. Use for About/Team/Leadership pages when finding contacts.",
   inputSchema: z.object({
     url: z.string().url().describe("URL to extract content from"),
     includeLinks: z
@@ -1791,7 +1791,7 @@ export const getContacts = tool({
 
 export const getContactDetail = tool({
   description:
-    "Fetch full enrichment detail for ONE contact (LinkedIn, Twitter, email discovery, plus their company's enrichment). Use this per-draft when composing a personalized email. Do NOT call in a loop to 'preload' multiple contacts — call once per email you are writing, then discard. Keeps context small and prevents mixing details across contacts.",
+    "Fetch full enrichment detail for ONE contact (LinkedIn, Twitter, email discovery, plus their company's enrichment). Use this per-draft when composing a personalized email. Do NOT call in a loop to 'preload' multiple contacts; call once per email you are writing, then discard. Keeps context small and prevents mixing details across contacts.",
   inputSchema: z.object({
     personId: z
       .string()
@@ -2084,7 +2084,7 @@ export const getGoogleReviews = tool({
 
 export const getDataQualityReport = tool({
   description:
-    "Audit the contact and company data for quality problems: duplicate companies, companies with no domain holding contacts, people whose email domain or job title contradicts the company they are filed under, duplicate people, and unverified pattern-guessed emails. READ-ONLY — it proposes fixes and applies none. Use it when the user asks about data quality, suspects contacts are attached to the wrong company, or before a large outreach push.",
+    "Audit the contact and company data for quality problems: duplicate companies, companies with no domain holding contacts, people whose email domain or job title contradicts the company they are filed under, duplicate people, and unverified pattern-guessed emails. READ-ONLY: it proposes fixes and applies none. Use it when the user asks about data quality, suspects contacts are attached to the wrong company, or before a large outreach push.",
   inputSchema: z.object({}),
   execute: async () => {
     const supabase = await createClient();

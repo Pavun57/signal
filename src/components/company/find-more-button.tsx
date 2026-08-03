@@ -48,7 +48,7 @@ export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
       } else {
         const notes = [];
         if (uncertainCount)
-          notes.push(`${uncertainCount} unconfirmed — blocked from outreach`);
+          notes.push(`${uncertainCount} unconfirmed, blocked from outreach`);
         if (rejectedAsWrongCompany)
           notes.push(`${rejectedAsWrongCompany} work elsewhere`);
         toast.success(
