@@ -77,25 +77,79 @@ export interface JudgedDraft {
   notes?: { phrase: string; note: string }[];
 }
 
+/**
+ * A voice that already exists, being changed rather than built. Carried in the
+ * transcript so the skill prompt can rewrite the rules it already wrote instead
+ * of starting from nothing, which is the whole of "what should be different?".
+ */
+export interface PriorSkill {
+  instructions: string;
+  summary?: string | null;
+}
+
 export interface SwipeTranscript {
   judged: JudgedDraft[];
   /** Free-text instructions typed into the panel, in order. */
   instructions: string[];
+  /**
+   * Cold emails the user pasted before the first batch, as they sent them.
+   * Optional because most people have nothing to hand, and skipping has to stay
+   * a normal path.
+   */
+  samples?: string[];
+  /**
+   * Set only when refining. Built server-side from the saved profile: the client
+   * never supplies it, or a request could claim any rules it liked were already
+   * accepted.
+   */
+  prior?: PriorSkill | null;
 }
 
 /** Bounded so a long run can't push an unbounded prompt at the operator's key. */
 export const MAX_JUDGED_IN_PROMPT = 40;
 export const MAX_INSTRUCTIONS_IN_PROMPT = 40;
+export const MAX_SAMPLES_IN_PROMPT = 10;
+/** Per sample. A paste this long is already far more than the voice needs. */
+export const MAX_SAMPLE_CHARS = 8_000;
 
 function renderTranscript(t: SwipeTranscript): string {
   const judged = t.judged.slice(-MAX_JUDGED_IN_PROMPT);
   const instructions = t.instructions.slice(-MAX_INSTRUCTIONS_IN_PROMPT);
-
-  if (!judged.length && !instructions.length) {
-    return "Nothing judged yet. This is the opening batch.";
-  }
+  const samples = (t.samples ?? [])
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, MAX_SAMPLES_IN_PROMPT);
+  const prior = t.prior?.instructions.trim() ? t.prior : null;
 
   const lines: string[] = [];
+
+  if (samples.length) {
+    lines.push(
+      "EMAILS THEY HAVE ACTUALLY SENT, pasted by them. This is their own writing, not a reaction to somebody else's:",
+    );
+    samples.forEach((s, i) => {
+      lines.push(`--- sample ${i + 1} ---`, s.slice(0, MAX_SAMPLE_CHARS));
+    });
+    lines.push("--- end of samples ---", "");
+  }
+
+  if (prior) {
+    lines.push(
+      "THE RULES THEY ARE ALREADY WRITING WITH. What follows is a change to these, not a fresh start:",
+      prior.instructions.trim(),
+    );
+    if (prior.summary?.trim()) {
+      lines.push(
+        `In one line, how it was described to them: ${prior.summary.trim()}`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (!judged.length && !instructions.length) {
+    lines.push("Nothing judged yet. This is the opening batch.");
+    return lines.join("\n");
+  }
 
   if (judged.length) {
     lines.push("DRAFTS ALREADY JUDGED:");
@@ -116,6 +170,56 @@ function renderTranscript(t: SwipeTranscript): string {
   }
 
   return lines.join("\n");
+}
+
+/** The saved row, as much of it as a refinement needs. */
+export interface SavedVoice {
+  instructions: string;
+  summary?: string | null;
+  /** `email_voice_profiles.source_transcript`. Shape depends on which flow wrote it. */
+  source_transcript?: unknown;
+}
+
+/**
+ * A stored transcript is only useful here if a swipe run wrote it. The interview
+ * stores an array of turns under the same column, so the shape is checked rather
+ * than assumed: replaying an interview through the swipe prompt would produce a
+ * transcript claiming drafts were judged that never were.
+ */
+function asSwipeTranscript(value: unknown): SwipeTranscript | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const t = value as Partial<SwipeTranscript>;
+  if (!Array.isArray(t.judged) || !Array.isArray(t.instructions)) return null;
+  return {
+    judged: t.judged,
+    instructions: t.instructions,
+    samples: Array.isArray(t.samples) ? t.samples : undefined,
+  };
+}
+
+/**
+ * "What should be different?" for a voice that already exists.
+ *
+ * The evidence behind the old rules is replayed where there is any, so a change
+ * request narrows the voice rather than resetting it, and the rules themselves
+ * ride along as `prior` so the model rewrites its own work instead of inventing
+ * a new set from one sentence. A profile the interview wrote has no swipe
+ * transcript to replay, and refines from its rules alone.
+ */
+export function buildRefinementTranscript(
+  profile: SavedVoice,
+  instruction: string,
+): SwipeTranscript {
+  const previous = asSwipeTranscript(profile.source_transcript);
+  return {
+    judged: previous?.judged ?? [],
+    instructions: [...(previous?.instructions ?? []), instruction],
+    samples: previous?.samples,
+    prior: {
+      instructions: profile.instructions,
+      summary: profile.summary ?? null,
+    },
+  };
 }
 
 export interface SwipeCampaign {
@@ -279,6 +383,8 @@ Declare the axes you used for each draft honestly. Do not label a draft "blunt" 
 
 ## Honouring what they have already told you
 
+If they pasted emails they have actually sent, start there. That is their own writing rather than a reaction to copy somebody else wrote, so it is the truest thing you have about how this person sounds: how long their sentences run, how they greet and sign off, how blunt they are, what they never say. Write in that register by default. Do not lift their sentences, and do not reuse the content, which was written for a different prospect. Keep varying across the axes: the samples tell you where to centre the spread, not that every draft should be the same.
+
 Anything under "WHAT THEY HAVE TOLD YOU DIRECTLY" is binding on every draft in this batch. If they said no em dashes, use none. If they said never open with a compliment, do not produce a compliment opener. Drop that axis value from your spread and vary on something else instead.
 
 Their instructions outrank the variation rule when the two conflict. Narrowing the space is exactly what should happen as they tell you more: early batches are wide, later ones converge.
@@ -320,13 +426,18 @@ What you produce is not advice for them to read. It is instructions another mode
 
 ## Your evidence
 
-You have three kinds, and they are not equally reliable:
+You have four kinds, and they are not equally reliable:
 
-1. **What they typed**: the strongest. They said it in their own words, unprompted. Quote their phrasing wherever you can; a rule carrying their words survives paraphrase better than one describing them. A phrase they highlighted with a comment is stronger still, because they pointed at the exact words.
-2. **What they kept**: strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
-3. **What they passed**: the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
+1. **What they pasted**: emails they have actually sent, when there are any. The strongest evidence there is, and it outranks everything below, because it is their own writing rather than a reaction to copy somebody else wrote. Read the register straight off it: how long their sentences run, how they greet and sign off, how blunt they are, what they never say. Be careful with the content, which was written for a different prospect, and with anything that reads as a template they were handed rather than a voice.
+2. **What they typed**: strong. They said it in their own words, unprompted. Quote their phrasing wherever you can; a rule carrying their words survives paraphrase better than one describing them. A phrase they highlighted with a comment is stronger still, because they pointed at the exact words.
+3. **What they kept**: strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
+4. **What they passed**: the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
 
-Where these conflict, what they typed wins. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
+That ranking is about evidence, not about intent. What they pasted is the truest picture of how they write today; what they typed is the truest picture of what they want changed. So where a typed instruction contradicts everything else, follow the instruction: they are correcting themselves, not describing themselves. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
+
+## When they already have rules
+
+If a block of rules they are already writing with appears, this is a change and not a rebuild. Return the complete replacement set, never a diff: what you return overwrites what they have. Carry every rule they did not ask you to touch through unchanged, change the ones they did, and drop only what the change makes contradictory. A short request is not licence to rewrite their whole voice.
 
 ## Writing the rules
 
@@ -377,9 +488,25 @@ export function normaliseInstructions(raw: string): string {
 
 export function buildSkillPrompt(transcript: SwipeTranscript): string {
   const kept = transcript.judged.filter((d) => d.kept).length;
+  const samples = (transcript.samples ?? []).filter((s) => s.trim()).length;
+  const refining = Boolean(transcript.prior?.instructions.trim());
+
+  const counts: string[] = [];
+  // A refinement of a voice the interview built has nothing judged, and saying
+  // "judged 0 drafts" invites the model to write the thin-evidence apology.
+  if (transcript.judged.length || !refining) {
+    counts.push(`judged ${transcript.judged.length} drafts, keeping ${kept}`);
+  }
+  counts.push(`typed ${transcript.instructions.length} instruction(s)`);
+  if (samples) counts.push(`pasted ${samples} email(s) they had sent`);
+
   return `${wrapUntrusted(renderTranscript(transcript))}
 
-They judged ${transcript.judged.length} drafts, keeping ${kept}, and typed ${transcript.instructions.length} instruction(s).
+They ${counts.join(", ")}.
 
-Write their voice rules.`;
+${
+  refining
+    ? "They already have rules and the last instruction is what they want changed. Rewrite the rules, keep everything they did not ask about, and return the complete set."
+    : "Write their voice rules."
+}`;
 }

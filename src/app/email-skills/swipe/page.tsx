@@ -1,11 +1,17 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
 import { SafeLink } from "@/components/safe-link";
+import { VoiceProfileView } from "@/components/email-skills/voice-profile-view";
 import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
+import { createClient } from "@/lib/supabase/client";
+import type { VoiceProfile } from "@/lib/types/email-voice";
+
+/** Never the transcript: nothing here renders it, and it holds pasted mail. */
+type VoiceSummary = Omit<VoiceProfile, "source_transcript">;
 
 /**
  * Prototype route. The interview at /email-skills asks questions; this judges
@@ -21,7 +27,104 @@ import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
  */
 function SwipeScope() {
   const searchParams = useSearchParams();
-  return <VoiceSwipe campaignId={searchParams.get("campaign")} />;
+  const campaignId = searchParams.get("campaign");
+
+  const [profile, setProfile] = useState<VoiceSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  /** Set once the user asks for a run, so a finished voice is not swiped over
+   * by accident and a rebuild does not need a different URL. */
+  const [running, setRunning] = useState(false);
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
+
+  const mountedRef = useRef(true);
+
+  const load = useCallback(async () => {
+    // RLS scopes the table to the signed-in user, so scope is the only filter.
+    // `.is` rather than `.eq`, because the default voice's campaign_id is NULL.
+    const query = createClient()
+      .from("email_voice_profiles")
+      .select(
+        "id, user_id, campaign_id, instructions, summary, created_at, updated_at",
+      );
+    const { data } = await (
+      campaignId
+        ? query.eq("campaign_id", campaignId)
+        : query.is("campaign_id", null)
+    ).maybeSingle();
+
+    if (!mountedRef.current) return;
+    setProfile((data as VoiceSummary | null) ?? null);
+    setLoading(false);
+  }, [campaignId]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void load();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [load]);
+
+  /**
+   * "What should be different?" without swiping again. The saved rules and the
+   * run behind them are replayed server-side, so a sentence narrows the voice
+   * rather than replacing it with whatever one sentence implies.
+   */
+  const refine = async (instruction: string) => {
+    setRefining(true);
+    setRefineError(null);
+    try {
+      const res = await fetch("/api/email-skills/swipe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "refine", instruction, campaignId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.instructions) {
+        setRefineError(data?.error ?? "The rules could not be rewritten.");
+        return;
+      }
+      await load();
+    } catch {
+      setRefineError("Could not reach the agent.");
+    } finally {
+      if (mountedRef.current) setRefining(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="text-muted-foreground flex items-center gap-2 py-8 text-sm">
+        <Loader2 className="size-4 animate-spin" />
+        Loading...
+      </div>
+    );
+  }
+
+  if (profile && !running) {
+    return (
+      <VoiceProfileView
+        // Remounted when the rules change, which closes the refine box and
+        // clears the instruction that has now been applied.
+        key={profile.updated_at}
+        profile={profile}
+        busy={refining}
+        error={refineError}
+        copy={{
+          refineNote:
+            "The agent rewrites the rules from this and everything it already knows. No swiping.",
+          rebuildDescription:
+            "This starts a new run from nothing. The current rules are replaced as soon as the new voice is written, and cannot be recovered. To make a smaller change, use Refine instead.",
+          rebuildConfirmLabel: "Start a new run",
+        }}
+        onRefine={(instruction) => void refine(instruction)}
+        onRebuild={() => setRunning(true)}
+      />
+    );
+  }
+
+  return <VoiceSwipe campaignId={campaignId} />;
 }
 
 function PageShell({ children }: { children: React.ReactNode }) {

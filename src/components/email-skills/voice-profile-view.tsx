@@ -10,12 +10,38 @@ import { SettingsSection } from "@/components/settings/settings-section";
 import { ConfirmDialog } from "@/components/email-skills/confirm-dialog";
 import type { VoiceProfile } from "@/lib/types/email-voice";
 
+/**
+ * The two sentences that describe what happens next, which is the one thing
+ * that genuinely differs between the flows behind this view: the interview
+ * reopens and asks more questions, the deck rewrites the rules on the spot.
+ * Defaulted to the interview's wording so its callsite is unchanged.
+ */
+interface VoiceProfileCopy {
+  refineNote?: string;
+  rebuildDescription?: string;
+  rebuildConfirmLabel?: string;
+}
+
+const DEFAULT_COPY: Required<VoiceProfileCopy> = {
+  refineNote:
+    "The agent takes it from here. It may ask a question or two before rewriting the rules.",
+  rebuildDescription:
+    "This starts the interview from scratch. The current rules and the interview behind them are replaced as soon as the new voice is generated, and cannot be recovered. To make a smaller change, use Refine instead.",
+  rebuildConfirmLabel: "Start a new interview",
+};
+
 interface VoiceProfileViewProps {
   /** Omit-friendly: this view renders rules and timestamps, never the transcript. */
   profile: Omit<VoiceProfile, "source_transcript">;
   /** A plain-English change; re-enters the interview rather than editing text. */
   onRefine: (instruction: string) => void;
   onRebuild: () => void;
+  /** A refinement is in flight. Every control has to be inert until it lands,
+   * or a second click spends another model call and races the first write. */
+  busy?: boolean;
+  /** Why the last refinement did not happen, shown where it was asked for. */
+  error?: string | null;
+  copy?: VoiceProfileCopy;
 }
 
 /**
@@ -27,14 +53,18 @@ export function VoiceProfileView({
   profile,
   onRefine,
   onRebuild,
+  busy = false,
+  error = null,
+  copy,
 }: VoiceProfileViewProps) {
   const [refining, setRefining] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
+  const text = { ...DEFAULT_COPY, ...copy };
 
   const trimmed = instruction.trim();
   const submitRefinement = () => {
-    if (!trimmed) return;
+    if (!trimmed || busy) return;
     onRefine(trimmed);
   };
 
@@ -48,6 +78,7 @@ export function VoiceProfileView({
             variant="outline"
             size="sm"
             className="gap-1.5"
+            disabled={busy}
             onClick={() => setRefining((prev) => !prev)}
             aria-expanded={refining}
           >
@@ -58,6 +89,7 @@ export function VoiceProfileView({
             variant="outline"
             size="sm"
             className="gap-1.5"
+            disabled={busy}
             onClick={() => setRebuildOpen(true)}
           >
             <RotateCcw className="size-3.5" />
@@ -90,16 +122,20 @@ export function VoiceProfileView({
             }}
             rows={3}
             autoFocus
+            disabled={busy}
             placeholder="For example: be blunter in the opening line, and stop asking for a call in the first email."
           />
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-muted-foreground text-xs">
-              The agent takes it from here. It may ask a question or two before
-              rewriting the rules.
+          {error && (
+            <p role="alert" className="text-destructive text-xs">
+              {error}
             </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-muted-foreground text-xs">{text.refineNote}</p>
             <div className="flex gap-2">
               <Button
                 variant="ghost"
+                disabled={busy}
                 onClick={() => {
                   setRefining(false);
                   setInstruction("");
@@ -107,8 +143,8 @@ export function VoiceProfileView({
               >
                 Cancel
               </Button>
-              <Button disabled={!trimmed} onClick={submitRefinement}>
-                Send to the agent
+              <Button disabled={!trimmed || busy} onClick={submitRefinement}>
+                {busy ? "Rewriting the rules..." : "Send to the agent"}
               </Button>
             </div>
           </div>
@@ -124,8 +160,8 @@ export function VoiceProfileView({
         open={rebuildOpen}
         onOpenChange={setRebuildOpen}
         title="Rebuild your email voice?"
-        description="This starts the interview from scratch. The current rules and the interview behind them are replaced as soon as the new voice is generated, and cannot be recovered. To make a smaller change, use Refine instead."
-        confirmLabel="Start a new interview"
+        description={text.rebuildDescription}
+        confirmLabel={text.rebuildConfirmLabel}
         variant="destructive"
         onConfirm={onRebuild}
       />

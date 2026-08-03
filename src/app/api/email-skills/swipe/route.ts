@@ -8,15 +8,19 @@ import {
   BatchSchema,
   MAX_INSTRUCTIONS_IN_PROMPT,
   MAX_JUDGED_IN_PROMPT,
+  MAX_SAMPLES_IN_PROMPT,
   SkillSchema,
   buildBatchPrompt,
   buildBatchSystem,
+  buildRefinementTranscript,
   buildSkillPrompt,
   buildSkillSystem,
   normaliseInstructions,
   recipientLabel,
+  type SavedVoice,
   type SwipeCampaign,
   type SwipePersona,
+  type SwipeTranscript,
 } from "@/lib/email-skills/swipe-prompts";
 import { resolveRecipient } from "@/lib/email-skills/swipe-recipient";
 import { getProfileForPrompt } from "@/lib/profile";
@@ -61,24 +65,58 @@ const JudgedSchema = z.object({
     .optional(),
 });
 
+/**
+ * One pasted email. Matches the interview's textarea cap, which is the number
+ * the user is actually held to on the way in.
+ */
+const MAX_SAMPLE_PASTE_CHARS = 20_000;
+
 const TranscriptSchema = z.object({
   judged: z.array(JudgedSchema).max(MAX_JUDGED_IN_PROMPT + 10),
   instructions: z
     .array(z.string().max(2_000))
     .max(MAX_INSTRUCTIONS_IN_PROMPT + 10),
+  // Emails the user pasted before the first batch. Bounded like everything
+  // else: this is the one field in the transcript the user fills by pasting,
+  // so it is where an accidental megabyte would arrive.
+  samples: z
+    .array(z.string().max(MAX_SAMPLE_PASTE_CHARS))
+    .max(MAX_SAMPLES_IN_PROMPT)
+    .optional(),
+  // `prior` is deliberately absent. It is built server-side from the saved row
+  // on a refinement; accepting it here would let a request assert that any
+  // rules it liked had already been accepted.
 });
 
-const BodySchema = z.object({
-  action: z.enum(["next", "complete"]),
-  transcript: TranscriptSchema,
-  campaignId: z.string().uuid().nullish(),
-  count: z.number().int().min(2).max(8).optional(),
-  // The person the whole run is written about, pinned by the client after the
-  // opening batch resolved them. An id, never the contact's details: the
-  // client may say *which* of its own contacts, and the server re-reads the
-  // facts. See resolveRecipient.
-  recipientPersonId: z.string().uuid().nullish(),
-});
+/**
+ * `prior` on a refinement carries a whole rule-set, so the instruction itself
+ * only ever needs to be a sentence.
+ */
+const MAX_REFINE_INSTRUCTION_CHARS = 2_000;
+
+const ScopeSchema = z.object({ campaignId: z.string().uuid().nullish() });
+
+const BodySchema = z.discriminatedUnion("action", [
+  ScopeSchema.extend({
+    action: z.literal("next"),
+    transcript: TranscriptSchema,
+    count: z.number().int().min(2).max(8).optional(),
+    // The person the whole run is written about, pinned by the client after the
+    // opening batch resolved them. An id, never the contact's details: the
+    // client may say *which* of its own contacts, and the server re-reads the
+    // facts. See resolveRecipient.
+    recipientPersonId: z.string().uuid().nullish(),
+  }),
+  ScopeSchema.extend({
+    action: z.literal("complete"),
+    transcript: TranscriptSchema,
+    recipientPersonId: z.string().uuid().nullish(),
+  }),
+  ScopeSchema.extend({
+    action: z.literal("refine"),
+    instruction: z.string().trim().min(1).max(MAX_REFINE_INSTRUCTION_CHARS),
+  }),
+]);
 
 /** Ceiling on the serialised transcript, which is what actually reaches the model. */
 const MAX_TRANSCRIPT_CHARS = 120_000;
@@ -110,10 +148,13 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { action, transcript, campaignId, count, recipientPersonId } =
-    parsed.data;
+  const body = parsed.data;
+  const campaignId = body.campaignId ?? null;
 
-  if (JSON.stringify(transcript).length > MAX_TRANSCRIPT_CHARS) {
+  if (
+    body.action !== "refine" &&
+    JSON.stringify(body.transcript).length > MAX_TRANSCRIPT_CHARS
+  ) {
     return Response.json({ error: "Transcript too large" }, { status: 413 });
   }
 
@@ -135,7 +176,11 @@ export async function POST(request: Request) {
     // Same resolution the chat route uses, so a campaign with its own linked
     // profile writes as that persona rather than as the most recent one.
     getProfileForPrompt(campaignId),
-    resolveRecipient(supabase, campaignId, recipientPersonId),
+    // A refinement writes no drafts, so it needs no prospect to write them
+    // about, and the lookup is two queries deep.
+    body.action === "refine"
+      ? Promise.resolve(null)
+      : resolveRecipient(supabase, campaignId, body.recipientPersonId),
   ]);
 
   const campaign = (campaignRes.data as SwipeCampaign | null) ?? null;
@@ -156,14 +201,14 @@ export async function POST(request: Request) {
     ? { personId: resolved.personId, label: recipientLabel(resolved.recipient) }
     : null;
 
-  if (action === "next") {
+  if (body.action === "next") {
     try {
       const { object } = await generateObject({
         abortSignal: llmTimeout(),
         model: anthropic(MODELS.EMAIL),
         schema: BatchSchema,
         system: buildBatchSystem(campaign, persona),
-        prompt: buildBatchPrompt(transcript as never, count ?? 6),
+        prompt: buildBatchPrompt(body.transcript as never, body.count ?? 6),
         providerOptions: {
           anthropic: {
             // Only the transcript changes between batches, so the rules and
@@ -203,7 +248,42 @@ export async function POST(request: Request) {
     }
   }
 
-  // ── complete ──────────────────────────────────────────────────────────────
+  // ── complete and refine ───────────────────────────────────────────────────
+  // Both write the same row from the same prompt, and differ only in where the
+  // transcript comes from: a finished run, or the saved voice plus the sentence
+  // saying what should be different about it.
+  let transcript: SwipeTranscript;
+  if (body.action === "refine") {
+    const saved = supabase
+      .from("email_voice_profiles")
+      .select("instructions, summary, source_transcript");
+    // RLS scopes the table to the signed-in user, so scope is the only filter
+    // needed. `.is` rather than `.eq`, because the default voice's campaign_id
+    // is NULL and `eq(null)` matches nothing.
+    const { data } = await (
+      campaignId
+        ? saved.eq("campaign_id", campaignId)
+        : saved.is("campaign_id", null)
+    ).maybeSingle();
+
+    const existing = data as SavedVoice | null;
+    if (!existing?.instructions?.trim()) {
+      return Response.json(
+        { error: "There is no saved voice in this scope to refine." },
+        { status: 404 },
+      );
+    }
+    transcript = buildRefinementTranscript(existing, body.instruction);
+    if (JSON.stringify(transcript).length > MAX_TRANSCRIPT_CHARS) {
+      // The replayed drafts are history and the change request is the point, so
+      // an over-long run drops its drafts rather than refusing a refinement the
+      // user has no way to make smaller.
+      transcript = { ...transcript, judged: [] };
+    }
+  } else {
+    transcript = body.transcript as unknown as SwipeTranscript;
+  }
+
   let skill: { instructions: string; summary: string };
   try {
     const { object } = await generateObject({
@@ -211,7 +291,7 @@ export async function POST(request: Request) {
       model: anthropic(MODELS.EMAIL),
       schema: SkillSchema,
       system: buildSkillSystem(campaign, persona),
-      prompt: buildSkillPrompt(transcript as never),
+      prompt: buildSkillPrompt(transcript),
       providerOptions: { anthropic: { effort: "medium" } },
       maxRetries: 0,
       maxOutputTokens: 5_000,
