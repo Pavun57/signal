@@ -1,5 +1,16 @@
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
+/**
+ * Dashboard aggregates.
+ *
+ * There is deliberately no "opened" metric. Signal sends no tracking pixel, so
+ * nothing anywhere writes outreach_status = 'opened' -- which meant the old
+ * opened bucket ('opened' OR 'replied') was exactly equal to replied, and the
+ * dashboard showed the same number twice under two labels, one of them a
+ * metric the product does not collect. 'opened' survives only inside the
+ * membership tests below, where it keeps legacy rows counted as sent.
+ */
+
 export async function GET(request: Request) {
   const ctx = await getSupabaseAndUser();
   if (!ctx) {
@@ -22,7 +33,6 @@ export async function GET(request: Request) {
   const [
     leadsRes,
     sentRes,
-    openedRes,
     repliedRes,
     bouncedRes,
     timeSeriesRes,
@@ -36,11 +46,16 @@ export async function GET(request: Request) {
     supabase
       .from("campaign_people")
       .select("*", { count: "exact", head: true })
-      .in("outreach_status", ["sent", "opened", "replied"]),
-    supabase
-      .from("campaign_people")
-      .select("*", { count: "exact", head: true })
-      .in("outreach_status", ["opened", "replied"]),
+      // A send that bounced still left. Excluding it shrank the denominator
+      // every rate is measured against, and would have made the new bounce
+      // card move the wrong way.
+      .in("outreach_status", [
+        "sent",
+        "opened",
+        "replied",
+        "bounced",
+        "complained",
+      ]),
     supabase
       .from("campaign_people")
       .select("*", { count: "exact", head: true })
@@ -77,7 +92,6 @@ export async function GET(request: Request) {
   const totals = {
     leads: leadsRes.count ?? 0,
     sent: sentRes.count ?? 0,
-    opened: openedRes.count ?? 0,
     replied: repliedRes.count ?? 0,
     bounced: bouncedRes.count ?? 0,
   };
@@ -87,7 +101,7 @@ export async function GET(request: Request) {
   for (const event of timeSeriesRes.data ?? []) {
     const day = event.created_at.slice(0, 10);
     if (!eventsByDay.has(day)) {
-      eventsByDay.set(day, { sent: 0, opened: 0, replied: 0, bounced: 0 });
+      eventsByDay.set(day, { sent: 0, replied: 0, bounced: 0 });
     }
     const bucket = eventsByDay.get(day)!;
     if (bucket[event.status] !== undefined) {
@@ -102,43 +116,33 @@ export async function GET(request: Request) {
   const campaignPeople = allPeopleRes.data ?? [];
   const campaignMap = new Map<
     string,
-    { leads: number; sent: number; opened: number; replied: number }
+    { leads: number; sent: number; replied: number }
   >();
 
   for (const row of campaignPeople) {
     if (!campaignMap.has(row.campaign_id)) {
-      campaignMap.set(row.campaign_id, {
-        leads: 0,
-        sent: 0,
-        opened: 0,
-        replied: 0,
-      });
+      campaignMap.set(row.campaign_id, { leads: 0, sent: 0, replied: 0 });
     }
     const stats = campaignMap.get(row.campaign_id)!;
     stats.leads++;
-    if (["sent", "opened", "replied"].includes(row.outreach_status))
+    if (
+      ["sent", "opened", "replied", "bounced", "complained"].includes(
+        row.outreach_status,
+      )
+    )
       stats.sent++;
-    if (["opened", "replied"].includes(row.outreach_status)) stats.opened++;
     if (row.outreach_status === "replied") stats.replied++;
   }
 
   const campaigns = (campaignsRes.data ?? [])
     .map((c) => {
-      const stats = campaignMap.get(c.id) ?? {
-        leads: 0,
-        sent: 0,
-        opened: 0,
-        replied: 0,
-      };
+      const stats = campaignMap.get(c.id) ?? { leads: 0, sent: 0, replied: 0 };
       return {
         id: c.id,
         name: c.name,
         status: c.status,
         leads: stats.leads,
         sent: stats.sent,
-        opened: stats.opened,
-        openRate:
-          stats.sent > 0 ? Math.round((stats.opened / stats.sent) * 100) : 0,
         replied: stats.replied,
         replyRate:
           stats.sent > 0 ? Math.round((stats.replied / stats.sent) * 100) : 0,

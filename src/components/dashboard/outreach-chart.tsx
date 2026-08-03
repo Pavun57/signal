@@ -17,14 +17,13 @@ import { EmptyState } from "@/components/ui/empty-state";
 // the accent on the matching stat card above it.
 const series = [
   { key: "sent", name: "Sent", color: "var(--color-info)" },
-  { key: "opened", name: "Opened", color: "var(--color-warn)" },
+  { key: "bounced", name: "Bounced", color: "var(--color-warn)" },
   { key: "replied", name: "Replied", color: "var(--color-success)" },
 ] as const;
 
 interface TimeSeriesPoint {
   date: string;
   sent: number;
-  opened: number;
   replied: number;
   bounced: number;
 }
@@ -68,7 +67,7 @@ export function OutreachChart({
           icon={Activity}
           accent="info"
           title="No outreach activity yet"
-          description="Sends, opens, and replies will chart here once your first sequence goes out."
+          description="Sends, replies, and bounces will chart here once your first sequence goes out."
           className="h-[200px] py-0"
         />
       ) : (

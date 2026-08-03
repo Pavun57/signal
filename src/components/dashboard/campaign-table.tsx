@@ -14,8 +14,6 @@ interface CampaignRow {
   status: string;
   leads: number;
   sent: number;
-  opened: number;
-  openRate: number;
   replied: number;
   replyRate: number;
 }
@@ -59,8 +57,6 @@ export function CampaignTable({ campaigns }: CampaignTableProps) {
               <th className="px-4 py-2.5 text-left font-medium">Campaign</th>
               <th className="px-4 py-2.5 text-right font-medium">Leads</th>
               <th className="px-4 py-2.5 text-right font-medium">Sent</th>
-              <th className="px-4 py-2.5 text-right font-medium">Opened</th>
-              <th className="px-4 py-2.5 text-right font-medium">Open Rate</th>
               <th className="px-4 py-2.5 text-right font-medium">Replied</th>
               <th className="px-4 py-2.5 text-right font-medium">Reply Rate</th>
               <th className="px-4 py-2.5 text-left font-medium">Status</th>
@@ -85,12 +81,6 @@ export function CampaignTable({ campaigns }: CampaignTableProps) {
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">
                   {c.sent}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">
-                  {c.opened}
-                </td>
-                <td className="px-4 py-2.5 text-right tabular-nums">
-                  {c.openRate}%
                 </td>
                 <td className="px-4 py-2.5 text-right tabular-nums">
                   {c.replied}

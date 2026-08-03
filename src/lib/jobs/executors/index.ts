@@ -5,6 +5,7 @@ import {
   processOutreach,
   type Payload,
 } from "@/lib/jobs/executors/outreach-process";
+import { backfillReplyBodies } from "@/lib/jobs/executors/reply-backfill";
 import { dispatchDueTracking } from "@/lib/jobs/executors/tracking-dispatch";
 import { runTrackingConfig } from "@/lib/jobs/executors/tracking-run";
 
@@ -17,6 +18,8 @@ export type JobExecutor = (
 export const executors: Record<string, JobExecutor> = {
   "email.track": () => trackEmailReplies(),
   "email.cleanup": () => cleanupEmails(),
+  // One-shot, not recurring. Re-enqueues itself while work remains, capped.
+  "email.backfill-replies": (payload) => backfillReplyBodies(payload),
   "tracking.dispatch": () => dispatchDueTracking(),
   "outreach.process": (payload) =>
     processOutreach(payload as unknown as Payload),
