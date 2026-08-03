@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { CompanyDetail } from "@/components/campaign/company-detail";
 import { ContactDetail } from "@/components/campaign/contact-detail";
 import { EmbeddedOrgChart } from "@/components/company/embedded-org-chart";
+import { EnrichAllButton } from "@/components/company/enrich-all-button";
 import { TogglePill } from "@/components/ui/toggle-pill";
 import { ReadinessBadge } from "@/components/tracking/readiness-badge";
 import { AffiliationBadge } from "@/components/ui/provenance-badge";
@@ -172,8 +173,11 @@ export function CompaniesList({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId }),
       });
+      // Deliberately does NOT expand the row. Enriching is something you do to
+      // a list, often several in a row, and force-opening each one shoves
+      // everything below it down the page mid-scan. The data updates in place;
+      // the row opens when the user asks it to.
       onDataChanged();
-      setExpandedContactIds((prev) => new Set(prev).add(contactId));
     } catch (err) {
       console.error(`[enrich] Failed:`, err);
     } finally {
@@ -592,6 +596,18 @@ export function CompaniesList({
                           <Loader2 className="h-3 w-3 animate-spin" />
                           Enriching
                         </span>
+                      )}
+                      {company.organization_id && (
+                        <EnrichAllButton
+                          campaignId={campaignId}
+                          organizationId={company.organization_id}
+                          // Only what is actually left to do, so the number on
+                          // the button matches what the confirm will charge for.
+                          unenrichedCount={
+                            companyContacts.length - enrichedCount
+                          }
+                          onDone={onDataChanged}
+                        />
                       )}
                       {missingEmailCount > 0 &&
                         company.organization_id &&
