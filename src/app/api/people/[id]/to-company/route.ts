@@ -64,9 +64,15 @@ export async function POST(
   }
 
   // The PERSON must also be in one of the caller's campaigns (same gate as
-  // /api/find-email). Checking only the target org let any user force-move any
-  // contact in the shared pool — including one another user had hand-assigned,
-  // since the user_entered override deliberately outranks every prior claim.
+  // /api/find-email and the sibling from-company route). Checking only the
+  // target org let any user force-move any contact in the shared pool —
+  // including one another user had hand-assigned, since the user_entered
+  // override deliberately outranks every prior claim.
+  //
+  // The absence of a link is the refusal, not a pass. This select is scoped to
+  // the caller's own campaigns, so a contact somebody else holds comes back as
+  // no row at all rather than as a different user_id, and a check that only
+  // compares ids could fire for contacts the caller already owns.
   const { data: personOwnership } = await supabase
     .from("campaign_people")
     .select("campaign:campaigns!inner(user_id)")
@@ -77,7 +83,7 @@ export async function POST(
   const personOwnerId =
     (personOwnership?.campaign as unknown as { user_id?: string } | null)
       ?.user_id ?? null;
-  if (personOwnerId && personOwnerId !== user.id) {
+  if (!personOwnerId || personOwnerId !== user.id) {
     return Response.json(
       { error: "Forbidden: contact belongs to another user's campaign" },
       { status: 403 },
