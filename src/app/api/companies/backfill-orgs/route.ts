@@ -72,6 +72,9 @@ function findOrgMatch(signals: string[], orgs: OrgRow[]): string | null {
   return best?.id ?? null;
 }
 
+/** Nothing in scope. Same shape as a run that found no matches. */
+const NOTHING_TO_DO = { scanned: 0, linked: 0, notWritten: 0, unmatched: 0 };
+
 /**
  * One-off cleanup: re-link people that landed in the knowledge base with
  * organization_id = null. Looks at each person's enrichment_data for company
@@ -79,17 +82,66 @@ function findOrgMatch(signals: string[], orgs: OrgRow[]): string | null {
  *
  * Idempotent: safe to run multiple times. Only touches rows that are still
  * orphaned and only updates organization_id when a confident match is found.
+ *
+ * Scope: both halves are drawn through the caller's own campaigns. This takes
+ * no input whatsoever -- no body, no ids -- so without that, one POST from any
+ * signed-in account read every organization and up to 500 orphaned people
+ * across the whole install and re-parented other people's contacts to other
+ * people's companies. `people` and `organizations` are shared pools with no
+ * owner column, so the campaign join tables are the only handle on who holds
+ * what, exactly as /api/people/orphans uses them for these same rows.
  */
 export async function POST() {
   const ctx = await getSupabaseAndUser();
   if (!ctx) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const { supabase } = ctx;
+  const { supabase, user } = ctx;
+
+  const { data: orgLinks, error: orgLinksErr } = await supabase
+    .from("campaign_organizations")
+    .select("organization_id, campaign:campaigns!inner(user_id)")
+    .eq("campaign.user_id", user.id);
+
+  if (orgLinksErr) {
+    return Response.json({ error: orgLinksErr.message }, { status: 500 });
+  }
+
+  const orgIds = [
+    ...new Set(
+      ((orgLinks ?? []) as Array<{ organization_id: string }>).map(
+        (r) => r.organization_id,
+      ),
+    ),
+  ];
+
+  const { data: personLinks, error: personLinksErr } = await supabase
+    .from("campaign_people")
+    .select("person_id, campaign:campaigns!inner(user_id)")
+    .eq("campaign.user_id", user.id);
+
+  if (personLinksErr) {
+    return Response.json({ error: personLinksErr.message }, { status: 500 });
+  }
+
+  const personIds = [
+    ...new Set(
+      ((personLinks ?? []) as Array<{ person_id: string }>).map(
+        (r) => r.person_id,
+      ),
+    ),
+  ];
+
+  // An empty `in` list is not a no-op in PostgREST, so say so explicitly
+  // rather than letting an unfiltered query stand in for "nothing of yours".
+  if (orgIds.length === 0 || personIds.length === 0) {
+    return Response.json(NOTHING_TO_DO);
+  }
 
   const { data: orgs, error: orgsErr } = await supabase
     .from("organizations")
-    .select("id, name");
+    .select("id, name")
+    .in("id", orgIds);
 
   if (orgsErr) {
     return Response.json({ error: orgsErr.message }, { status: 500 });
@@ -99,6 +151,7 @@ export async function POST() {
     .from("people")
     .select("id, enrichment_data")
     .is("organization_id", null)
+    .in("id", personIds)
     .limit(500);
 
   if (peopleErr) {
