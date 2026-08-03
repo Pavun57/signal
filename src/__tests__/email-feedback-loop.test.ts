@@ -196,6 +196,7 @@ describe("send_confirmed", () => {
         replyTo: null,
         dailyLimit: 30,
         connectedAt: new Date(Date.now() - 20 * 86400_000).toISOString(),
+        sendingPaused: false,
       },
     );
 

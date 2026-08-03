@@ -43,6 +43,7 @@ describe("resolveSenderConfig", () => {
       replyTo: null,
       dailyLimit: 25,
       connectedAt: "2026-07-29T00:00:00Z",
+      sendingPaused: false,
     });
   });
 
