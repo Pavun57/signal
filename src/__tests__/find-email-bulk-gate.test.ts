@@ -105,7 +105,14 @@ vi.mock("@/lib/supabase/server", () => {
           { id: "org-2", name: "Chronicle", domain: null, is_catch_all: null },
         ],
       },
-      relations: { campaign_people: { person: { localKey: "person_id" } } },
+      relations: {
+        campaign_people: {
+          person: { localKey: "person_id" },
+          // The ownership check the batch tool now runs per id reaches the
+          // campaign through the link.
+          campaign: { localKey: "campaign_id" },
+        },
+      },
       // Only findEmailForPerson reads a single person row by id, so this is how
       // the tool test sees which contacts it was allowed to spend on.
       onQuery: (q) => {

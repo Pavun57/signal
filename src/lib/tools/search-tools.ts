@@ -3,6 +3,11 @@ import { generateObject, tool } from "ai";
 import { z } from "zod";
 import { MODELS } from "@/lib/ai/models";
 import { createClient } from "@/lib/supabase/server";
+import {
+  callerHoldsOrganization,
+  notFound,
+  toolSession,
+} from "@/lib/tools/ownership";
 import { ExaService, type SearchCategory } from "@/lib/services/exa-service";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
@@ -340,7 +345,21 @@ export const getCompanyDetail = tool({
       .describe("organizations.id (not campaign_organizations.id)."),
   }),
   execute: async ({ organizationId }) => {
-    const supabase = await createClient();
+    // `organizations` is a shared pool with no owner column, so reading the
+    // row says nothing about whether the caller may have it. The campaign link
+    // is the only thing that does.
+    const session = await toolSession();
+    if (!session) {
+      return {
+        error:
+          "No authenticated session available in tool context. Ask the user to sign in.",
+      };
+    }
+    const { supabase, userId } = session;
+
+    if (!(await callerHoldsOrganization(supabase, userId, organizationId))) {
+      return notFound("Company");
+    }
 
     const { data, error } = await supabase
       .from("organizations")

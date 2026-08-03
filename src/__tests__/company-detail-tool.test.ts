@@ -1,58 +1,85 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockSingle = vi.fn();
-const mockEq = vi.fn(() => ({ single: mockSingle }));
-const mockSelect = vi.fn(() => ({ eq: mockEq }));
-const mockFrom = vi.fn((_table?: string) => ({ select: mockSelect }));
+import { createSupabaseFake } from "./helpers/supabase-fake";
 
-vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi
-    .fn()
-    .mockResolvedValue({ from: (table: string) => mockFrom(table) }),
+const ORG = "o1";
+const CAMPAIGN = "c1";
+
+const state = vi.hoisted(() => ({
+  campaignOrganizations: [] as Array<Record<string, unknown>>,
 }));
+
+vi.mock("@/lib/supabase/server", () => {
+  const supabase = () =>
+    createSupabaseFake({
+      tables: {
+        organizations: () => [
+          {
+            id: ORG,
+            name: "Acme",
+            domain: "acme.com",
+            url: null,
+            industry: "SaaS",
+            location: null,
+            description: null,
+            enrichment_data: {
+              website_summary: "long...",
+              exa_results: [1, 2, 3],
+            },
+            enrichment_status: "enriched",
+          },
+        ],
+        campaign_organizations: () => state.campaignOrganizations,
+        campaigns: () => [{ id: CAMPAIGN, user_id: "u1" }],
+      },
+      relations: {
+        campaign_organizations: { campaign: { localKey: "campaign_id" } },
+      },
+    });
+
+  return {
+    createClient: vi.fn(async () => supabase()),
+    getSupabaseAndUser: vi.fn(async () => ({
+      supabase: supabase(),
+      user: { id: "u1", email: "u@example.com" },
+    })),
+  };
+});
 
 import { getCompanyDetail } from "@/lib/tools/search-tools";
 
+const call = (organizationId: string) =>
+  getCompanyDetail.execute!({ organizationId }, {} as never);
+
+beforeEach(() => {
+  state.campaignOrganizations = [
+    { id: "co1", campaign_id: CAMPAIGN, organization_id: ORG },
+  ];
+});
+
 describe("getCompanyDetail", () => {
-  beforeEach(() => {
-    mockSingle.mockReset();
-  });
-
   it("returns one company with full enrichment_data", async () => {
-    mockSingle.mockResolvedValueOnce({
-      data: {
-        id: "o1",
-        name: "Acme",
-        domain: "acme.com",
-        industry: "SaaS",
-        enrichment_data: { website_summary: "long...", exa_results: [1, 2, 3] },
-        enrichment_status: "enriched",
-      },
-      error: null,
-    });
+    const result = await call(ORG);
 
-    const result = await getCompanyDetail.execute!(
-      { organizationId: "o1" },
-      {} as never,
-    );
-
-    expect(mockFrom).toHaveBeenCalledWith("organizations");
     expect(result).toMatchObject({
-      id: "o1",
+      id: ORG,
       name: "Acme",
       enrichment_data: { website_summary: "long...", exa_results: [1, 2, 3] },
     });
   });
 
   it("returns error when company not found", async () => {
-    mockSingle.mockResolvedValueOnce({
-      data: null,
-      error: { message: "nope" },
-    });
-    const result = await getCompanyDetail.execute!(
-      { organizationId: "x" },
-      {} as never,
-    );
-    expect(result).toEqual({ error: expect.stringContaining("nope") });
+    const result = await call("x");
+
+    expect(result).toEqual({ error: expect.stringContaining("not found") });
+  });
+
+  it("returns the same error for a company the caller does not hold", async () => {
+    state.campaignOrganizations = [];
+
+    const result = await call(ORG);
+
+    expect(result).toEqual({ error: expect.stringContaining("not found") });
+    expect(JSON.stringify(result)).not.toMatch(/long\.\.\./);
   });
 });

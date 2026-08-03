@@ -1,55 +1,84 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockSingle = vi.fn();
-const mockEq = vi.fn(() => ({ single: mockSingle }));
-const mockSelect = vi.fn(() => ({ eq: mockEq }));
-const mockFrom = vi.fn((_table?: string) => ({ select: mockSelect }));
+import { createSupabaseFake } from "./helpers/supabase-fake";
 
-vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi
-    .fn()
-    .mockResolvedValue({ from: (table: string) => mockFrom(table) }),
+const PERSON = "p1";
+const ORG = "o1";
+const CAMPAIGN = "c1";
+
+const state = vi.hoisted(() => ({
+  people: [] as Array<Record<string, unknown>>,
+  campaignPeople: [] as Array<Record<string, unknown>>,
 }));
+
+vi.mock("@/lib/supabase/server", () => {
+  const supabase = () =>
+    createSupabaseFake({
+      tables: {
+        people: () => state.people,
+        campaign_people: () => state.campaignPeople,
+        campaigns: () => [{ id: CAMPAIGN, user_id: "u1" }],
+        campaign_organizations: () => [],
+        organizations: () => [
+          {
+            id: ORG,
+            name: "Acme",
+            domain: "acme.com",
+            industry: "SaaS",
+            location: null,
+            description: null,
+            enrichment_data: { website_summary: "..." },
+            enrichment_status: "enriched",
+          },
+        ],
+      },
+      relations: {
+        people: { organization: { localKey: "organization_id" } },
+        campaign_people: { campaign: { localKey: "campaign_id" } },
+        campaign_organizations: { campaign: { localKey: "campaign_id" } },
+      },
+    });
+
+  return {
+    createClient: vi.fn(async () => supabase()),
+    getSupabaseAndUser: vi.fn(async () => ({
+      supabase: supabase(),
+      user: { id: "u1", email: "u@example.com" },
+    })),
+  };
+});
 
 import { getContactDetail } from "@/lib/tools/enrichment-tools";
 
+const call = (personId: string) =>
+  getContactDetail.execute!({ personId }, {} as never);
+
+beforeEach(() => {
+  state.people = [
+    {
+      id: PERSON,
+      name: "Alice",
+      title: "CTO",
+      work_email: "alice@acme.com",
+      personal_email: null,
+      linkedin_url: "https://linkedin.com/in/alice",
+      twitter_url: null,
+      organization_id: ORG,
+      enrichment_status: "enriched",
+      enrichment_data: { bio: "Long LinkedIn bio..." },
+    },
+  ];
+  state.campaignPeople = [
+    { id: "cp1", campaign_id: CAMPAIGN, person_id: PERSON },
+  ];
+});
+
 describe("getContactDetail", () => {
-  beforeEach(() => {
-    mockSingle.mockReset();
-    mockFrom.mockClear();
-  });
-
   it("returns one contact with full enrichment_data and company enrichment", async () => {
-    mockSingle.mockResolvedValueOnce({
-      data: {
-        id: "p1",
-        name: "Alice",
-        title: "CTO",
-        work_email: "alice@acme.com",
-        personal_email: null,
-        linkedin_url: "https://linkedin.com/in/alice",
-        twitter_url: null,
-        enrichment_status: "enriched",
-        enrichment_data: { bio: "Long LinkedIn bio..." },
-        organization: {
-          id: "o1",
-          name: "Acme",
-          domain: "acme.com",
-          industry: "SaaS",
-          enrichment_data: { website_summary: "..." },
-        },
-      },
-      error: null,
-    });
+    const result = await call(PERSON);
 
-    const result = await getContactDetail.execute!(
-      { personId: "p1" },
-      {} as never,
-    );
-
-    expect(mockFrom).toHaveBeenCalledWith("people");
     expect(result).toMatchObject({
-      id: "p1",
+      id: PERSON,
       name: "Alice",
       enrichment_data: { bio: "Long LinkedIn bio..." },
       company: { name: "Acme", enrichment_data: { website_summary: "..." } },
@@ -57,16 +86,19 @@ describe("getContactDetail", () => {
   });
 
   it("returns error when contact not found", async () => {
-    mockSingle.mockResolvedValueOnce({
-      data: null,
-      error: { message: "not found" },
-    });
-
-    const result = await getContactDetail.execute!(
-      { personId: "missing" },
-      {} as never,
-    );
+    const result = await call("missing");
 
     expect(result).toEqual({ error: expect.stringContaining("not found") });
+  });
+
+  it("returns the same error for a contact the caller does not hold", async () => {
+    // Indistinguishable from a missing row on purpose: a different answer for
+    // a real uuid would confirm which guesses are contacts.
+    state.campaignPeople = [];
+
+    const result = await call(PERSON);
+
+    expect(result).toEqual({ error: expect.stringContaining("not found") });
+    expect(JSON.stringify(result)).not.toMatch(/alice@acme|LinkedIn bio/i);
   });
 });

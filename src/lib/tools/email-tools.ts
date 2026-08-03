@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createClient, getSupabaseAndUser } from "@/lib/supabase/server";
+import { callerHoldsPerson, toolSession } from "@/lib/tools/ownership";
 import { ExaService } from "@/lib/services/exa-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
 import {
@@ -692,8 +693,29 @@ export const findEmail = tool({
         "Re-verify an address that is already stored but unverified. Use when the send gate reports the email has never been verified.",
       ),
   }),
-  execute: async ({ personId, revalidate }) =>
-    findEmailForPerson(personId, { revalidate }),
+  execute: async ({ personId, revalidate }) => {
+    // /api/find-email wraps this exact function behind an ownership check;
+    // reached as a tool it had none, so saying a uuid to the agent returned
+    // the stored address for it and, on revalidate, wrote back to the row.
+    // Same test as the route, so the two entry points cannot drift.
+    const session = await toolSession();
+    if (!session) {
+      return {
+        email: null,
+        reason:
+          "No authenticated session available in tool context. Ask the user to sign in.",
+        personId,
+      };
+    }
+    if (
+      !(await callerHoldsPerson(session.supabase, session.userId, personId))
+    ) {
+      // Worded as absence rather than refusal: distinguishing the two would
+      // confirm which guessed uuids are real contacts.
+      return { email: null, reason: "Person not found.", personId };
+    }
+    return findEmailForPerson(personId, { revalidate });
+  },
 });
 
 // ── findEmails (batch) ─────────────────────────────────────────────────────
@@ -710,7 +732,19 @@ export const findEmails = tool({
       ),
   }),
   execute: async ({ personIds }) => {
-    const supabase = await createClient();
+    // Same exposure as findEmail, once per id in the array.
+    const session = await toolSession();
+    if (!session) {
+      return {
+        found: [],
+        notFound: [],
+        skipped: personIds,
+        summary:
+          "No authenticated session available in tool context. Ask the user to sign in.",
+      };
+    }
+    const { supabase, userId } = session;
+
     const { data: rows } = await supabase
       .from("people")
       .select("id, affiliation_confidence")
@@ -735,9 +769,16 @@ export const findEmails = tool({
       // company manufactures that proof. They are blocked from outreach
       // anyway, so the address could not be used even if it were right. A
       // missing row or a null confidence reads as unconfirmed, which is the
-      // safe way round. The single findEmail tool is deliberately not gated:
+      // safe way round. findEmail applies no confidence rule of its own:
       // that is an explicit request for one named person.
       if ((confidence.get(personId) ?? 0) < AFFILIATION_SEND_THRESHOLD) {
+        skipped.push(personId);
+        continue;
+      }
+      // Skipped rather than reported as not-found, for the same reason the
+      // single tool words its refusal as absence: which uuids are real
+      // contacts is exactly what a caller guessing them wants told.
+      if (!(await callerHoldsPerson(supabase, userId, personId))) {
         skipped.push(personId);
         continue;
       }

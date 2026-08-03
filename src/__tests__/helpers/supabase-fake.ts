@@ -19,6 +19,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  *   the column, so the failure says what is wrong instead of quietly reading
  *   `undefined` and taking the wrong branch.
  * - `eq()`, `in()` and `not(col, "is", null)` actually filter.
+ * - `limit(n)` truncates. Ownership checks pair it with `maybeSingle()`
+ *   precisely because a contact can sit in several campaigns, so a fake that
+ *   ignored it would turn the normal case into a PGRST116 error.
  * - `single()` and `maybeSingle()` follow PostgREST: `single()` is an error
  *   unless exactly one row matched, `maybeSingle()` unless at most one did. A
  *   dropped predicate therefore fails loudly rather than picking row zero.
@@ -279,6 +282,7 @@ export function createSupabaseFake(
     let spec: SelectSpec | null = null;
     let kind: QueryKind = "select";
     let updates: FakeRow | null = null;
+    let take: number | null = null;
     const filters: Filter[] = [];
 
     const raw = () =>
@@ -304,6 +308,9 @@ export function createSupabaseFake(
       for (const row of raw()) {
         const projected = project(table, row, spec);
         if (projected) out.push(projected);
+        // Applied after projection, since an !inner embed that finds no match
+        // drops the row and PostgREST counts what survives the join.
+        if (take !== null && out.length >= take) break;
       }
       return out;
     };
@@ -338,6 +345,10 @@ export function createSupabaseFake(
       },
       in: (column: string, values: readonly unknown[]) => {
         filters.push({ op: "in", column, values });
+        return c;
+      },
+      limit: (count: number) => {
+        take = count;
         return c;
       },
       not: (column: string, operator: string, value: unknown) => {

@@ -1,6 +1,11 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import {
+  callerHoldsPerson,
+  notFound,
+  toolSession,
+} from "@/lib/tools/ownership";
 import { parseLinkedInTitle } from "@/lib/utils";
 import { ExaService } from "@/lib/services/exa-service";
 import { filterRelevantResults } from "@/lib/services/relevance-filter";
@@ -1799,7 +1804,22 @@ export const getContactDetail = tool({
       .describe("People table ID (person_id, not campaign_people.id)."),
   }),
   execute: async ({ personId }) => {
-    const supabase = await createClient();
+    // Returns both addresses, the socials, the whole enrichment payload and
+    // the joined company, for whatever uuid it is handed. `people` is a shared
+    // pool with no owner column, so the read itself can never establish that
+    // the caller is entitled to any of it.
+    const session = await toolSession();
+    if (!session) {
+      return {
+        error:
+          "No authenticated session available in tool context. Ask the user to sign in.",
+      };
+    }
+    const { supabase, userId } = session;
+
+    if (!(await callerHoldsPerson(supabase, userId, personId))) {
+      return notFound("Contact");
+    }
 
     const { data, error } = await supabase
       .from("people")
