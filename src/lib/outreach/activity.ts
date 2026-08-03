@@ -54,6 +54,33 @@ export interface ActivityItem {
   gmail_url: string | null;
 }
 
+/**
+ * The filters the UI offers, and the states each one covers.
+ *
+ * Shared by the API route and the panel on purpose. The list is fetched
+ * unfiltered and narrowed in the client, so if these two disagreed the chip
+ * counts and the rows behind them would drift apart.
+ *
+ * "Needs attention" folds blocked in with failed because both are waiting on
+ * the user; deferred is deliberately filed under "waiting" instead, since the
+ * daily cap resolves itself tomorrow.
+ */
+export const FILTER_STATES: Record<string, ActivityState[]> = {
+  replied: ["replied"],
+  bounced: ["bounced"],
+  sent: ["sent"],
+  pending: ["queued", "scheduled", "deferred"],
+  failed: ["failed", "blocked"],
+};
+
+export function filterActivity(
+  items: ActivityItem[],
+  filter: string,
+): ActivityItem[] {
+  const wanted = FILTER_STATES[filter];
+  return wanted ? items.filter((i) => wanted.includes(i.state)) : items;
+}
+
 /** First line or so of a reply, for the collapsed row. */
 export const SNIPPET_CHARS = 180;
 

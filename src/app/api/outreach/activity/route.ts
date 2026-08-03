@@ -2,10 +2,10 @@ import { getSupabaseAndUser } from "@/lib/supabase/server";
 import {
   classifyPending,
   classifySent,
+  filterActivity,
   gmailSearchUrl,
   replySnippet,
   type ActivityItem,
-  type ActivityState,
 } from "@/lib/outreach/activity";
 
 /**
@@ -30,15 +30,6 @@ import {
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
-
-/** Filters the UI offers, mapped to the states they cover. */
-const FILTERS: Record<string, ActivityState[]> = {
-  replied: ["replied"],
-  bounced: ["bounced"],
-  sent: ["sent"],
-  pending: ["queued", "scheduled", "deferred"],
-  failed: ["failed", "blocked"],
-};
 
 /**
  * The organizations embed names its foreign key on purpose. people has TWO
@@ -108,7 +99,6 @@ export async function GET(request: Request) {
     MAX_LIMIT,
   );
 
-  const wanted = FILTERS[filter] ?? null;
   const campaignId = searchParams.get("campaignId");
 
   // Over-fetch each side by the page size: the two are merged and re-sorted in
@@ -215,9 +205,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const filtered = wanted
-    ? items.filter((i) => wanted.includes(i.state))
-    : items;
+  const filtered = filterActivity(items, filter);
   filtered.sort((a, b) => b.at.localeCompare(a.at));
   const page = filtered.slice(0, limit);
 
