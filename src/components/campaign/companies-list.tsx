@@ -172,8 +172,11 @@ export function CompaniesList({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId }),
       });
+      // Deliberately does NOT expand the row. Enriching is something you do to
+      // a list, often several in a row, and force-opening each one shoves
+      // everything below it down the page mid-scan. The data updates in place;
+      // the row opens when the user asks it to.
       onDataChanged();
-      setExpandedContactIds((prev) => new Set(prev).add(contactId));
     } catch (err) {
       console.error(`[enrich] Failed:`, err);
     } finally {
