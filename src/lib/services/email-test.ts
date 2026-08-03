@@ -63,19 +63,24 @@ export interface TestReply {
   uid: number | null;
 }
 
-/** Longest reply excerpt we store and render. */
+/** Longest reply excerpt the Settings test card stores and renders. */
 export const REPLY_SNIPPET_MAX = 400;
 
 /**
- * Reduces a raw text/plain reply body to just what the person actually typed.
+ * Reduces a raw text/plain reply body to just what the person actually typed,
+ * at full length.
  *
  * Mail clients append the entire quoted original below an attribution line, so
  * a two-word reply arrives as several hundred characters of our own copy. We
  * drop everything from the attribution onwards, plus any quoted ">" lines,
- * which is what makes the excerpt readable proof that the reply is genuinely
- * theirs rather than an echo of the test we sent.
+ * which is what makes the result readable proof that the reply is genuinely
+ * theirs rather than an echo of what we sent.
+ *
+ * Split out of extractReplyText so reply capture can store a whole reply while
+ * the Settings test card keeps its 400-character excerpt. Truncation is the
+ * caller's decision, not this function's.
  */
-export function extractReplyText(raw: string): string {
+export function stripQuotedReply(raw: string): string {
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
   const kept: string[] = [];
 
@@ -88,10 +93,20 @@ export function extractReplyText(raw: string): string {
     kept.push(line);
   }
 
-  const text = kept
+  return kept
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/**
+ * The Settings test card's excerpt: stripped, then capped.
+ *
+ * Behaviour is unchanged from before the split, which its existing tests
+ * assert. Reply capture deliberately does not use this.
+ */
+export function extractReplyText(raw: string): string {
+  const text = stripQuotedReply(raw);
   return text.length > REPLY_SNIPPET_MAX
     ? text.slice(0, REPLY_SNIPPET_MAX).trimEnd() + "…"
     : text;

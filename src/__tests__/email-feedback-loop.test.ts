@@ -314,6 +314,7 @@ describe("bounce feedback", () => {
     sent_at: new Date().toISOString(),
     person_id: "per_1",
     to_email: "dead@acme.com",
+    campaign_id: "camp_1",
     ...over,
   });
 

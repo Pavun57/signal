@@ -109,6 +109,15 @@ export interface InboundSummary {
   date: Date | null;
   /** IMAP UID, so a caller can fetch this message's body later. */
   uid: number | null;
+  /**
+   * This message's OWN RFC 5322 Message-ID (not the one it replies to).
+   *
+   * The envelope is already requested, so reading it costs nothing extra. It
+   * is what email_replies dedupes on: the tracker re-polls the same 14-day
+   * window every 10 minutes, and a sender-supplied id is the only key that
+   * survives a mailbox rebuild renumbering UIDs.
+   */
+  messageId: string | null;
 }
 
 /**
@@ -158,6 +167,7 @@ export async function fetchInboundSince(
           subject: msg.envelope?.subject ?? "",
           date: msg.envelope?.date ?? null,
           uid: msg.uid ?? null,
+          messageId: msg.envelope?.messageId?.trim() || null,
         });
         if (isDaemon && msg.uid) {
           daemonDownloads.push({ uid: msg.uid, index: results.length - 1 });

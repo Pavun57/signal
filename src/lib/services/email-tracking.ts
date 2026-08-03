@@ -22,6 +22,12 @@ export interface TrackedEmail {
   /** Both needed to attribute a bounce back to a contact and address. */
   person_id: string | null;
   to_email: string | null;
+  /**
+   * Needed by recordInboundReply: email_replies.campaign_id is NOT NULL
+   * because its select policy is transitive through campaigns, so a row
+   * without one would be invisible to its own owner.
+   */
+  campaign_id: string;
 }
 
 export const STATUS_EVENT: Record<string, string> = {
@@ -100,4 +106,100 @@ export async function applyInboundStatus(
   }
 
   return true;
+}
+
+/** The fields of an inbound message that identify it, for deduping. */
+export interface InboundIdentity {
+  messageId: string | null;
+  uid: number | null;
+  fromAddress: string;
+  date: Date | null;
+  subject: string;
+}
+
+/**
+ * A stable identity for one inbound message, scoped to the send it answers.
+ *
+ * The tracker re-polls the same 14-day window every 10 minutes, so the same
+ * reply is re-matched dozens of times and something has to make the insert
+ * idempotent. The status ladder cannot: it is about status, and a *second*
+ * genuine reply in a thread fails it (replied -> replied) while still needing
+ * to be stored.
+ *
+ * Preference order matters:
+ *   1. The sender's own Message-ID. Globally unique by spec and stable across
+ *      mailbox rebuilds.
+ *   2. The IMAP UID. Unique only within a UIDVALIDITY generation, so a rebuilt
+ *      mailbox can renumber it and re-admit a duplicate. Acceptable fallback,
+ *      never a first choice.
+ *   3. Sender, timestamp and subject. Last resort for a sender that omits the
+ *      header and a fetch that lost the UID. Two distinct replies sent in the
+ *      same second with the same subject would collide, which is a far better
+ *      failure than storing the same reply forever.
+ */
+export function replyDedupeKey(m: InboundIdentity): string {
+  if (m.messageId) return m.messageId;
+  if (m.uid !== null) return `uid:${m.uid}`;
+  return `${m.fromAddress.toLowerCase()}|${m.date?.getTime() ?? 0}|${m.subject}`;
+}
+
+/**
+ * Stores the content of one inbound reply or bounce.
+ *
+ * Three rules, all deliberate:
+ *
+ * - Called INDEPENDENTLY of applyInboundStatus's return value. Gating on it
+ *   would mean the second reply in a thread is never stored, and a transient
+ *   body-fetch failure could never be retried on a later poll.
+ * - Never throws upward. Losing a reply body must not cost the status update,
+ *   matching the recordBounce precedent above.
+ * - Writes body_text: null rather than "" when nothing was captured, so
+ *   "we never got the words" stays distinguishable from "they sent an empty
+ *   reply". The UI and the backfill both depend on that distinction.
+ *
+ * Returns true when a row was actually inserted.
+ */
+export async function recordInboundReply(
+  supabase: SupabaseClient,
+  params: {
+    email: TrackedEmail;
+    message: InboundIdentity;
+    kind: "reply" | "bounce";
+    bodyText: string | null;
+  },
+): Promise<boolean> {
+  const { email, message, kind, bodyText } = params;
+  try {
+    const { data, error } = await supabase
+      .from("email_replies")
+      .upsert(
+        {
+          sent_email_id: email.id,
+          user_id: email.user_id,
+          campaign_id: email.campaign_id,
+          person_id: email.person_id,
+          kind,
+          from_email: message.fromAddress,
+          subject: message.subject ?? "",
+          message_id: message.messageId,
+          imap_uid: message.uid,
+          body_text: bodyText && bodyText.length > 0 ? bodyText : null,
+          received_at: (message.date ?? new Date()).toISOString(),
+          dedupe_key: replyDedupeKey(message),
+        },
+        { onConflict: "sent_email_id,dedupe_key", ignoreDuplicates: true },
+      )
+      .select("id");
+
+    if (error) {
+      console.error("[email-tracking] recordInboundReply failed:", error);
+      return false;
+    }
+    // ignoreDuplicates returns zero rows when the conflict target already
+    // existed, which is the steady state on every poll after the first.
+    return (data?.length ?? 0) > 0;
+  } catch (err) {
+    console.error("[email-tracking] recordInboundReply threw:", err);
+    return false;
+  }
 }

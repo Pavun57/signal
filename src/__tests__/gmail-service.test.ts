@@ -17,6 +17,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "prospect@example.com",
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           references: [],
           bodyText: "",
           subject: "Re: Signal test",
@@ -35,6 +36,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "prospect@example.com",
           inReplyTo: null,
+          messageId: null,
           references: ["<other@x>", "<sent-2@sahnan.co>"],
           bodyText: "",
           subject: "Re: Signal test",
@@ -53,6 +55,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "mailer-daemon@googlemail.com",
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           references: [],
           bodyText: "Address not found",
           subject: "Delivery Status Notification (Failure)",
@@ -71,6 +74,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "Mail Delivery Subsystem <mailer-daemon@googlemail.com>",
           inReplyTo: null,
+          messageId: null,
           references: [],
           bodyText: "The response was: 550 ... Message-ID: <sent-2@sahnan.co>",
           subject: "Delivery Status Notification (Failure)",
@@ -89,6 +93,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "jay@sahnan.co",
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           references: [],
           bodyText: "",
           subject: "Re: Signal test",
@@ -104,6 +109,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "newsletter@stuff.com",
           inReplyTo: null,
+          messageId: null,
           references: [],
           bodyText: "hello",
           subject: "Weekly digest",
@@ -122,6 +128,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "ajay@sahnan.co",
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           references: [],
           bodyText: "",
           subject: "Re: Signal test",
@@ -140,6 +147,7 @@ describe("classifyInboundMessage", () => {
         {
           fromAddress: "JAY@SAHNAN.CO",
           inReplyTo: "<sent-1@sahnan.co>",
+          messageId: null,
           references: [],
           bodyText: "",
           subject: "Re: Signal test",

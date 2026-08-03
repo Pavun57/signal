@@ -64,6 +64,7 @@ describe("matchTestReply", () => {
   const MSG_ID = "<test-1@sahnan.co>";
   const base = {
     inReplyTo: null,
+    messageId: null,
     references: [],
     bodyText: "",
     subject: "",
@@ -77,6 +78,7 @@ describe("matchTestReply", () => {
         ...base,
         fromAddress: "jaysahnan31@gmail.com",
         inReplyTo: MSG_ID,
+        messageId: null,
         subject: "Re: Signal test",
         date: new Date("2026-07-30T14:32:00Z"),
         uid: null,
