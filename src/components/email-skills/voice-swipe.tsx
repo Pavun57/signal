@@ -106,6 +106,15 @@ export function VoiceSwipe({
   const [thread, setThread] = useState<Message[]>([]);
   const [said, setSaid] = useState<Record<string, true>>({});
   const [marks, setMarks] = useState<Record<string, Mark[]>>({});
+  /**
+   * Emails they have actually sent. `null` until the paste step is answered,
+   * which is what gates the opening batch: writing six drafts blind and then
+   * reading their real writing wastes the first batch, which is the one that
+   * decides whether this feels like it knows them.
+   *
+   * An empty array is a real answer. Most people have nothing to hand.
+   */
+  const [samples, setSamples] = useState<string[] | null>(null);
   const [draft, setDraft] = useState("");
   const [stall, setStall] = useState<Stall | null>(null);
   const [stallAt, setStallAt] = useState(0);
@@ -179,8 +188,9 @@ export function VoiceSwipe({
         ...thread.filter((m) => m.who === "you").map((m) => m.text),
         ...(extraInstruction ? [extraInstruction] : []),
       ],
+      samples: samples ?? [],
     }),
-    [judgedEmails, marks, thread, verdicts],
+    [judgedEmails, marks, samples, thread, verdicts],
   );
 
   const fetchBatch = useCallback(
@@ -363,10 +373,12 @@ export function VoiceSwipe({
     })();
   }, [done, opened, judgedEmails.length, buildTranscript, campaignId]);
 
-  // Opening batch. Fires once; StrictMode double-invokes effects in dev and a
-  // second cold-start call is a wasted Opus request, not just a slow one.
+  // Opening batch. Held until the paste step is answered, so the first drafts
+  // are written knowing whatever the user pasted rather than after it. Fires
+  // once; StrictMode double-invokes effects in dev and a second cold-start call
+  // is a wasted Opus request, not just a slow one.
   useEffect(() => {
-    if (openingRef.current) return;
+    if (samples === null || openingRef.current) return;
     openingRef.current = true;
     void (async () => {
       const first = await fetchBatch("opening", FIRST_BATCH);
@@ -374,12 +386,14 @@ export function VoiceSwipe({
         setQueue(first);
         say({
           who: "agent",
-          text: `I've written ${first.length} to start, deliberately different from each other. Here's the first: keep it if it sounds like you, or just tell me what's off and I'll rewrite them.`,
+          text: samples.length
+            ? `I've read what you sent and written ${first.length} in that register, still different from each other. Here's the first: keep it if it sounds like you, or tell me what's off and I'll rewrite them.`
+            : `I've written ${first.length} to start, deliberately different from each other. Here's the first: keep it if it sounds like you, or just tell me what's off and I'll rewrite them.`,
         });
       }
       setOpened(true);
     })();
-  }, [fetchBatch, say]);
+  }, [fetchBatch, samples, say]);
 
   const commit = useCallback(
     (liked: boolean) => {
@@ -551,6 +565,15 @@ export function VoiceSwipe({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [commit, stall]);
+
+  if (samples === null) {
+    return (
+      <SamplesStep
+        onUse={(text) => setSamples([text])}
+        onSkip={() => setSamples([])}
+      />
+    );
+  }
 
   if (done) {
     return (
@@ -839,6 +862,75 @@ export function VoiceSwipe({
         />
       )}
     </>
+  );
+}
+
+/**
+ * Before the first batch, not after: their own writing is the highest-fidelity
+ * voice signal there is, and every draft written before it lands is written
+ * blind. The interview asks for this in its first or second move for the same
+ * reason, and the copy here is its copy.
+ *
+ * Skipping is stated as a normal path rather than buried as a way out. Most
+ * people have nothing to hand, and a step that reads as a requirement is a step
+ * people abandon the whole flow at.
+ */
+function SamplesStep({
+  onUse,
+  onSkip,
+}: {
+  onUse: (text: string) => void;
+  onSkip: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const trimmed = value.trim();
+
+  return (
+    <div
+      className={cn(
+        "mx-auto flex w-full max-w-2xl flex-col gap-4 rounded-xl border",
+        PANE_DECK,
+        BORDER_STRONG,
+      )}
+    >
+      <div className="flex flex-col gap-1.5">
+        <label
+          htmlFor="swipe-samples"
+          className="block text-[1.0625rem] leading-snug font-medium tracking-tight"
+        >
+          Have you got a cold email you have actually sent?
+        </label>
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          Your own writing tells me more than any number of swipes can, so the
+          first drafts come back sounding close to you instead of starting from
+          nothing.
+        </p>
+      </div>
+      <Textarea
+        id="swipe-samples"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        rows={10}
+        autoFocus
+        // The route rejects a sample over 20k chars. Capping here stops a long
+        // paste from coming back as a raw validation error the user can't act on.
+        maxLength={20_000}
+        placeholder="Paste one or more emails you have actually sent. Subject lines help too."
+      />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-muted-foreground text-xs">
+          Nothing to paste? Skip it. The swipes on their own are enough.
+        </p>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={onSkip}>
+            Skip this step
+          </Button>
+          <Button disabled={!trimmed} onClick={() => onUse(trimmed)}>
+            Use these samples
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -8,6 +8,7 @@ import {
   BatchSchema,
   MAX_INSTRUCTIONS_IN_PROMPT,
   MAX_JUDGED_IN_PROMPT,
+  MAX_SAMPLES_IN_PROMPT,
   SkillSchema,
   buildBatchPrompt,
   buildBatchSystem,
@@ -64,11 +65,24 @@ const JudgedSchema = z.object({
     .optional(),
 });
 
+/**
+ * One pasted email. Matches the interview's textarea cap, which is the number
+ * the user is actually held to on the way in.
+ */
+const MAX_SAMPLE_PASTE_CHARS = 20_000;
+
 const TranscriptSchema = z.object({
   judged: z.array(JudgedSchema).max(MAX_JUDGED_IN_PROMPT + 10),
   instructions: z
     .array(z.string().max(2_000))
     .max(MAX_INSTRUCTIONS_IN_PROMPT + 10),
+  // Emails the user pasted before the first batch. Bounded like everything
+  // else: this is the one field in the transcript the user fills by pasting,
+  // so it is where an accidental megabyte would arrive.
+  samples: z
+    .array(z.string().max(MAX_SAMPLE_PASTE_CHARS))
+    .max(MAX_SAMPLES_IN_PROMPT)
+    .optional(),
   // `prior` is deliberately absent. It is built server-side from the saved row
   // on a refinement; accepting it here would let a request assert that any
   // rules it liked had already been accepted.

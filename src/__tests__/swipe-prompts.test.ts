@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_ENRICHMENT_CHARS,
+  MAX_SAMPLE_CHARS,
+  buildBatchPrompt,
   buildBatchSystem,
   buildRefinementTranscript,
   buildSkillPrompt,
@@ -156,12 +158,14 @@ describe("buildRefinementTranscript", () => {
         source_transcript: {
           judged: [judged("Release notes", true)],
           instructions: ["shorter"],
+          samples: ["Hi Dana, quick one."],
         },
       },
       "Make it blunter",
     );
     expect(t.judged).toHaveLength(1);
     expect(t.instructions).toEqual(["shorter", "Make it blunter"]);
+    expect(t.samples).toEqual(["Hi Dana, quick one."]);
   });
 
   it("ignores an interview transcript instead of mistaking it for a run", () => {
@@ -190,6 +194,7 @@ describe("buildRefinementTranscript", () => {
       "Less blunt",
     );
     expect(t.judged).toEqual([]);
+    expect(t.samples).toBeUndefined();
     expect(t.prior?.summary).toBeNull();
   });
 });
@@ -219,6 +224,66 @@ describe("buildSkillPrompt", () => {
     expect(prompt).toContain("Write their voice rules.");
     expect(prompt).not.toContain("THE RULES THEY ARE ALREADY WRITING WITH");
   });
+
+  it("carries pasted emails through to the rules", () => {
+    const prompt = buildSkillPrompt({
+      judged: [judged("A", true)],
+      instructions: [],
+      samples: ["Dana, saw the release. Worth 15 minutes?"],
+    });
+    expect(prompt).toContain("EMAILS THEY HAVE ACTUALLY SENT");
+    expect(prompt).toContain("Worth 15 minutes?");
+    expect(prompt).toContain("pasted 1 email(s) they had sent");
+  });
+
+  it("says nothing about samples when the step was skipped", () => {
+    const prompt = buildSkillPrompt({
+      judged: [judged("A", true)],
+      instructions: [],
+      samples: ["", "   "],
+    });
+    expect(prompt).not.toContain("EMAILS THEY HAVE ACTUALLY SENT");
+    expect(prompt).not.toContain("pasted");
+  });
+});
+
+describe("samples in the batch prompt", () => {
+  it("fences them and keeps the opening-batch note", () => {
+    const prompt = buildBatchPrompt(
+      {
+        judged: [],
+        instructions: [],
+        samples: ["Dana, saw the release. Worth 15 minutes?"],
+      },
+      6,
+    );
+    // Pasted mail is third-party correspondence the user never wrote, and the
+    // step is an open invitation to paste anything at all.
+    expect(prompt.indexOf("<untrusted>")).toBeLessThan(
+      prompt.indexOf("Worth 15 minutes?"),
+    );
+    expect(prompt).toContain("Nothing judged yet. This is the opening batch.");
+  });
+
+  it("truncates a paste far longer than the voice needs", () => {
+    const prompt = buildBatchPrompt(
+      {
+        judged: [],
+        instructions: [],
+        samples: ["x".repeat(MAX_SAMPLE_CHARS * 3)],
+      },
+      6,
+    );
+    expect(prompt).not.toContain("x".repeat(MAX_SAMPLE_CHARS + 1));
+  });
+
+  it("tells the batch to write in that register without cloning it", () => {
+    const sys = buildBatchSystem(null, {});
+    expect(sys).toContain("If they pasted emails they have actually sent");
+    // Otherwise the batch converges on their samples and every swipe after the
+    // first stops carrying information.
+    expect(sys).toContain("Keep varying across the axes");
+  });
 });
 
 describe("buildSkillSystem", () => {
@@ -226,6 +291,24 @@ describe("buildSkillSystem", () => {
     const sys = buildSkillSystem(null, {});
     expect(sys).toContain("When they already have rules");
     expect(sys).toContain("Return the complete replacement set");
+  });
+
+  it("ranks what they pasted above every reaction to somebody else's copy", () => {
+    const sys = buildSkillSystem(null, {});
+    const rank = (s: string) => sys.indexOf(s);
+    expect(rank("**What they pasted**")).toBeGreaterThan(-1);
+    expect(rank("**What they pasted**")).toBeLessThan(
+      rank("**What they typed**"),
+    );
+    expect(rank("**What they typed**")).toBeLessThan(
+      rank("**What they kept**"),
+    );
+    expect(rank("**What they kept**")).toBeLessThan(
+      rank("**What they passed**"),
+    );
+    // The ranking is about evidence. A typed instruction is still how they say
+    // what should change, and has to keep beating everything on a conflict.
+    expect(sys).toContain("follow the instruction");
   });
 
   it("gets the same persona context as the batch prompt", () => {
