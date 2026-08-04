@@ -54,24 +54,36 @@ src/__tests__/      # Vitest unit tests
 
 ## Data model
 
-The consolidated schema at `supabase/migrations/20260419000000_initial_schema.sql` defines the canonical data model. The main entities:
+The migrations in `supabase/migrations/` define the canonical data model. The
+table below was substantially wrong for months (it named `companies`,
+`chat_sessions`, `chat_messages`, `signal_runs`, `signal_events`,
+`email_events`, `knowledge_base`, `user_profiles` and `team_members`, none of
+which exist), so treat the migrations as the source of truth and fix this table
+when it drifts. These are the tables that actually exist:
 
-| Table                            | Purpose                                                |
-| -------------------------------- | ------------------------------------------------------ |
-| `campaigns`                      | Top-level container for a sales motion                 |
-| `companies`, `people`            | Enriched entities surfaced or imported into a campaign |
-| `signals`                        | Recipe-driven triggers watching for buying intent      |
-| `signal_runs`, `signal_events`   | Execution history + emitted events                     |
-| `chat_sessions`, `chat_messages` | Per-campaign chat history backing the workspace        |
-| `sequences`, `sequence_steps`    | Multi-step outreach definitions                        |
-| `email_drafts`, `email_events`   | Drafted emails + send/open/reply lifecycle             |
-| `knowledge_base`                 | Shared user-authored notes, pinned in chat context     |
-| `tracking_*`                     | Recurring company / person signal monitoring           |
-| `jobs`                           | Postgres job queue (recurring + one-off work)          |
-| `api_usage`                      | Per-action cost attribution                            |
-| `user_profiles`, `team_members`  | Multi-tenant auth scope                                |
+| Table                                                        | Purpose                                                       |
+| ------------------------------------------------------------ | ------------------------------------------------------------- |
+| `campaigns`                                                  | Top-level container for a sales motion                        |
+| `organizations`, `people`                                    | The shared knowledge pool: companies and contacts             |
+| `campaign_organizations`, `campaign_people`                  | Which pool rows belong to which campaign                      |
+| `signals`                                                    | Recipe-driven triggers watching for buying intent             |
+| `campaign_signals`, `signal_results`                         | Signals enabled per campaign, and their execution output      |
+| `chats`                                                      | Chat history, one row per conversation with messages as jsonb |
+| `sequences`, `sequence_steps`, `sequence_enrollments`        | Multi-step outreach definitions and who is enrolled where     |
+| `email_drafts`, `sent_emails`, `email_replies`               | Drafted mail, what was sent, and what came back               |
+| `outreach_events`                                            | Append-only log of outreach status transitions                |
+| `email_voice_profiles`                                       | Per-user and per-campaign writing voice                       |
+| `tracking_configs`, `tracking_snapshots`, `tracking_changes` | Recurring company / person signal monitoring                  |
+| `jobs`                                                       | Postgres job queue (recurring + one-off work)                 |
+| `api_usage`                                                  | Per-action cost attribution                                   |
+| `user_profile`                                               | The sending identity; a user may have several                 |
+| `user_settings`                                              | Mailbox connection, daily send cap, pause switch              |
 
-Row-level security enforces tenant isolation on all user-scoped tables.
+Row-level security scopes the user-owned tables to `auth.jwt() ->> 'sub'` via
+`requesting_user_id()`. Note the exception, because it matters: `organizations`
+and `people` are a **shared pool** with no owner column, readable and writable
+by any authenticated user. That is a deliberate single-team tradeoff and it is
+not safe to share an instance with people you do not trust.
 
 ## Multi-tenancy
 

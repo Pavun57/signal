@@ -190,11 +190,13 @@ test.describe("POST /api/enrich", () => {
     expect(res.status).toBe(400);
   });
 
-  test("rejects invalid contactId", async () => {
+  test("rejects a contactId the caller does not hold", async () => {
     const res = await post("/api/enrich", {
       contactId: "00000000-0000-0000-0000-000000000000",
     });
-    expect(res.status).toBe(404);
+    // 403 for both "not yours" and "does not exist", deliberately: `people` is
+    // a shared pool, so a 404 here would confirm which uuids are real.
+    expect(res.status).toBe(403);
   });
 });
 

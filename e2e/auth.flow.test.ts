@@ -21,8 +21,11 @@ test.afterAll(async () => {
 test.describe("middleware redirects", () => {
   test("unauthenticated / redirects to /login", async ({ page }) => {
     await page.goto("http://localhost:3000/");
-    await page.waitForURL(/\/login(\/.*)?$/, { timeout: 10_000 });
-    expect(page.url()).toMatch(/\/login(\/.*)?$/);
+    // Clerk appends ?redirect_url=..., so anchoring on the end of the
+    // string never matched and this failed while the app was behaving
+    // correctly.
+    await page.waitForURL(/\/login(\/[^?]*)?(\?.*)?$/, { timeout: 10_000 });
+    expect(page.url()).toContain("/login");
   });
 
   test("signed-in user visiting /login is allowed (Clerk handles redirect)", async ({

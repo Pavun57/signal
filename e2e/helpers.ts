@@ -79,7 +79,13 @@ export interface TestUser {
  * queries see the Clerk user id as `auth.jwt() ->> 'sub'`.
  */
 export async function createTestUser(email?: string): Promise<TestUser> {
-  const targetEmail = email ?? `${TEST_PREFIX}${randomUUID()}@example.com`;
+  // `+clerk_test` is Clerk's reserved marker for a test identity: those users
+  // skip the email-code step, so a browser sign-in can actually complete.
+  // Without it Clerk asks a new device to verify by email and every UI
+  // sign-in stalls on a code nobody can read. TEST_PREFIX stays leading so
+  // cleanupTestUsers still matches on it.
+  const targetEmail =
+    email ?? `${TEST_PREFIX}${randomUUID()}+clerk_test@example.com`;
 
   const user = await clerk.users.createUser({
     emailAddress: [targetEmail],
@@ -107,6 +113,7 @@ export async function createTestUser(email?: string): Promise<TestUser> {
  * Clerk's `__session` cookie carries the JWT directly.
  */
 export function authCookiesFor(user: TestUser) {
+  const expires = Math.floor(Date.now() / 1000) + 3600;
   return [
     {
       name: "__session",
@@ -115,7 +122,24 @@ export function authCookiesFor(user: TestUser) {
       httpOnly: true,
       secure: false,
       sameSite: "Lax" as const,
-      expires: Math.floor(Date.now() / 1000) + 3600,
+      expires,
+    },
+    {
+      // Clerk's middleware decides signed-in-ness for a *page* request from
+      // __client_uat, not from __session. With only __session set it read the
+      // default 0, treated the request as signed out, and redirected to
+      // /login: every browser test in this suite failed on that, 24 of them,
+      // and nothing noticed because CI never ran the e2e project.
+      //
+      // Any non-zero timestamp is enough to mean "there is a session, go and
+      // verify it", which the __session JWT then satisfies.
+      name: "__client_uat",
+      value: String(Math.floor(Date.now() / 1000)),
+      url: "http://localhost:3000",
+      httpOnly: false,
+      secure: false,
+      sameSite: "Lax" as const,
+      expires,
     },
   ];
 }
