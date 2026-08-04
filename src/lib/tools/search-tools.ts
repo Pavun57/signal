@@ -8,7 +8,13 @@ import {
   notFound,
   toolSession,
 } from "@/lib/tools/ownership";
+import {
+  brandFromDomain,
+  isDirectoryDomain,
+  isDirectoryTitle,
+} from "@/lib/services/directory-domains";
 import { ExaService, type SearchCategory } from "@/lib/services/exa-service";
+import { resolveOrganizationDomain } from "@/lib/services/domain-resolver";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
   estimateClaudeCostFromUsage,
@@ -26,124 +32,8 @@ import {
   wrapUntrusted,
 } from "@/lib/prompt-safety";
 
-// ── Directory / aggregator blocklist ──────────────────────────────────────
-// Domains that list OTHER businesses. Results from these should never be
-// stored as companies -- they're directories, not businesses themselves.
-const DIRECTORY_DOMAINS = new Set([
-  // Property
-  "rightmove.co.uk",
-  "zoopla.co.uk",
-  "onthemarket.com",
-  "primelocation.com",
-  // Reviews / local
-  "yell.com",
-  "yelp.com",
-  "yelp.co.uk",
-  "tripadvisor.co.uk",
-  "tripadvisor.com",
-  "trustpilot.com",
-  "google.com",
-  "google.co.uk",
-  "g.co",
-  // Trades
-  "checkatrade.com",
-  "trustatrader.com",
-  "mybuilder.com",
-  "ratedpeople.com",
-  "bark.com",
-  // Healthcare
-  "nhs.uk",
-  "iwantgreatcare.org",
-  // Legal
-  "lawsociety.org.uk",
-  "solicitors.guru",
-  "chambers.com",
-  "legal500.com",
-  // Finance
-  "unbiased.co.uk",
-  "vouchedfor.co.uk",
-  // B2B directories
-  "clutch.co",
-  "themanifest.com",
-  "sortlist.co.uk",
-  "goodfirms.co",
-  "g2.com",
-  "capterra.com",
-  // General directories / aggregators
-  "facebook.com",
-  "instagram.com",
-  "twitter.com",
-  "x.com",
-  "linkedin.com",
-  "tiktok.com",
-  "youtube.com",
-  "pinterest.com",
-  "wikipedia.org",
-  "crunchbase.com",
-  "bloomberg.com",
-  "forbes.com",
-  "companieshouse.gov.uk",
-  "endole.co.uk",
-  "dnb.com",
-  // Booking / marketplace
-  "booking.com",
-  "opentable.co.uk",
-  "treatwell.co.uk",
-  "fresha.com",
-  "hitched.co.uk",
-  "bridebook.com",
-  // Recruitment
-  "indeed.com",
-  "reed.co.uk",
-  "glassdoor.com",
-  "glassdoor.co.uk",
-  // Auto
-  "autotrader.co.uk",
-  "motors.co.uk",
-  // Misc aggregators
-  "scoot.co.uk",
-  "thomsonlocal.com",
-  "192.com",
-  "cylex-uk.co.uk",
-  "hotfrog.co.uk",
-  "freeindex.co.uk",
-  "thenewsshopper.co.uk",
-]);
-
-/** Check if a domain belongs to a known directory/aggregator. */
-function isDirectoryDomain(domain: string | null): boolean {
-  if (!domain) return false;
-  const d = domain.toLowerCase();
-  if (DIRECTORY_DOMAINS.has(d)) return true;
-  // Check parent domain (e.g. "maps.google.com" → "google.com")
-  const parts = d.split(".");
-  if (parts.length > 2) {
-    const parent = parts.slice(-2).join(".");
-    if (DIRECTORY_DOMAINS.has(parent)) return true;
-  }
-  return false;
-}
-
-/** Derive a brand-ish label from an apex domain, e.g. `mintlify.com` → `Mintlify`. */
-function brandFromDomain(apex: string): string {
-  const sld = apex.split(".")[0] ?? "";
-  return sld ? sld.charAt(0).toUpperCase() + sld.slice(1) : "Unknown";
-}
-
-/** Check if a name looks like a directory listing, not a real business. */
-function isDirectoryTitle(name: string): boolean {
-  const lower = name.toLowerCase();
-  const patterns = [
-    /^(best|top|find)\s+\d*/,
-    /\b(directory|directories)\b/,
-    /\b(best|top)\s+(local|rated|reviewed)\b/,
-    /\b\d+\s+(best|top)\b/,
-    /\bagents?\s+(in|near|around)\s+/,
-    /\bnear\s+(me|you)\b/,
-    /\breview(s|ed)?\b.*\b(in|near)\b/,
-  ];
-  return patterns.some((p) => p.test(lower));
-}
+/** Parallel website lookups per batch. One paid lookup each, so keep it low. */
+const DOMAIN_RESOLVE_CONCURRENCY = 4;
 
 export const searchCompanies = tool({
   description:
@@ -754,6 +644,41 @@ ${wrapUntrusted(combinedContent.slice(0, 15000))}`,
       newCompanies.push(c);
     }
 
+    // Resolve the ones the directory listed without a website.
+    //
+    // A listing routinely carries no site for the business, and a company with
+    // no domain cannot hold contacts at all, so storing them as-is created
+    // campaigns that were structurally incapable of holding a lead. Bounded
+    // concurrency because this is one paid lookup per company, and every
+    // failure is swallowed inside the resolver: an unresolved company is still
+    // a real lead, and the campaign page can fix it by hand.
+    const needResolving = newCompanies.filter((c) => !c.domain);
+    let domainsResolved = 0;
+    for (let i = 0; i < needResolving.length; i += DOMAIN_RESOLVE_CONCURRENCY) {
+      const batch = needResolving.slice(i, i + DOMAIN_RESOLVE_CONCURRENCY);
+      const found = await Promise.all(
+        batch.map((c) =>
+          resolveOrganizationDomain({
+            name: c.name,
+            location: c.location,
+            industry: c.industry || input.industry,
+          }),
+        ),
+      );
+      for (const [index, resolved] of found.entries()) {
+        if (!resolved) continue;
+        batch[index].domain = resolved.domain;
+        batch[index].url = resolved.url;
+        domainsResolved++;
+      }
+    }
+    const domainsStillMissing = needResolving.length - domainsResolved;
+    if (needResolving.length > 0) {
+      console.log(
+        `[discoverCompanies] ${domainsResolved}/${needResolving.length} missing websites resolved; ${domainsStillMissing} still unusable for contacts.`,
+      );
+    }
+
     // Create orgs and link to campaign
     for (const c of newCompanies) {
       const domain = c.domain ? normalizeDomain(c.domain) : null;
@@ -785,6 +710,11 @@ ${wrapUntrusted(combinedContent.slice(0, 15000))}`,
       duplicatesSkipped,
       directoriesSearched: scrapedContent.length,
       queries: directoryQueries,
+      domainsResolved,
+      // Companies that still cannot hold a contact. Silence here reads as "12
+      // companies found" when none of the 12 is usable, which is the report
+      // this whole change came from.
+      domainsStillMissing,
     };
   },
 });

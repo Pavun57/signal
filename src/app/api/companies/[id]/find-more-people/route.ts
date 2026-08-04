@@ -5,7 +5,7 @@ import { findContactsForOrganization } from "@/lib/services/contact-discovery";
 export const maxDuration = 120;
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: companyId } = await params;
@@ -16,14 +16,41 @@ export async function POST(
   }
   const { supabase, user } = ctx;
 
-  // Ownership: target org must belong to one of the user's campaigns
+  // The campaign the company page is scoped to, when it is scoped to one. A
+  // bodyless POST is the unscoped case and stays supported: the standalone
+  // company page can be viewed with no campaign selected, and people found
+  // that way belong to the company alone. What is not supported any more is
+  // finding people inside a campaign and quietly leaving them out of it.
+  let campaignId: string | null = null;
+  const body = (await request.json().catch(() => null)) as {
+    campaignId?: unknown;
+  } | null;
+  if (body?.campaignId != null) {
+    if (typeof body.campaignId !== "string") {
+      return Response.json(
+        { error: "campaignId must be a string" },
+        { status: 400 },
+      );
+    }
+    campaignId = body.campaignId;
+  }
+
+  // Ownership: the target org must belong to one of the user's campaigns
   // (same gate as classify-departments and /api/people/[id]/to-company).
-  const { data: orgOwnership } = await supabase
+  //
+  // With a campaignId the same query answers a second question by narrowing to
+  // that campaign: is this company actually in it. Owning the campaign and
+  // owning the company are separate facts, and neither one puts the company in
+  // the campaign. Checking only ownership would let a link be written from a
+  // campaign that never asked about this company.
+  let ownershipQuery = supabase
     .from("campaign_organizations")
     .select("campaign:campaigns!inner(user_id)")
-    .eq("organization_id", companyId)
-    .limit(1)
-    .maybeSingle();
+    .eq("organization_id", companyId);
+  if (campaignId) {
+    ownershipQuery = ownershipQuery.eq("campaign_id", campaignId);
+  }
+  const { data: orgOwnership } = await ownershipQuery.limit(1).maybeSingle();
 
   const orgOwnerId =
     (orgOwnership?.campaign as unknown as { user_id?: string } | null)
@@ -56,7 +83,7 @@ export async function POST(
   return withAction(`Find more people: ${org.name}`, async () => {
     const result = await findContactsForOrganization(supabase, {
       organizationId: companyId,
-      campaignId: null,
+      campaignId,
       titles,
       numResults: 10,
     });
@@ -64,6 +91,11 @@ export async function POST(
     return Response.json({
       found: result.totalFound + result.rejectedAsWrongCompany,
       added: result.totalFound,
+      // Which of the two runs this was. The caller says "added to this
+      // campaign" or "added to the company, not in a campaign yet" off this,
+      // because the difference decides whether the campaign page will show
+      // them and the user has no other way to know.
+      campaignId,
       verifiedCount: result.verifiedCount,
       uncertainCount: result.uncertainCount,
       rejectedAsWrongCompany: result.rejectedAsWrongCompany,

@@ -120,7 +120,29 @@ vi.mock("@/lib/services/cost-tracker", () => ({
   withAction: (_label: string, fn: () => Promise<unknown>) => fn(),
 }));
 
-import { getContactDetail } from "@/lib/tools/enrichment-tools";
+/**
+ * Stubbed because this file is about who may call the tool, not what the write
+ * does. Being a mock is also what makes "the write never happened" assertable.
+ */
+const saveOrganizationWebsite = vi.fn(async () => ({
+  ok: true as const,
+  merged: false,
+  domain: "victimcorp.com",
+  url: "https://victimcorp.com",
+  source: "user_entered",
+  evidence: "entered by the user",
+}));
+vi.mock("@/lib/services/organization-website", () => ({
+  saveOrganizationWebsite: (...args: unknown[]) =>
+    (saveOrganizationWebsite as unknown as (...a: unknown[]) => unknown)(
+      ...args,
+    ),
+}));
+
+import {
+  getContactDetail,
+  setCompanyWebsite,
+} from "@/lib/tools/enrichment-tools";
 import { getCompanyDetail } from "@/lib/tools/search-tools";
 import { findEmail, findEmails } from "@/lib/tools/email-tools";
 
@@ -202,6 +224,37 @@ describe("findEmail", () => {
 
     expect(result).toMatchObject({ email: null });
     expect(JSON.stringify(result)).not.toMatch(/ceo@victimcorp/i);
+  });
+});
+
+describe("setCompanyWebsite", () => {
+  beforeEach(() => saveOrganizationWebsite.mockClear());
+
+  it("saves the website of a company the caller holds", async () => {
+    const result = await setCompanyWebsite.execute!(
+      { organizationId: ORG, url: "victimcorp.com" },
+      noCtx,
+    );
+
+    expect(saveOrganizationWebsite).toHaveBeenCalled();
+    expect(result).toMatchObject({ domain: "victimcorp.com" });
+  });
+
+  it("refuses a company the caller has no claim on, without writing", async () => {
+    // The only writing tool in this file, and the write is destructive in a way
+    // the read tools are not: setting a domain that another row already holds
+    // merges the two companies and deletes one of them. Ungated, that is a
+    // stranger's contact list moved into a company they chose, by saying a uuid
+    // to the agent.
+    rows["campaign_organizations:organization_id"] = null;
+
+    const result = await setCompanyWebsite.execute!(
+      { organizationId: ORG, url: "attacker-controlled.com" },
+      noCtx,
+    );
+
+    expect(result).toHaveProperty("error");
+    expect(saveOrganizationWebsite).not.toHaveBeenCalled();
   });
 });
 

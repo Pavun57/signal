@@ -217,14 +217,57 @@ export function CompaniesList({
   const findContactsHandler = async (companyId: string) => {
     setFindingContactsIds((prev) => new Set(prev).add(companyId));
     try {
-      await apiFetch("/api/find-contacts", {
+      const res = await apiFetch("/api/find-contacts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyId, campaignId }),
       });
+      // This used to await the call and ignore everything it returned. apiFetch
+      // does not throw on a non-2xx, so the catch below never fired either: a
+      // 403, a refusal and a successful run all looked identical from here,
+      // which is to say they all looked like nothing happening.
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const data = (await res.json().catch(() => null)) as {
+        contacts?: unknown[];
+        totalFound?: number;
+        uncertainCount?: number;
+        rejectedAsWrongCompany?: number;
+        error?: string;
+      } | null;
+
       onDataChanged();
+
+      // A refusal (most often: the company has no domain on record, so
+      // contacts cannot be told apart from another company of the same name)
+      // comes back 200 with an explanation. It is the normal outcome for a
+      // directory-sourced company, and swallowing it is what left the user
+      // staring at an empty campaign with nothing to act on. Worded as the
+      // "Find more people" button words it, deliberately: two buttons over one
+      // service must not describe it two ways.
+      if (data?.error) {
+        toast.error(data.error);
+        return;
+      }
+      const added = data?.contacts?.length ?? 0;
+      if (added === 0) {
+        toast.info("No new people found.");
+        return;
+      }
+      const notes = [];
+      if (data?.uncertainCount)
+        notes.push(`${data.uncertainCount} unconfirmed, blocked from outreach`);
+      if (data?.rejectedAsWrongCompany)
+        notes.push(`${data.rejectedAsWrongCompany} work elsewhere`);
+      toast.success(
+        `Found ${added} ${added === 1 ? "person" : "people"}.` +
+          (notes.length ? ` ${notes.join(", ")}.` : ""),
+      );
     } catch (err) {
       console.error(`[find-contacts] Failed:`, err);
+      toast.error(err instanceof Error ? err.message : "Failed to find leads.");
     } finally {
       setFindingContactsIds((prev) => {
         const next = new Set(prev);
@@ -647,105 +690,80 @@ export function CompaniesList({
                         isRefreshing={enrichingCompanyIds.has(company.id)}
                       />
 
-                      {companyContacts.length === 0 ? (
-                        <div className="border-border border-t px-4 py-6 text-center">
-                          <p className="text-muted-foreground text-sm">
-                            No leads found for this company yet.
-                          </p>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="mt-2"
-                            aria-label={`Find contacts for ${company.name}`}
-                            onClick={() => findContactsHandler(company.id)}
-                            disabled={findingContactsIds.has(company.id)}
-                          >
-                            {findingContactsIds.has(company.id) ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <UserSearch className="h-3.5 w-3.5" />
-                            )}
-                            {findingContactsIds.has(company.id)
-                              ? "Searching..."
-                              : "Find leads"}
-                          </Button>
-                        </div>
-                      ) : (
-                        <>
-                          {(() => {
-                            // A company with no organization id has no chart to
-                            // show, so it stays on the list whatever is stored.
-                            const chartMode =
-                              chartModeCompanyIds.has(company.id) &&
-                              !!company.organization_id;
-                            return (
-                              <div className="border-border flex items-center justify-end gap-1.5 border-t px-4 py-2">
-                                <span className="text-muted-foreground mr-1 text-xs">
-                                  View:
-                                </span>
-                                <TogglePill
-                                  active={chartMode}
-                                  onClick={() =>
-                                    setCompanyView(company.id, "chart")
-                                  }
-                                  disabled={!company.organization_id}
-                                  title={
-                                    company.organization_id
-                                      ? "Org chart"
-                                      : "Chart unavailable: company has no organization id"
-                                  }
-                                >
-                                  Org chart
-                                </TogglePill>
-                                <TogglePill
-                                  active={!chartMode}
-                                  onClick={() =>
-                                    setCompanyView(company.id, "table")
-                                  }
-                                >
-                                  List
-                                </TogglePill>
-                              </div>
-                            );
-                          })()}
+                      <>
+                        {(() => {
+                          // A company with no organization id has no chart to
+                          // show, so it stays on the list whatever is stored.
+                          const chartMode =
+                            chartModeCompanyIds.has(company.id) &&
+                            !!company.organization_id;
+                          return (
+                            <div className="border-border flex items-center justify-end gap-1.5 border-t px-4 py-2">
+                              <span className="text-muted-foreground mr-1 text-xs">
+                                View:
+                              </span>
+                              <TogglePill
+                                active={chartMode}
+                                onClick={() =>
+                                  setCompanyView(company.id, "chart")
+                                }
+                                disabled={!company.organization_id}
+                                title={
+                                  company.organization_id
+                                    ? "Org chart"
+                                    : "Chart unavailable: company has no organization id"
+                                }
+                              >
+                                Org chart
+                              </TogglePill>
+                              <TogglePill
+                                active={!chartMode}
+                                onClick={() =>
+                                  setCompanyView(company.id, "table")
+                                }
+                              >
+                                List
+                              </TogglePill>
+                            </div>
+                          );
+                        })()}
 
-                          {chartModeCompanyIds.has(company.id) &&
-                          company.organization_id ? (
-                            <EmbeddedOrgChart
-                              organizationId={company.organization_id}
-                              campaignId={campaignId}
-                              contacts={companyContacts}
-                              onEnrich={enrichContact}
-                              onDataChanged={onDataChanged}
-                            />
-                          ) : (
-                            <ContactsTable
-                              contacts={companyContacts}
-                              expandedContactIds={expandedContactIds}
-                              highlightedIds={highlightedIds}
-                              enrichingIds={enrichingIds}
-                              findingEmailIds={findingEmailIds}
-                              onToggle={toggleContact}
-                              onEnrich={enrichContact}
-                              onFindEmail={findEmailForContact}
-                              onEmailEdit={updateContactEmail}
-                              columnSpan={7}
-                              showOutreach
-                              review={
-                                company.organization_id
-                                  ? {
-                                      organizationId: company.organization_id,
-                                      pendingIds: reviewPendingIds,
-                                      confirmedIds: confirmedContactIds,
-                                      onConfirm: confirmAffiliation,
-                                      onNotHere: detachContact,
-                                    }
-                                  : undefined
-                              }
-                            />
-                          )}
-                        </>
-                      )}
+                        {chartModeCompanyIds.has(company.id) &&
+                        company.organization_id ? (
+                          <EmbeddedOrgChart
+                            organizationId={company.organization_id}
+                            campaignId={campaignId}
+                            contacts={companyContacts}
+                            onEnrich={enrichContact}
+                            onDataChanged={onDataChanged}
+                          />
+                        ) : (
+                          <ContactsTable
+                            contacts={companyContacts}
+                            expandedContactIds={expandedContactIds}
+                            highlightedIds={highlightedIds}
+                            enrichingIds={enrichingIds}
+                            findingEmailIds={findingEmailIds}
+                            onToggle={toggleContact}
+                            onEnrich={enrichContact}
+                            onFindEmail={findEmailForContact}
+                            onEmailEdit={updateContactEmail}
+                            columnSpan={7}
+                            showOutreach
+                            review={
+                              company.organization_id
+                                ? {
+                                    organizationId: company.organization_id,
+                                    pendingIds: reviewPendingIds,
+                                    confirmedIds: confirmedContactIds,
+                                    onConfirm: confirmAffiliation,
+                                    onNotHere: detachContact,
+                                  }
+                                : undefined
+                            }
+                          />
+                        )}
+                      </>
                     </div>
                   )}
                 </div>
@@ -801,8 +819,11 @@ export function CompaniesList({
           companies={companiesWithoutLeads}
           expandedCompanyIds={expandedCompanyIds}
           enrichingCompanyIds={enrichingCompanyIds}
+          findingContactsIds={findingContactsIds}
           onToggle={toggleCompany}
           onEnrich={enrichCompanyHandler}
+          onFindContacts={findContactsHandler}
+          onDataChanged={onDataChanged}
           isCompanyEnriched={isCompanyEnriched}
         />
       )}
@@ -1149,12 +1170,121 @@ function ContactsTable({
   );
 }
 
+/**
+ * The way out of a dead end: a company with no website cannot hold contacts,
+ * and until the website route existed there was no way to give it one. The
+ * domain is written when the company is created and never again, so a company
+ * that arrived from a directory listing with no site was stuck there for good.
+ */
+function MissingWebsite({
+  company,
+  onSaved,
+}: {
+  company: CampaignCompany;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async (payload: { url?: string; resolve?: boolean }) => {
+    if (!company.organization_id) return;
+    setBusy(true);
+    try {
+      const res = await apiFetch(
+        `/api/companies/${company.organization_id}/website`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      const data = (await res.json().catch(() => null)) as {
+        domain?: string;
+        merged?: boolean;
+        message?: string;
+        error?: string;
+      } | null;
+      if (!res.ok || data?.error) {
+        // "No website could be found" comes back as a 200 with an error, since
+        // having no site is an ordinary fact about a small business rather
+        // than a failed request.
+        toast.error(data?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      // A merge removes the row the user was looking at, so saying only
+      // "saved" would leave them hunting for a company that is now filed under
+      // its twin.
+      toast.success(
+        data?.merged
+          ? (data.message ?? `Merged into the existing ${data.domain} record.`)
+          : `Saved ${data?.domain}. You can find leads now.`,
+      );
+      onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save it.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-1 space-y-1">
+      <p className="text-muted-foreground text-xs">
+        No website on record, so contacts cannot be attached to this company.
+      </p>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text"
+          value={value}
+          disabled={busy}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && value.trim()) save({ url: value.trim() });
+          }}
+          placeholder="company.co.uk"
+          aria-label={`Website for ${company.name}`}
+          className={cn(
+            "border-border bg-background h-6 w-40 rounded border px-1.5 text-xs",
+            ROW_FOCUS,
+          )}
+        />
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || !value.trim()}
+          aria-label={`Save website for ${company.name}`}
+          onClick={() => save({ url: value.trim() })}
+        >
+          Save
+        </Button>
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={busy}
+          aria-label={`Find website for ${company.name}`}
+          onClick={() => save({ resolve: true })}
+        >
+          {busy ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
+          )}
+          Find it
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 interface CompaniesWithoutLeadsProps {
   companies: CampaignCompany[];
   expandedCompanyIds: Set<string>;
   enrichingCompanyIds: Set<string>;
+  findingContactsIds: Set<string>;
   onToggle: (id: string) => void;
   onEnrich: (id: string) => void;
+  onFindContacts: (id: string) => void;
+  onDataChanged: () => void;
   isCompanyEnriched: (company: CampaignCompany) => boolean | "" | undefined;
 }
 
@@ -1162,8 +1292,11 @@ function CompaniesWithoutLeads({
   companies,
   expandedCompanyIds,
   enrichingCompanyIds,
+  findingContactsIds,
   onToggle,
   onEnrich,
+  onFindContacts,
+  onDataChanged,
   isCompanyEnriched,
 }: CompaniesWithoutLeadsProps) {
   const isOpen = expandedCompanyIds.has("__no_leads__");
@@ -1242,7 +1375,30 @@ function CompaniesWithoutLeads({
                         {company.industry}
                       </span>
                     )}
+                    {!company.domain && (
+                      <MissingWebsite
+                        company={company}
+                        onSaved={onDataChanged}
+                      />
+                    )}
                   </div>
+                  {company.domain &&
+                    (findingContactsIds.has(company.id) ? (
+                      <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Searching
+                      </span>
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        aria-label={`Find leads for ${company.name}`}
+                        onClick={() => onFindContacts(company.id)}
+                      >
+                        <UserSearch className="h-3 w-3" />
+                        Find leads
+                      </Button>
+                    ))}
                   {enrichingCompanyIds.has(company.id) ? (
                     <span className="text-muted-foreground inline-flex shrink-0 items-center gap-1 text-xs">
                       <Loader2 className="h-3 w-3 animate-spin" />

@@ -9,10 +9,21 @@ import { apiFetch } from "@/lib/api-fetch";
 
 interface FindMoreButtonProps {
   companyId: string;
+  /**
+   * The campaign this page is scoped to, when it is scoped to one. People are
+   * linked to it, so they appear on the campaign as well as on this page. With
+   * no campaign they are attached to the company alone, which is a legitimate
+   * way to work and the reason this is optional rather than required.
+   */
+  campaignId?: string;
   onComplete?: () => void;
 }
 
-export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
+export function FindMoreButton({
+  companyId,
+  campaignId,
+  onComplete,
+}: FindMoreButtonProps) {
   const [busy, setBusy] = useState(false);
 
   async function run() {
@@ -22,20 +33,29 @@ export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
         `/api/companies/${companyId}/find-more-people`,
         {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ campaignId: campaignId ?? null }),
         },
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? `HTTP ${res.status}`);
       }
-      const { added, found, uncertainCount, rejectedAsWrongCompany, error } =
-        (await res.json()) as {
-          added: number;
-          found: number;
-          uncertainCount?: number;
-          rejectedAsWrongCompany?: number;
-          error?: string;
-        };
+      const {
+        added,
+        found,
+        uncertainCount,
+        rejectedAsWrongCompany,
+        error,
+        campaignId: linkedTo,
+      } = (await res.json()) as {
+        added: number;
+        found: number;
+        uncertainCount?: number;
+        rejectedAsWrongCompany?: number;
+        error?: string;
+        campaignId?: string | null;
+      };
 
       // A refusal (e.g. the company has no domain on record, so contacts cannot
       // be told apart from another company of the same name) comes back 200
@@ -51,8 +71,16 @@ export function FindMoreButton({ companyId, onComplete }: FindMoreButtonProps) {
           notes.push(`${uncertainCount} unconfirmed, blocked from outreach`);
         if (rejectedAsWrongCompany)
           notes.push(`${rejectedAsWrongCompany} work elsewhere`);
+        // Where they landed, not just how many. An unscoped run attaches them
+        // to the company and nothing else, so the campaign page will not show
+        // them: saying "added 3 people" and stopping there is how the user came
+        // to believe a campaign had been filled that was still empty.
+        const where = linkedTo
+          ? " Added to this campaign."
+          : " They are attached to this company only, not to a campaign yet.";
         toast.success(
-          `Added ${added} new ${added === 1 ? "person" : "people"}.` +
+          `Found ${added} new ${added === 1 ? "person" : "people"}.` +
+            where +
             (notes.length ? ` ${notes.join(", ")}.` : ""),
         );
       }
