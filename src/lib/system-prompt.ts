@@ -287,6 +287,7 @@ Do NOT enforce the full pipeline in ad-hoc mode. Follow the user's lead -- they 
 - Never use emojis
 `;
 
+import { UNTRUSTED_NOTICE, wrapUntrusted } from "@/lib/prompt-safety";
 import type { UserProfile } from "@/lib/types/profile";
 import type { Signal } from "@/lib/types/signal";
 
@@ -344,10 +345,18 @@ export function buildSystemPrompt(options?: {
           : s.config && typeof s.config === "object" && "query" in s.config
             ? `\n   Search: ${s.config.query}`
             : "";
-      return `${i + 1}. **${s.name}** (${execLabel})\n   ${s.description}${configInstructions}`;
+      // A signal row is not ours. Any authenticated user could insert one --
+      // and, before the insert policy was tightened, could mark it is_builtin
+      // so it appeared in every tenant's gallery permanently. Its description
+      // and config.instructions were interpolated raw into the system prompt
+      // of an agent holding sendEmail, which is the highest-trust position in
+      // the app. Wrapped as data, like every other third-party string.
+      return `${i + 1}. **${s.name}** (${execLabel})\n${wrapUntrusted(`${s.description}${configInstructions}`)}`;
     });
 
     prompt += `\n\n## Active Signals for This Campaign
+${UNTRUSTED_NOTICE}
+
 Only run enrichment corresponding to enabled signals. Each signal is one focused check -- do not combine or skip them.
 
 ${signalLines.join("\n\n")}

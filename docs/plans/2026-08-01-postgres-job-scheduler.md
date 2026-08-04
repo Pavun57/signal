@@ -48,7 +48,7 @@ Vercel has no persistent processes. The tick is a dispatcher only (claims a batc
 ### Multi-tenancy and scale
 
 - Every job row carries nullable `user_id`. `claim_jobs()` ranks pending jobs per user and claims at most `per_user_cap` per user per batch — one tenant's backlog can't starve others.
-- `singleton_key` = at most one *running* job per key. Nothing sets it in v1; it exists for phase 2's `mailbox:<user_id>` send serialization.
+- `singleton_key` = at most one _running_ job per key. Nothing sets it in v1; it exists for phase 2's `mailbox:<user_id>` send serialization.
 - Volume today is tiny (4 recurring jobs + a trickle of tracking runs). Postgres-as-queue bloat concerns start at orders of magnitude more churn.
 
 ### Phase 2 (explicitly OUT of scope — do not build)
@@ -57,13 +57,13 @@ Per-email `email.send` jobs with `singleton_key = mailbox:<user_id>`, enqueue-ti
 
 ### Job types (v1)
 
-| type | payload | recurring | replaces |
-|---|---|---|---|
-| `email.track` | `{}` | every 10 min | QStash schedule → `/api/email/track` |
-| `email.cleanup` | `{}` | daily | QStash schedule → `/api/email/cleanup` |
-| `tracking.dispatch` | `{}` | every 15 min | QStash schedule → `/api/tracking/dispatch` |
-| `tracking.run` | `{ trackingConfigId }` | no | QStash publish from dispatch route + agent tools |
-| `outreach.process` | `{ type: "followups" }` or `SignalPayload` | followups row every 15 min | QStash schedule + publish from tracking/run |
+| type                | payload                                    | recurring                  | replaces                                         |
+| ------------------- | ------------------------------------------ | -------------------------- | ------------------------------------------------ |
+| `email.track`       | `{}`                                       | every 10 min               | QStash schedule → `/api/email/track`             |
+| `email.cleanup`     | `{}`                                       | daily                      | QStash schedule → `/api/email/cleanup`           |
+| `tracking.dispatch` | `{}`                                       | every 15 min               | QStash schedule → `/api/tracking/dispatch`       |
+| `tracking.run`      | `{ trackingConfigId }`                     | no                         | QStash publish from dispatch route + agent tools |
+| `outreach.process`  | `{ type: "followups" }` or `SignalPayload` | followups row every 15 min | QStash schedule + publish from tracking/run      |
 
 `SignalPayload` (from `src/app/api/outreach/process/route.ts:31-38`) is the exact payload contract: `{ type: "signal", signalId, campaignId, organizationId?, reason?, confidence? }`.
 
@@ -75,20 +75,20 @@ One shared secret, `CRON_SECRET`. Vercel Cron sends `Authorization: Bearer $CRON
 
 Beyond the five API routes and `src/lib/services/qstash.ts`:
 
-| File | What | Task |
-|---|---|---|
-| `src/proxy.ts:6-9` | Clerk public-route allowlist for the four cron routes; `/api/jobs/*` needs its own entry or Clerk 307-redirects the scheduler | 4, 12 |
-| `src/lib/tools/tracking-tools.ts` | `dispatchImmediateRun` + **three** publish/interval call sites (~:92, ~:155, ~:348) | 11 |
-| `src/__tests__/qstash-verify.test.ts` | Tests only `verifyQStashSignature` — delete wholesale | 12 |
-| `src/__tests__/outreach-process-followups.test.ts:10-12,37,81` | Mocks qstash, imports route `POST` — repoint at executor | 10 |
-| `e2e/auth.flow.test.ts:45-58` | POSTs `/api/outreach/process`, expects status ∈ [200,400,401,422]; deleting the route yields 404 → test fails (auth project only; CI doesn't run e2e, so catch it locally) | 12 |
-| `scripts/setup.mjs:362-369` | QStash prompt group in optional integrations; auto-gen pattern for secrets exists at :392-397 | 13 |
-| `src/lib/integrations.ts:150-168` (+ `:19`, `:258`) | qstash integration card in Settings; category `scheduling` | 13 |
-| `.env.example:87-94, :158` | QSTASH block + VERCEL_URL comment | 13 |
-| `package.json:46` | `@upstash/qstash` dep | 14 |
-| `README.md:71`, `docs/setup.md:119`, `docs/architecture.md:20,41,95,104` | QStash references + two stale tracking-pixel claims | 15 |
-| `src/app/api/tracking/collect-test/start/route.ts` | Flagged in `docs/plans/2026-04-19-open-source-hardening.md:22` as a zero-auth QStash enqueue with no callers — verify and delete if still present | 12 |
-| Comment-only mentions (`admin.ts:8`, `outreach-sender.ts:52`, `email-tracking.ts:10`, etc.) | Update wording opportunistically when touching those files; not otherwise in scope | — |
+| File                                                                                        | What                                                                                                                                                                       | Task  |
+| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `src/proxy.ts:6-9`                                                                          | Clerk public-route allowlist for the four cron routes; `/api/jobs/*` needs its own entry or Clerk 307-redirects the scheduler                                              | 4, 12 |
+| `src/lib/tools/tracking-tools.ts`                                                           | `dispatchImmediateRun` + **three** publish/interval call sites (~:92, ~:155, ~:348)                                                                                        | 11    |
+| `src/__tests__/qstash-verify.test.ts`                                                       | Tests only `verifyQStashSignature` — delete wholesale                                                                                                                      | 12    |
+| `src/__tests__/outreach-process-followups.test.ts:10-12,37,81`                              | Mocks qstash, imports route `POST` — repoint at executor                                                                                                                   | 10    |
+| `e2e/auth.flow.test.ts:45-58`                                                               | POSTs `/api/outreach/process`, expects status ∈ [200,400,401,422]; deleting the route yields 404 → test fails (auth project only; CI doesn't run e2e, so catch it locally) | 12    |
+| `scripts/setup.mjs:362-369`                                                                 | QStash prompt group in optional integrations; auto-gen pattern for secrets exists at :392-397                                                                              | 13    |
+| `src/lib/integrations.ts:150-168` (+ `:19`, `:258`)                                         | qstash integration card in Settings; category `scheduling`                                                                                                                 | 13    |
+| `.env.example:87-94, :158`                                                                  | QSTASH block + VERCEL_URL comment                                                                                                                                          | 13    |
+| `package.json:46`                                                                           | `@upstash/qstash` dep                                                                                                                                                      | 14    |
+| `README.md:71`, `docs/setup.md:119`, `docs/architecture.md:20,41,95,104`                    | QStash references + two stale tracking-pixel claims                                                                                                                        | 15    |
+| `src/app/api/tracking/collect-test/start/route.ts`                                          | Flagged in `docs/plans/2026-04-19-open-source-hardening.md:22` as a zero-auth QStash enqueue with no callers — verify and delete if still present                          | 12    |
+| Comment-only mentions (`admin.ts:8`, `outreach-sender.ts:52`, `email-tracking.ts:10`, etc.) | Update wording opportunistically when touching those files; not otherwise in scope                                                                                         | —     |
 
 Facts that shape the code below: `getAdminClient()` (`src/lib/supabase/admin.ts:13`) is a memoized **untyped** `SupabaseClient` — there are no generated Database types in this repo, so `rpc("claim_jobs", ...)` returns `any`-shaped data and the existing `as` casts in moved code are load-bearing; keep them. `withAction` (`src/lib/services/cost-tracker.ts:62`) is an AsyncLocalStorage wrapper that returns its callback's value verbatim.
 
@@ -101,6 +101,7 @@ Hard cutover in one branch — no dual-running. Work on a clean branch off `main
 ### Task 1: Migration — `jobs` table, `claim_jobs()`, seeded recurring jobs
 
 **Files:**
+
 - Create: `supabase/migrations/20260801000003_job_queue.sql`
 
 **Step 1: Write the migration**
@@ -244,6 +245,7 @@ select count(*) from claim_jobs(25, 330, 5);              -- expect 0
 update jobs set status='pending', attempts=0, locked_until=null;  -- reset
 SQL
 ```
+
 Expected: 4, then all `running / t / 1`, then 0.
 
 **Step 4: Commit**
@@ -258,6 +260,7 @@ git commit -m "feat(jobs): add Postgres job queue table, claim_jobs(), seeded re
 ### Task 2: Jobs service — enqueue, complete, fail, backoff, auth, base URL
 
 **Files:**
+
 - Create: `src/lib/services/jobs.ts`
 - Test: `src/__tests__/jobs-service.test.ts`
 
@@ -581,6 +584,7 @@ git commit -m "feat(jobs): job service - enqueue, complete/fail with backoff, sh
 ### Task 3: Executor registry + `executeClaimedJob`
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/index.ts`
 - Create: `src/lib/jobs/execute.ts`
 - Test: `src/__tests__/jobs-execute.test.ts`
@@ -759,6 +763,7 @@ git commit -m "feat(jobs): executor registry and executeClaimedJob lifecycle"
 ### Task 4: `/api/jobs/tick` — the dispatcher (+ Clerk middleware entry)
 
 **Files:**
+
 - Create: `src/app/api/jobs/tick/route.ts`
 - Modify: `src/proxy.ts:6-9` (public-route allowlist)
 - Test: `src/__tests__/jobs-tick-route.test.ts`
@@ -917,6 +922,7 @@ git commit -m "feat(jobs): tick route - claim due jobs and dispatch to per-job r
 ### Task 5: `/api/jobs/run` — the runner
 
 **Files:**
+
 - Create: `src/app/api/jobs/run/route.ts`
 - Test: `src/__tests__/jobs-run-route.test.ts`
 
@@ -1034,6 +1040,7 @@ git commit -m "feat(jobs): runner route - 202 then execute one job in after()"
 ### Task 6: Executor — `email.track` (replaces `/api/email/track`)
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/email-track.ts`
 - Modify: `src/lib/jobs/executors/index.ts`
 - Delete: `src/app/api/email/track/route.ts`
@@ -1098,7 +1105,7 @@ git rm src/app/api/email/track/route.ts
 **Step 3: Verify and test**
 
 Run: `grep -rn "api/email/track" src/ --include='*.ts' --include='*.tsx'; pnpm typecheck && pnpm test`
-Expected: no src hits (the `settings/email/test/route.ts:147` comment mentions the *cron*, not the path — leave it); typecheck and full suite pass.
+Expected: no src hits (the `settings/email/test/route.ts:147` comment mentions the _cron_, not the path — leave it); typecheck and full suite pass.
 
 **Step 4: Commit**
 
@@ -1112,6 +1119,7 @@ git commit -m "feat(jobs): move reply/bounce tracking from QStash route to email
 ### Task 7: Executor — `email.cleanup` (replaces `/api/email/cleanup`)
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/email-cleanup.ts`
 - Modify: `src/lib/jobs/executors/index.ts`
 - Delete: `src/app/api/email/cleanup/route.ts`
@@ -1121,6 +1129,7 @@ git commit -m "feat(jobs): move reply/bounce tracking from QStash route to email
 The route (101 lines) is signature check (L13-18, drop) then pure logic (L20-100). Move into `export async function cleanupEmails()`, converting the single success `NextResponse.json({...})` (L91-100) to a plain return of the same object shape: `{ cleaned: { discarded, stale }, recovered: { markedSent, returnedToDraft } }`.
 
 Two invariants in the moved code that MUST survive verbatim:
+
 1. The queued-draft recovery comment block (L29-36) and its logic: drafts stuck in `queued` >24h are resolved by checking `sent_emails` — a matching row means the send happened (finish bookkeeping as `sent`), no row means release back to `draft`. The deliberate risk tradeoff documented there stays documented.
 2. The `.eq("status", "queued")` compare-and-swap guard on BOTH recovery updates (L64, L72) — it prevents racing a concurrent send.
 
@@ -1143,6 +1152,7 @@ git commit -m "feat(jobs): move draft cleanup from QStash route to email.cleanup
 ### Task 8: Executor — `tracking.dispatch` (replaces `/api/tracking/dispatch`)
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/tracking-dispatch.ts`
 - Modify: `src/lib/jobs/executors/index.ts`
 - Delete: `src/app/api/tracking/dispatch/route.ts`
@@ -1214,13 +1224,14 @@ git commit -m "feat(jobs): tracking.dispatch executor enqueues tracking.run jobs
 ### Task 9: Executor — `tracking.run` (replaces `/api/tracking/run`)
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/tracking-run.ts`
 - Modify: `src/lib/jobs/executors/index.ts`
 - Delete: `src/app/api/tracking/run/route.ts`
 
 **Step 1: Move the route body**
 
-The route (307 lines) is: signature/payload parse (L28-39, drop), config load (L42-68), then everything wrapped in `withAction(\`Tracking run: ${orgName}\`, ...)` (L71-306) whose callback return value was the HTTP response. Structure the executor the same way — `withAction` returns its callback's value verbatim (it's an AsyncLocalStorage cost-tracking wrapper from `src/lib/services/cost-tracker.ts:62`), so keep it wrapping the moved body:
+The route (307 lines) is: signature/payload parse (L28-39, drop), config load (L42-68), then everything wrapped in `withAction(\`Tracking run: ${orgName}\`, ...)`(L71-306) whose callback return value was the HTTP response. Structure the executor the same way —`withAction`returns its callback's value verbatim (it's an AsyncLocalStorage cost-tracking wrapper from`src/lib/services/cost-tracker.ts:62`), so keep it wrapping the moved body:
 
 ```typescript
 export async function runTrackingConfig(trackingConfigId: string) {
@@ -1290,6 +1301,7 @@ git commit -m "feat(jobs): move signal tracking runs to tracking.run executor"
 ### Task 10: Executor — `outreach.process` (replaces `/api/outreach/process`)
 
 **Files:**
+
 - Create: `src/lib/jobs/executors/outreach-process.ts`
 - Modify: `src/lib/jobs/executors/index.ts`
 - Modify: `src/__tests__/outreach-process-followups.test.ts`
@@ -1312,7 +1324,9 @@ export async function processOutreach(payload: Payload) {
   if (payload.type === "followups") {
     return handleFollowups(supabase);
   }
-  throw new Error(`Unknown outreach payload type: ${(payload as { type?: string }).type}`);
+  throw new Error(
+    `Unknown outreach payload type: ${(payload as { type?: string }).type}`,
+  );
 }
 ```
 
@@ -1329,6 +1343,7 @@ Register as:
 **Step 2: Repoint the followups test**
 
 `src/__tests__/outreach-process-followups.test.ts`:
+
 - Delete the `vi.mock("@/lib/services/qstash", ...)` block (L10-14) and `verifySignatureMock` from the hoisted block (L3-8).
 - Replace `import { POST } from "@/app/api/outreach/process/route"` (L37) with `import { processOutreach } from "@/lib/jobs/executors/outreach-process"`.
 - Replace the `followupsRequest()` helper (L80+) and every `POST(followupsRequest())` with `processOutreach({ type: "followups" })`; replace `res.json()` assertions with direct assertions on the returned object (same shapes: `{ sent, skipped, total, failures }` / `{ sent: 0 }`).
@@ -1351,6 +1366,7 @@ git commit -m "feat(jobs): move outreach processing to outreach.process executor
 ### Task 11: Convert agent tracking tools to enqueue jobs
 
 **Files:**
+
 - Modify: `src/lib/tools/tracking-tools.ts`
 
 **Step 1: Replace the QStash publishes**
@@ -1395,6 +1411,7 @@ git commit -m "feat(jobs): agent tracking tools enqueue jobs instead of publishi
 ### Task 12: Middleware cleanup, test cleanup, dead route removal
 
 **Files:**
+
 - Modify: `src/proxy.ts:6-9`
 - Delete: `src/__tests__/qstash-verify.test.ts`
 - Modify: `e2e/auth.flow.test.ts:45-58`
@@ -1450,6 +1467,7 @@ git commit -m "chore(jobs): clean up middleware allowlist, QStash tests, dead co
 ### Task 13: Wire up the schedulers — `vercel.json`, env, setup script, integrations card
 
 **Files:**
+
 - Create: `vercel.json`
 - Modify: `.env.example:87-94, :158`
 - Modify: `scripts/setup.mjs:362-369` (+ auto-gen special-case ~:392-397)
@@ -1537,6 +1555,7 @@ git commit -m "feat(jobs): Vercel cron + CRON_SECRET replace QStash across env, 
 ### Task 14: Remove QStash entirely
 
 **Files:**
+
 - Delete: `src/lib/services/qstash.ts`
 - Modify: `package.json` (remove `@upstash/qstash`)
 
@@ -1564,6 +1583,7 @@ git commit -m "feat(jobs): remove QStash dependency and service"
 ### Task 15: Documentation
 
 **Files:**
+
 - Modify: `README.md:71`
 - Modify: `docs/architecture.md:20,41,95,104`
 - Modify: `docs/setup.md:110-119`
@@ -1583,6 +1603,7 @@ Line 71 tech-stack list: `- **Jobs** — QStash (Upstash) for scheduled signal r
 **Step 3: `docs/setup.md`**
 
 Replace the QStash row (L119) in the optional-services table with a "Job scheduler" row, and add a subsection:
+
 - `CRON_SECRET` generation; Vercel Cron picks it up automatically; `vercel.json` ships the per-minute schedule (Pro needed for per-minute cadence).
 - Self-host / Hobby alternative via Supabase SQL editor:
   ```sql
@@ -1612,19 +1633,21 @@ git commit -m "docs: job queue architecture + setup; fix stale tracking-pixel cl
 
 **Step 1: Set the secret and start**
 
-Add `CRON_SECRET=localdev-secret` to `.env.local` (it currently has QSTASH_* keys set — leave them; they're inert once the code is gone). Ensure `supabase start` is running, then `pnpm dev`.
+Add `CRON_SECRET=localdev-secret` to `.env.local` (it currently has QSTASH\_\* keys set — leave them; they're inert once the code is gone). Ensure `supabase start` is running, then `pnpm dev`.
 
 **Step 2: Fire the tick and watch a full lifecycle**
 
 ```bash
 curl -s -H "Authorization: Bearer localdev-secret" http://localhost:3000/api/jobs/tick
 ```
+
 Expected: `{"claimed":4,"dispatched":4}` first call (all four seeded jobs due).
 
 ```bash
 psql postgresql://postgres:postgres@127.0.0.1:54322/postgres \
   -c "select type, status, attempts, last_error, run_at > now() as rearmed from jobs order by type;"
 ```
+
 Expected within ~a minute: recurring jobs back to `pending`, `rearmed = t`. A `last_error` on `email.track` locally (no Gmail creds) still proves the lifecycle: claim → run → fail → re-arm.
 
 **Step 3: Verify a one-off flows through the retry ladder**
@@ -1634,6 +1657,7 @@ psql postgresql://postgres:postgres@127.0.0.1:54322/postgres \
   -c "insert into jobs (type, payload, max_attempts) values ('tracking.run', '{\"trackingConfigId\":\"00000000-0000-0000-0000-000000000000\"}', 2);"
 curl -s -H "Authorization: Bearer localdev-secret" http://localhost:3000/api/jobs/tick
 ```
+
 Expected: claimed; fails on the fake id; back to `pending` with `run_at` ~1 min out; after another tick past that time, `dead` at `attempts = 2` with `last_error` containing "Tracking config not found".
 
 **Step 4: Auth checks + full suites**
@@ -1644,6 +1668,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:3000/api/jobs/
 pnpm typecheck && pnpm test && pnpm lint
 pnpm test:e2e -- --project=auth
 ```
+
 Expected: 401s, all suites green.
 
 **Step 5: Production cutover checklist (human, post-merge)**

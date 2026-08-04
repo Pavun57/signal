@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UNTRUSTED_NOTICE, wrapUntrusted } from "@/lib/prompt-safety";
 
 import type { VoiceProfile } from "@/lib/types/email-voice";
 
@@ -97,8 +98,9 @@ NEVER INVENT DATA. Every name, number, quote, event and claim in the email must 
  * output contract. Style is the widest authority this text can safely carry.
  */
 export function buildEmailSystemPrompt(voice: VoiceProfile | null): string {
-  if (!voice) return EMAIL_SKILL_SYSTEM_PROMPT;
-  return `${EMAIL_SKILL_SYSTEM_PROMPT}
+  const base = `${EMAIL_SKILL_SYSTEM_PROMPT}\n\n${UNTRUSTED_NOTICE}`;
+  if (!voice) return base;
+  return `${base}
 
 ---
 VOICE PROFILE: how this specific person writes. Apply it on top of the base rules above.
@@ -185,15 +187,25 @@ export function buildComposeUserPrompt(input: {
     );
   }
 
+  // enrichment_data is assembled from scraped pages and third-party search
+  // results, and this model's output is the body of an email that gets sent.
+  // Every sibling prompt builder wraps this blob -- contact-selector,
+  // intent-evaluator, the swipe prompts, relevance-filter -- and this one
+  // never imported the helper, which made it the softest way into the send
+  // path.
   if (input.contact.enrichmentData) {
     sections.push(
-      `RECIPIENT ENRICHMENT (LinkedIn, Twitter, news, background):\n${JSON.stringify(input.contact.enrichmentData).slice(0, 8000)}`,
+      `RECIPIENT ENRICHMENT (LinkedIn, Twitter, news, background):\n${wrapUntrusted(
+        JSON.stringify(input.contact.enrichmentData).slice(0, 8000),
+      )}`,
     );
   }
 
   if (input.company?.enrichmentData) {
     sections.push(
-      `COMPANY ENRICHMENT (website, news, team):\n${JSON.stringify(input.company.enrichmentData).slice(0, 6000)}`,
+      `COMPANY ENRICHMENT (website, news, team):\n${wrapUntrusted(
+        JSON.stringify(input.company.enrichmentData).slice(0, 6000),
+      )}`,
     );
   }
 

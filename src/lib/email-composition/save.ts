@@ -83,7 +83,15 @@ export async function saveDraft(
       sequence_step_id: input.sequenceStepId ?? null,
       enrollment_id: input.enrollmentId ?? null,
       ai_reasoning: input.aiReasoning ?? null,
-      review_status: input.sequenceId ? "pending" : "approved",
+      // Everything the agent writes waits for a human, sequence or not.
+      //
+      // An ad-hoc writeEmail draft used to be born "approved", which is the
+      // one state sendEmail's gate lets through -- so on that path the only
+      // thing between the model and a prospect's inbox was a sentence in the
+      // system prompt, sitting in the same context window as the scraped page
+      // that may have asked for the email. email-tools.ts says in its own
+      // comment that prompt text must never be that control; this made it so.
+      review_status: "pending",
     })
     .select("id, to_email, subject")
     .single();

@@ -48,6 +48,18 @@ export const PRICING = {
 interface ActionContext {
   action_id: string;
   action_label: string;
+  /**
+   * Who the spend belongs to.
+   *
+   * Only 3 of ~30 trackUsage call sites ever passed a user_id, so Exa, Apify,
+   * Browserbase, Hunter, Google Places and every Claude service call wrote
+   * NULL. The rows land (the writer is the admin client) but /api/settings/
+   * costs reads them under `requesting_user_id() = user_id`, and NULL never
+   * equals a user, so a $12 run displayed $0.00. Carrying it on the action
+   * context attributes everything inside a withAction block without touching
+   * the call sites.
+   */
+  user_id?: string;
 }
 
 const actionStore = new AsyncLocalStorage<ActionContext>();
@@ -56,12 +68,19 @@ const actionStore = new AsyncLocalStorage<ActionContext>();
  * Run `fn` inside an action context. All `trackUsage` calls made during `fn`
  * (including from nested service calls) will be tagged with this action.
  *
+ * Pass `userId` wherever the caller knows it — without it the spend is
+ * recorded but invisible to the person who incurred it.
+ *
  * Usage:
- *   return withAction("Enrich person: John Smith", async () => { ... });
+ *   return withAction("Enrich person: John Smith", async () => { ... }, userId);
  */
-export function withAction<T>(label: string, fn: () => Promise<T>): Promise<T> {
+export function withAction<T>(
+  label: string,
+  fn: () => Promise<T>,
+  userId?: string,
+): Promise<T> {
   return actionStore.run(
-    { action_id: crypto.randomUUID(), action_label: label },
+    { action_id: crypto.randomUUID(), action_label: label, user_id: userId },
     fn,
   );
 }
@@ -185,7 +204,8 @@ export function trackUsage(entry: UsageEntry): void {
           estimated_cost_usd: entry.estimated_cost_usd,
           metadata: entry.metadata ?? {},
           campaign_id: entry.campaign_id ?? null,
-          user_id: entry.user_id ?? null,
+          // Explicit wins; otherwise inherit whoever the action belongs to.
+          user_id: entry.user_id ?? ctx?.user_id ?? null,
           action_id: ctx?.action_id ?? null,
           action_label: ctx?.action_label ?? null,
         });

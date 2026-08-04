@@ -343,11 +343,20 @@ export function createSupabaseFake(
       const error = options.updateError?.() ?? null;
       if (error) return { data: null, error };
       const all = rowsOf(table);
+      const removed: FakeRow[] = [];
       for (const row of raw()) {
         const at = all.indexOf(row);
-        if (at >= 0) all.splice(at, 1);
+        if (at >= 0) {
+          all.splice(at, 1);
+          removed.push(row);
+        }
       }
-      return { data: null, error: null };
+      // PostgREST returns the deleted rows when the caller chains `.select()`,
+      // and that is the only way to tell a delete that matched nothing from
+      // one that worked. Code that checks it -- because an RLS policy can make
+      // a delete a silent no-op -- needs the fake to model it, or the check
+      // reads as "deleted nothing" and the test passes for the wrong reason.
+      return { data: removed, error: null };
     };
 
     const runMutation = () => (kind === "delete" ? runDelete() : runUpdate());

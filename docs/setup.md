@@ -1,6 +1,6 @@
 # Setup
 
-The fastest path is `pnpm setup` — an interactive script that prompts for keys, starts local Supabase, and runs migrations. If you don't have a hosted Supabase project, just skip those prompts: after `supabase start`, the script auto-writes the local URL + keys into `.env.local`. You'll sign up for the first account once on first run; local Supabase has email confirmation disabled, so signup is instant.
+The fastest path is `pnpm run setup` — an interactive script that prompts for keys, starts local Supabase, and runs migrations. If you don't have a hosted Supabase project, just skip those prompts: after `supabase start`, the script auto-writes the local URL + keys into `.env.local`. You'll sign up for the first account once on first run; local Supabase has email confirmation disabled, so signup is instant.
 
 This doc is the manual walkthrough for when the script doesn't fit your setup, or you want to understand each step.
 
@@ -81,7 +81,7 @@ supabase db push
 
 Signal uses [Clerk](https://clerk.com) for sign-in/sign-up. Free tier covers 10k MAU.
 
-**Easiest path:** run `pnpm setup`, pick option [2], and the script walks you through every dashboard click. Manual steps below if you'd rather click through it yourself:
+**Easiest path:** run `pnpm run setup`, pick option [2], and the script walks you through every dashboard click. Manual steps below if you'd rather click through it yourself:
 
 1. Sign up at [clerk.com](https://clerk.com) and create an application (any name).
 2. **Configure → API Keys**: copy the publishable + secret keys into `.env.local`:
@@ -132,7 +132,7 @@ Recurring work (scheduled signal runs, reply tracking, sequence follow-ups) runs
 openssl rand -hex 32   # → CRON_SECRET in .env.local (and your Vercel env)
 ```
 
-Without `CRON_SECRET`, the routes refuse everything and recurring jobs never run. `pnpm setup` can generate one for you.
+Without `CRON_SECRET`, the routes refuse everything and recurring jobs never run. `pnpm run setup` can generate one for you.
 
 **On Vercel**: the repo ships `vercel.json` with the per-minute cron schedule, and Vercel Cron sends the `Authorization: Bearer $CRON_SECRET` header automatically once the env var is set. Per-minute cadence requires a Pro plan.
 
@@ -183,7 +183,7 @@ E2E tests hit a real Supabase instance and share DB state — run them serially 
 
 **Redirected to `/login` on a fresh install** — expected. Click "Sign up" to create the first account via Clerk.
 
-**Amber "Keyless mode active" banner appears** — your Clerk env vars are blank. Run `pnpm setup` and pick option [2], or paste real keys into `.env.local` and restart the dev server.
+**Amber "Keyless mode active" banner appears** — your Clerk env vars are blank. Run `pnpm run setup` and pick option [2], or paste real keys into `.env.local` and restart the dev server.
 
 **Dashboard is empty after signing in** — the Clerk JWT isn't being validated by Supabase. Confirm `CLERK_FRONTEND_API_DOMAIN` is set in `.env.local`, then run `supabase stop && supabase start` so `supabase/config.toml`'s env interpolation re-evaluates.
 

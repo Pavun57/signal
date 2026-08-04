@@ -80,26 +80,30 @@ export async function POST(
   // six meant the last one was silently never searched.
   const titles = ["leadership", "engineer", "designer", "sales", "marketing"];
 
-  return withAction(`Find more people: ${org.name}`, async () => {
-    const result = await findContactsForOrganization(supabase, {
-      organizationId: companyId,
-      campaignId,
-      titles,
-      numResults: 10,
-    });
+  return withAction(
+    `Find more people: ${org.name}`,
+    async () => {
+      const result = await findContactsForOrganization(supabase, {
+        organizationId: companyId,
+        campaignId,
+        titles,
+        numResults: 10,
+      });
 
-    return Response.json({
-      found: result.totalFound + result.rejectedAsWrongCompany,
-      added: result.totalFound,
-      // Which of the two runs this was. The caller says "added to this
-      // campaign" or "added to the company, not in a campaign yet" off this,
-      // because the difference decides whether the campaign page will show
-      // them and the user has no other way to know.
-      campaignId,
-      verifiedCount: result.verifiedCount,
-      uncertainCount: result.uncertainCount,
-      rejectedAsWrongCompany: result.rejectedAsWrongCompany,
-      error: result.error,
-    });
-  });
+      return Response.json({
+        found: result.totalFound + result.rejectedAsWrongCompany,
+        added: result.totalFound,
+        // Which of the two runs this was. The caller says "added to this
+        // campaign" or "added to the company, not in a campaign yet" off this,
+        // because the difference decides whether the campaign page will show
+        // them and the user has no other way to know.
+        campaignId,
+        verifiedCount: result.verifiedCount,
+        uncertainCount: result.uncertainCount,
+        rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+        error: result.error,
+      });
+    },
+    user.id,
+  );
 }

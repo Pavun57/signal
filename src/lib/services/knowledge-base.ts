@@ -394,20 +394,31 @@ export async function isRecentlyEnriched(
 
   const { data } = await supabase
     .from(table)
-    .select("enrichment_data")
+    .select("enrichment_data, last_enriched_at")
     .eq("id", id)
     .single();
 
   if (!data) return false;
 
-  // Check for the enrichedAt key inside enrichment_data -- this is set
-  // specifically by the company/contact enrichment routes, not by other
-  // enrichment sources (YC scraper, hiring scraper, etc.)
+  // enrichment_data.enrichedAt is set by the *company* enrichment paths only.
+  // Contact enrichment never wrote it, so this returned false for every person
+  // every time: /api/enrich re-ran Apify LinkedIn, Apify X and three Exa
+  // searches on every click, and /api/enrich/bulk always computed
+  // alreadyEnriched = 0, making its own "all N already enriched" message
+  // unreachable. mergeEnrichmentData has always maintained the
+  // last_enriched_at column -- which is what this function's own docstring
+  // says it reads -- so fall back to it.
   const enrichmentData = data.enrichment_data as Record<string, unknown> | null;
-  const enrichedAt = enrichmentData?.enrichedAt as string | undefined;
-  if (!enrichedAt) return false;
+  const stamp =
+    (enrichmentData?.enrichedAt as string | undefined) ??
+    (data.last_enriched_at as string | null) ??
+    null;
+  if (!stamp) return false;
 
-  const age = Date.now() - new Date(enrichedAt).getTime();
+  const at = new Date(stamp).getTime();
+  if (Number.isNaN(at)) return false;
+
+  const age = Date.now() - at;
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
   return age < maxAgeMs;
 }

@@ -113,19 +113,21 @@ test.describe("service-role client crosses user boundaries", () => {
   });
 });
 
-test.describe("handle_new_user trigger", () => {
-  test("creates a user_profile row on auth.users insert", async () => {
+test.describe("new-user provisioning", () => {
+  // The handle_new_user trigger this used to assert was dropped on purpose by
+  // 20260427000000 along with Supabase Auth: there is no auth.users row to
+  // hang a trigger on any more, and provisioning is lazy in app code. The test
+  // outlived the feature by three months and failed on every run, which nobody
+  // saw because CI does not run this project.
+  test("a fresh Clerk user starts with no profile row", async () => {
     const user = await createTestUser();
 
     const { data: profile } = await supabase
       .from("user_profile")
-      .select("id, label, user_id, email")
+      .select("id")
       .eq("user_id", user.id)
       .maybeSingle();
 
-    expect(profile).toBeTruthy();
-    expect(profile!.label).toBe("Default");
-    expect(profile!.user_id).toBe(user.id);
-    expect(profile!.email).toBe(user.email);
+    expect(profile).toBeNull();
   });
 });

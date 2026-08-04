@@ -74,11 +74,21 @@ export async function cleanupEmails(): Promise<{
     .eq("status", "discarded")
     .lt("created_at", sevenDaysAgo);
 
-  // Delete stale unsent drafts
+  // Delete stale unsent drafts.
+  //
+  // Drafts for every step of a sequence are created up front, so a step-3
+  // draft on a 21-day delay is routinely older than this window while still
+  // being the thing the enrollment is waiting to send. Deleting it left the
+  // enrollment active with next_send_at in the past, retrying every 15
+  // minutes forever and occupying a slot in the due-enrollment batch. Only
+  // drafts that nothing is waiting on are stale.
   const { count: staleCount } = await supabase
     .from("email_drafts")
     .delete({ count: "exact" })
     .eq("status", "draft")
+    .is("enrollment_id", null)
+    // review_status is nullable, and `neq` would silently skip NULL rows.
+    .or("review_status.is.null,review_status.neq.approved")
     .lt("created_at", thirtyDaysAgo);
 
   return {

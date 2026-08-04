@@ -9,7 +9,7 @@ See [`docs/setup.md`](../docs/setup.md) for the full local-dev walkthrough (~10 
 ```bash
 corepack enable   # activates the pinned pnpm version
 pnpm install
-pnpm setup        # interactive: prompts for keys, runs DB migrations
+pnpm run setup        # interactive: prompts for keys, runs DB migrations
 pnpm dev
 ```
 

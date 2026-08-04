@@ -267,13 +267,33 @@ export async function claimAndSendDraft(
   );
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from("sent_emails")
     .select("id", { count: "exact", head: true })
     .eq("user_id", draft.user_id)
     .gte("sent_at", todayStart.toISOString());
 
-  if ((count ?? 0) >= effectiveLimit) {
+  // A failed count used to read as `count ?? 0`, so any error -- an expired
+  // JWT past the retry, a PostgREST hiccup, an RLS denial -- disabled the cap
+  // instead of enforcing it, and a 40-draft bulk send could empty itself into
+  // a mailbox rated 5/day. Everything else in this function is deliberately
+  // fail-closed ("Not sending is always recoverable; sending is not"); this
+  // one check was inverted.
+  if (countError || count === null) {
+    await supabase
+      .from("email_drafts")
+      .update({ status: "draft", updated_at: new Date().toISOString() })
+      .eq("id", draft.id)
+      .eq("status", "queued");
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      `Could not read today's send count, so the daily limit could not be checked: ${countError?.message ?? "no count returned"}`,
+    );
+  }
+
+  if (count >= effectiveLimit) {
     // Release the claim — the draft should send tomorrow, not rot in queued.
     await supabase
       .from("email_drafts")
@@ -410,6 +430,122 @@ export async function claimAndSendDraft(
 }
 
 /**
+ * Moves an enrollment onto its next step, or completes it when the step just
+ * sent was the last one.
+ *
+ * Every path that puts a sequence email on the wire has to call this. When it
+ * is skipped the enrollment stays pinned to the step it just sent, so the
+ * cron re-reads the same step forever while every *other* step's pre-created
+ * draft still looks sendable: the prospect gets the cold email, the follow-up
+ * and the breakup mail in the same minute and the sequence can never progress
+ * again. `sendEmail` and `sendBulkEmails` both used to skip it.
+ */
+export async function advanceEnrollmentAfterSend(
+  supabase: SupabaseClient,
+  enrollment: Pick<EnrollmentForSend, "id" | "sequence_id" | "current_step">,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const nextStep = enrollment.current_step + 1;
+
+  const { data: nextStepRow } = await supabase
+    .from("sequence_steps")
+    .select("delay_days, delay_hours")
+    .eq("sequence_id", enrollment.sequence_id)
+    .eq("step_number", nextStep)
+    .single();
+
+  if (!nextStepRow) {
+    await supabase
+      .from("sequence_enrollments")
+      .update({ status: "completed", updated_at: now })
+      .eq("id", enrollment.id);
+    return;
+  }
+
+  const delayMs =
+    ((nextStepRow.delay_days ?? 0) * 86400 +
+      (nextStepRow.delay_hours ?? 0) * 3600) *
+    1000;
+
+  await supabase
+    .from("sequence_enrollments")
+    .update({
+      current_step: nextStep,
+      status: "active",
+      next_send_at: new Date(Date.now() + delayMs).toISOString(),
+      updated_at: now,
+    })
+    .eq("id", enrollment.id);
+}
+
+/**
+ * Advances the enrollment a draft belongs to, given only the draft's
+ * `enrollment_id`. For callers that hold a draft rather than an enrollment.
+ *
+ * A draft with no enrollment (an ad-hoc one-off) is not an error: there is
+ * simply nothing to advance.
+ */
+export async function advanceEnrollmentForDraft(
+  supabase: SupabaseClient,
+  enrollmentId: string | null | undefined,
+): Promise<void> {
+  if (!enrollmentId) return;
+
+  const { data: enrollment } = await supabase
+    .from("sequence_enrollments")
+    .select("id, sequence_id, current_step")
+    .eq("id", enrollmentId)
+    .maybeSingle();
+
+  if (!enrollment) return;
+
+  await advanceEnrollmentAfterSend(supabase, {
+    id: enrollment.id as string,
+    sequence_id: enrollment.sequence_id as string,
+    current_step: enrollment.current_step as number,
+  });
+}
+
+/**
+ * Is this draft the step its enrollment is actually waiting on?
+ *
+ * Drafts are pre-created for every step at enrollment time, so "approved and
+ * unsent" is not the same as "due". Sending a later step early delivers the
+ * follow-up before the email it follows up on.
+ */
+export async function draftIsCurrentStep(
+  supabase: SupabaseClient,
+  draft: { enrollment_id?: string | null; sequence_step_id?: string | null },
+): Promise<{ current: true } | { current: false; reason: string }> {
+  if (!draft.enrollment_id) return { current: true };
+
+  const { data: enrollment } = await supabase
+    .from("sequence_enrollments")
+    .select("sequence_id, current_step")
+    .eq("id", draft.enrollment_id)
+    .maybeSingle();
+
+  if (!enrollment) return { current: true };
+
+  const { data: step } = await supabase
+    .from("sequence_steps")
+    .select("id")
+    .eq("sequence_id", enrollment.sequence_id as string)
+    .eq("step_number", enrollment.current_step as number)
+    .maybeSingle();
+
+  if (!step) return { current: true };
+
+  if (step.id !== draft.sequence_step_id) {
+    return {
+      current: false,
+      reason: `Not this enrollment's current step (waiting on step ${enrollment.current_step}). Send that step first.`,
+    };
+  }
+  return { current: true };
+}
+
+/**
  * Sends the next pending approved draft for an enrollment.
  *
  * Expects the enrollment's step to have a draft with
@@ -424,8 +560,6 @@ export async function sendApprovedDraft(
   supabase: SupabaseClient,
   enrollment: EnrollmentForSend,
 ): Promise<SendResult> {
-  const now = new Date().toISOString();
-
   const { data: step } = await supabase
     .from("sequence_steps")
     .select("id")
@@ -465,36 +599,7 @@ export async function sendApprovedDraft(
 
   if (!sent.ok) return sent;
 
-  const nextStep = enrollment.current_step + 1;
-  const { data: nextStepRow } = await supabase
-    .from("sequence_steps")
-    .select("delay_days, delay_hours")
-    .eq("sequence_id", enrollment.sequence_id)
-    .eq("step_number", nextStep)
-    .single();
-
-  if (nextStepRow) {
-    const delayMs =
-      ((nextStepRow.delay_days ?? 0) * 86400 +
-        (nextStepRow.delay_hours ?? 0) * 3600) *
-      1000;
-    const nextSendAt = new Date(Date.now() + delayMs).toISOString();
-
-    await supabase
-      .from("sequence_enrollments")
-      .update({
-        current_step: nextStep,
-        status: "active",
-        next_send_at: nextSendAt,
-        updated_at: now,
-      })
-      .eq("id", enrollment.id);
-  } else {
-    await supabase
-      .from("sequence_enrollments")
-      .update({ status: "completed", updated_at: now })
-      .eq("id", enrollment.id);
-  }
+  await advanceEnrollmentAfterSend(supabase, enrollment);
 
   return sent;
 }

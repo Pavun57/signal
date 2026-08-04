@@ -168,11 +168,21 @@ export function CompaniesList({
   const enrichContact = async (contactId: string) => {
     setEnrichingIds((prev) => new Set(prev).add(contactId));
     try {
-      await apiFetch("/api/enrich", {
+      // apiFetch does not throw on a non-2xx, so without this a 403, a 429 or
+      // a 500 was indistinguishable from success: the spinner ran, the spinner
+      // stopped, nothing changed, and the user clicked again and paid again.
+      const res = await apiFetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ contactId }),
       });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        toast.error(body?.error ?? "Could not enrich this contact.");
+        return;
+      }
       // Deliberately does NOT expand the row. Enriching is something you do to
       // a list, often several in a row, and force-opening each one shoves
       // everything below it down the page mid-scan. The data updates in place;
@@ -198,6 +208,10 @@ export function CompaniesList({
         body: JSON.stringify({ companyId, campaignId }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        toast.error(data?.error ?? "Could not enrich this company.");
+        return;
+      }
       if (data.enrichmentData) {
         onCompanyEnriched(companyId, data.enrichmentData);
         setExpandedCompanyIds((prev) => new Set(prev).add(companyId));
@@ -280,11 +294,18 @@ export function CompaniesList({
   const findEmailForContact = async (contact: CampaignContact) => {
     setFindingEmailIds((prev) => new Set(prev).add(contact.id));
     try {
-      await apiFetch("/api/find-email", {
+      const res = await apiFetch("/api/find-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ personId: contact.person_id }),
       });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        toast.error(body?.error ?? "Could not look up an address.");
+        return;
+      }
       onDataChanged();
     } catch (err) {
       console.error(`[find-email] Failed:`, err);

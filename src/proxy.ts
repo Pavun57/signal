@@ -4,6 +4,9 @@ const isPublicRoute = createRouteMatcher([
   "/login(.*)",
   "/signup(.*)",
   "/api/jobs(.*)",
+  // Container orchestrators cannot present a session, and a health check that
+  // 307s to /login tells them nothing. Returns a fixed literal, reads nothing.
+  "/api/health",
 ]);
 
 export const proxy = clerkMiddleware(async (auth, request) => {

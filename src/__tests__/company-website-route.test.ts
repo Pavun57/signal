@@ -36,6 +36,7 @@ vi.mock("@/lib/services/domain-resolver", () => ({
 interface State {
   organizations: FakeRow[];
   campaign_organizations: FakeRow[];
+  campaign_people: FakeRow[];
   people: FakeRow[];
   signal_results: FakeRow[];
   tracking_configs: FakeRow[];
@@ -48,6 +49,7 @@ interface State {
 const state: State = {
   organizations: [],
   campaign_organizations: [],
+  campaign_people: [],
   people: [],
   signal_results: [],
   tracking_configs: [],
@@ -65,6 +67,7 @@ vi.mock("@/lib/supabase/server", () => {
         ],
         organizations: () => state.organizations,
         campaign_organizations: () => state.campaign_organizations,
+        campaign_people: () => state.campaign_people,
         people: () => state.people,
         signal_results: () => state.signal_results,
         tracking_configs: () => state.tracking_configs,
@@ -117,6 +120,7 @@ beforeEach(() => {
       industry: "Nursing Home",
     },
   ];
+  state.campaign_people = [];
   state.campaign_organizations = [
     { id: "co-1", campaign_id: CAMPAIGN, organization_id: ORG },
   ];
@@ -203,6 +207,13 @@ describe("PATCH /api/companies/[id]/website", () => {
 
     it("moves the campaign links, people and tracked signals, then deletes the empty row", async () => {
       state.people.push({ id: "p1", organization_id: ORG });
+      // The caller has to hold the contact for it to move; people is a shared
+      // pool, so campaign_people is what says whose it is.
+      state.campaign_people.push({
+        id: "cp-1",
+        campaign_id: CAMPAIGN,
+        person_id: "p1",
+      });
       state.signal_results.push({ id: "sr1", organization_id: ORG });
       state.tracking_configs.push({ id: "tc1", organization_id: ORG });
 
@@ -218,6 +229,36 @@ describe("PATCH /api/companies/[id]/website", () => {
       expect(state.signal_results[0].organization_id).toBe(TWIN);
       expect(state.tracking_configs[0].organization_id).toBe(TWIN);
       expect(org(ORG)).toBeUndefined();
+      expect(body.deletedOld).toBe(true);
+    });
+
+    it("leaves another tenant's contact where it is, and keeps the old row", async () => {
+      // Reproduced live before this guard existed: `people` is USING (true)
+      // on UPDATE, so the merge rewrote every tenant's rows at the company.
+      // One user setting a website re-filed another user's contact under a
+      // different employer and emptied their campaign.
+      state.people.push({ id: "mine", organization_id: ORG });
+      state.people.push({ id: "theirs", organization_id: ORG });
+      state.campaign_people.push({
+        id: "cp-1",
+        campaign_id: CAMPAIGN,
+        person_id: "mine",
+      });
+      // "theirs" is in nobody's campaign that this caller can see.
+
+      const res = await patch({ url: "https://cedarlodge.co.uk" });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(state.people.find((p) => p.id === "mine")?.organization_id).toBe(
+        TWIN,
+      );
+      expect(state.people.find((p) => p.id === "theirs")?.organization_id).toBe(
+        ORG,
+      );
+      // Something still points at the old row, so it must survive.
+      expect(org(ORG)).toBeDefined();
+      expect(body.deletedOld).toBe(false);
     });
 
     it("drops a link that would duplicate one the twin already has", async () => {

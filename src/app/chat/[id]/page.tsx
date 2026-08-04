@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { SquarePen } from "lucide-react";
@@ -181,8 +181,16 @@ function ChatView({
 
 export default function ChatPage() {
   const { id: chatId } = useParams<{ id: string }>();
-  const searchParams = useSearchParams();
-  const autoSendText = searchParams.get("q") ?? undefined;
+  // Read once, and consumed: sessionStorage is same-origin and same-tab, so
+  // unlike the ?q= param this cannot be handed to someone else as a link, and
+  // removing it means a reload does not re-run a billed agent turn.
+  const [autoSendText] = useState<string | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const key = `chat-opening-message:${chatId}`;
+    const pending = window.sessionStorage.getItem(key);
+    if (pending) window.sessionStorage.removeItem(key);
+    return pending ?? undefined;
+  });
   const [initialMessages, setInitialMessages] = useState<UIMessage[] | null>(
     null,
   );

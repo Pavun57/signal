@@ -1,3 +1,4 @@
+import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
 import { tool } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
@@ -943,17 +944,20 @@ export const fetchSitemap = tool({
 
     for (const sitemapUrl of sitemapUrls) {
       try {
-        const response = await fetch(sitemapUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (compatible; FridayBot/1.0)",
-            Accept: "application/xml, text/xml, */*",
+        const response = await safeFetch(
+          sitemapUrl,
+          {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; FridayBot/1.0)",
+              Accept: "application/xml, text/xml, */*",
+            },
           },
-          signal: AbortSignal.timeout(10000),
-        });
+          { timeoutMs: 10000 },
+        );
 
         if (!response.ok) continue;
 
-        const text = await response.text();
+        const text = await readBodyCapped(response);
         if (!text.includes("<urlset") && !text.includes("<sitemapindex"))
           continue;
 
@@ -970,14 +974,19 @@ export const fetchSitemap = tool({
           // Fetch up to 3 child sitemaps
           const childResults = await Promise.allSettled(
             childSitemaps.slice(0, 3).map(async (childUrl) => {
-              const res = await fetch(childUrl, {
-                headers: {
-                  "User-Agent": "Mozilla/5.0 (compatible; FridayBot/1.0)",
+              // childUrl came out of the sitemap XML we just fetched, so the
+              // remote host chose it; it gets vetted like any other URL.
+              const res = await safeFetch(
+                childUrl,
+                {
+                  headers: {
+                    "User-Agent": "Mozilla/5.0 (compatible; FridayBot/1.0)",
+                  },
                 },
-                signal: AbortSignal.timeout(10000),
-              });
+                { timeoutMs: 10000 },
+              );
               if (!res.ok) return;
-              const childText = await res.text();
+              const childText = await readBodyCapped(res);
               const child$ = cheerio.load(childText, { xmlMode: true });
               child$("url").each((_, el) => {
                 urls.push({

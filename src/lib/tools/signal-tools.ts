@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getRecipe, hasRecipe, listRecipeSlugs } from "@/lib/signals/recipes";
 import { executeSignal } from "@/lib/signals/executor";
 import { runRecipe } from "@/lib/signals/runner";
+import { auth } from "@clerk/nextjs/server";
 import { createClient } from "@/lib/supabase/server";
 import type { Signal } from "@/lib/types/signal";
 
@@ -367,6 +368,29 @@ export const createSignal = tool({
   execute: async (input) => {
     const supabase = await createClient();
 
+    // The update and delete policies both require created_by to name one of
+    // the caller's profiles. Leaving it null did not fail the insert, it made
+    // every custom signal permanently uneditable and undeletable by the person
+    // who had just created it -- the policies matched zero rows and the tools
+    // reported "not found or is built-in". The insert policy now requires it
+    // too, so a signal that cannot be owned is not created at all.
+    const { userId } = await auth();
+    if (!userId) return { error: "Not authenticated." };
+
+    const { data: profile } = await supabase
+      .from("user_profile")
+      .select("id")
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (!profile) {
+      return {
+        error:
+          "No profile yet. Set up your profile before creating a custom signal.",
+      };
+    }
+
     const { data, error } = await supabase
       .from("signals")
       .insert({
@@ -381,6 +405,7 @@ export const createSignal = tool({
         config: input.config,
         is_builtin: false,
         is_public: false,
+        created_by: profile.id,
       })
       .select("*")
       .single();

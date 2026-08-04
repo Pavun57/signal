@@ -69,11 +69,17 @@ export default function ChatPage() {
 
   const onSubmit = () => {
     if (!input.trim()) return;
-    // Create a new chat and navigate to it — the text is passed via search param
-    // so the new page can auto-send it.
+    // Handed over in sessionStorage rather than a search param.
+    //
+    // The chat page auto-sends its opening message, and this is the only
+    // legitimate producer of one. As a URL it was also a link: any GET to
+    // /chat/<uuid>?q=... auto-ran that text against the agent -- which sends
+    // email and spends money -- using whatever session the browser had, so a
+    // link in an email or a forum post executed as its recipient. Reloading
+    // the page re-ran the turn for the same reason.
     const id = crypto.randomUUID();
-    const params = new URLSearchParams({ q: input });
-    router.push(`/chat/${id}?${params.toString()}`);
+    sessionStorage.setItem(`chat-opening-message:${id}`, input);
+    router.push(`/chat/${id}`);
   };
 
   return (
