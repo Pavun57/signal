@@ -140,10 +140,19 @@ export default function CampaignsIndexPage() {
                         />
                         <DialogContent>
                           <DialogTitle>Delete campaign</DialogTitle>
+                          {/*
+                            The old copy had this backwards. Companies and
+                            contacts live in a shared pool and survive; only
+                            the campaign's links to them cascade. What does go,
+                            and was never mentioned, is sent_emails -- the
+                            record of every email this campaign actually sent.
+                          */}
                           <DialogDescription>
-                            This will permanently delete &quot;{campaign.name}
-                            &quot; and all its companies and contacts. This
-                            cannot be undone.
+                            This permanently deletes &quot;{campaign.name}&quot;
+                            along with its sequences, drafts, and the record of
+                            every email it sent. The companies and contacts
+                            themselves are kept, but they will no longer be part
+                            of this campaign. This cannot be undone.
                           </DialogDescription>
                           <DialogFooter>
                             <DialogClose render={<Button variant="outline" />}>

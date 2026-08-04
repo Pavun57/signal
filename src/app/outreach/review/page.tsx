@@ -341,70 +341,99 @@ function ReviewPageInner() {
       const supabase = createClient();
       const now = new Date().toISOString();
 
-      // Save edits for drafts whose subject or body changed
-      const editPromises = currentDrafts.map(async (d) => {
-        const edit = edits[d.id];
-        if (!edit) return;
-        const baseBody = d.body_text ?? htmlToPlain(d.body_html);
-        const subjectChanged = edit.subject !== d.subject;
-        const bodyChanged = edit.bodyText !== baseBody;
-        if (!subjectChanged && !bodyChanged) return;
-        await supabase
-          .from("email_drafts")
-          .update({
-            subject: edit.subject,
-            body_html: plainToHtml(edit.bodyText),
-            body_text: edit.bodyText,
-            updated_at: now,
-          })
-          .eq("id", d.id);
-      });
-      await Promise.all(editPromises);
+      try {
+        // Save edits for drafts whose subject or body changed
+        const editPromises = currentDrafts.map(async (d) => {
+          const edit = edits[d.id];
+          if (!edit) return;
+          const baseBody = d.body_text ?? htmlToPlain(d.body_html);
+          const subjectChanged = edit.subject !== d.subject;
+          const bodyChanged = edit.bodyText !== baseBody;
+          if (!subjectChanged && !bodyChanged) return;
+          const { error } = await supabase
+            .from("email_drafts")
+            .update({
+              subject: edit.subject,
+              body_html: plainToHtml(edit.bodyText),
+              body_text: edit.bodyText,
+              updated_at: now,
+            })
+            .eq("id", d.id);
+          if (error)
+            throw new Error(`Could not save your edit: ${error.message}`);
+        });
+        await Promise.all(editPromises);
 
-      // Mark all pending drafts for this contact
-      const pendingIds = currentDrafts
-        .filter((d) => d.review_status === "pending")
-        .map((d) => d.id);
+        // Mark all pending drafts for this contact
+        const pendingIds = currentDrafts
+          .filter((d) => d.review_status === "pending")
+          .map((d) => d.id);
 
-      if (pendingIds.length > 0) {
-        await supabase
-          .from("email_drafts")
-          .update({ review_status: action, updated_at: now })
-          .in("id", pendingIds);
+        if (pendingIds.length > 0) {
+          // Checked, and checked by row count.
+          //
+          // None of the writes on this page read their error. Combined with the
+          // known Clerk footgun -- a session token without the `role:
+          // authenticated` claim maps to anon, so RLS silently matches zero
+          // rows -- a whole review session could approve nothing at all while
+          // showing a green toast for every contact, and the user would only
+          // find out when nothing ever sent.
+          const { data: updated, error } = await supabase
+            .from("email_drafts")
+            .update({ review_status: action, updated_at: now })
+            .in("id", pendingIds)
+            .select("id");
+
+          if (error) {
+            throw new Error(`Could not save your review: ${error.message}`);
+          }
+          if ((updated?.length ?? 0) !== pendingIds.length) {
+            throw new Error(
+              `Only ${updated?.length ?? 0} of ${pendingIds.length} drafts were updated. Reload and try again.`,
+            );
+          }
+        }
+
+        posthog.capture(
+          action === "approved" ? "draft_approved" : "draft_rejected",
+          {
+            sequence_id: sequenceId,
+            draft_count: pendingIds.length,
+            company_name: currentContact.company_name ?? undefined,
+          },
+        );
+
+        setDrafts((prev) =>
+          prev.map((d) =>
+            pendingIds.includes(d.id) ? { ...d, review_status: action } : d,
+          ),
+        );
+
+        toast.success(
+          action === "approved"
+            ? `Approved ${pendingIds.length} email${pendingIds.length === 1 ? "" : "s"}`
+            : `Rejected ${pendingIds.length} email${pendingIds.length === 1 ? "" : "s"}`,
+        );
+
+        // Advance to next contact with pending drafts
+        const nextIndex = personIds.findIndex((pid, i) => {
+          if (i <= currentPersonIndex) return false;
+          const group = personGroups.get(pid);
+          return group?.some((d) => d.review_status === "pending") ?? false;
+        });
+
+        if (nextIndex >= 0) setCurrentPersonIndex(nextIndex);
+        else toast.success("All contacts reviewed");
+      } catch (err) {
+        // Without this the row stays "saving" forever: every button on the
+        // card is disabled, the keyboard shortcuts are dead, and nothing says
+        // why. A refused write has to leave the contact reviewable.
+        toast.error(
+          err instanceof Error ? err.message : "Could not save your review.",
+        );
+      } finally {
+        setSaving(false);
       }
-
-      posthog.capture(
-        action === "approved" ? "draft_approved" : "draft_rejected",
-        {
-          sequence_id: sequenceId,
-          draft_count: pendingIds.length,
-          company_name: currentContact.company_name ?? undefined,
-        },
-      );
-
-      setDrafts((prev) =>
-        prev.map((d) =>
-          pendingIds.includes(d.id) ? { ...d, review_status: action } : d,
-        ),
-      );
-
-      toast.success(
-        action === "approved"
-          ? `Approved ${pendingIds.length} email${pendingIds.length === 1 ? "" : "s"}`
-          : `Rejected ${pendingIds.length} email${pendingIds.length === 1 ? "" : "s"}`,
-      );
-
-      // Advance to next contact with pending drafts
-      const nextIndex = personIds.findIndex((pid, i) => {
-        if (i <= currentPersonIndex) return false;
-        const group = personGroups.get(pid);
-        return group?.some((d) => d.review_status === "pending") ?? false;
-      });
-
-      if (nextIndex >= 0) setCurrentPersonIndex(nextIndex);
-      else toast.success("All contacts reviewed");
-
-      setSaving(false);
     },
     [
       currentContact,
@@ -542,9 +571,26 @@ function ReviewPageInner() {
         const data = await res.json();
         if (!res.ok || !data.ok) {
           toast.error(data.error ?? "Failed to send");
+          // Put the draft back to pending.
+          //
+          // It was approved a few lines above so the send could proceed. When
+          // the send then failed, leaving it approved handed it to the cron:
+          // the user saw "Failed to send", and the email went out unattended
+          // later anyway. The user's belief and the system's state have to
+          // agree, and their belief is that nothing was sent.
+          const { error: revertErr } = await supabase
+            .from("email_drafts")
+            .update({ review_status: "pending", updated_at: now })
+            .eq("id", draftId)
+            .eq("status", "draft");
+          if (revertErr) {
+            toast.error(
+              "This draft is still marked approved and may send later. Reject it if you do not want it to.",
+            );
+          }
           setDrafts((prev) =>
             prev.map((d) =>
-              d.id === draftId ? { ...d, review_status: "approved" } : d,
+              d.id === draftId ? { ...d, review_status: "pending" } : d,
             ),
           );
           return;
@@ -732,6 +778,16 @@ function ReviewPageInner() {
         document.activeElement instanceof HTMLInputElement ||
         document.activeElement instanceof HTMLTextAreaElement
       ) {
+        return;
+      }
+      // Approving authorises a real send, and there is no undo in this flow.
+      //
+      // Key auto-repeat fired this handler once per repeat, and the in-flight
+      // guard is state-based so it clears on every round trip -- holding the
+      // key walked the whole queue, approving contact after contact. And on
+      // macOS Cmd+Left is Back, so reaching for it rejected the contact and
+      // swallowed the navigation.
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) {
         return;
       }
       if (e.key === "ArrowLeft") {
