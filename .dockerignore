@@ -8,6 +8,25 @@
 .env.*
 !.env.example
 
+# Credentials and machine state that .gitignore already keeps out of the repo.
+# The build context is a second way out of the working tree, and it was not
+# covering these: .clerk/.tmp/keyless.json holds a live Clerk secret key and an
+# app-claim token.
+.clerk
+.vercel
+.claude
+.mcp.json
+.pnpm-store
+supabase/.temp
+
+# Database dumps and exports. .gitignore calls these out because they carry
+# real contact data and email bodies; a 13 MB production dump sitting in the
+# repo root was landing in the builder layer via `COPY . .`.
+backup-*.sql
+*.dump
+*.csv
+supabase/dumps
+
 node_modules
 .next
 out

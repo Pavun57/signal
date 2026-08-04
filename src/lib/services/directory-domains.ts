@@ -100,7 +100,107 @@ const DIRECTORY_DOMAINS = new Set([
   "hotfrog.co.uk",
   "freeindex.co.uk",
   "thenewsshopper.co.uk",
+
+  // B2B contact aggregators. These are the ones an Exa search is most likely
+  // to surface for a company name, and the worst to accept: their pages name
+  // real people, so a contact search against one files strangers as employees.
+  "zoominfo.com",
+  "apollo.io",
+  "rocketreach.co",
+  "lusha.com",
+  "signalhire.com",
+  "leadiq.com",
+  "cognism.com",
+  "clearbit.com",
+  "crunchbase.com",
+  "pitchbook.com",
+  "owler.com",
+  "dnb.com",
+  "bbb.org",
+  "opencorporates.com",
+  "endole.co.uk",
+  "companiesintheuk.co.uk",
+  // The live Companies House host; the older companieshouse.gov.uk has
+  // redirected here for years.
+  "company-information.service.gov.uk",
+  "find-and-update.company-information.service.gov.uk",
+  "yell.co.uk",
+  "thomsonlocal.com",
+  "cylex-uk.co.uk",
+  "tuugo.co.uk",
 ]);
+
+/**
+ * Site builders and hosts where the apex belongs to the platform, not to any
+ * one business.
+ *
+ * `normalizeDomain` reduces a host to its registrable apex, and these are not
+ * on the public suffix list's private section, so `cedarlodge.business.site`
+ * and `oakhouse.business.site` both come out as `business.site`. Two unrelated
+ * companies then collide on the unique index over organizations.domain, which
+ * setCompanyWebsite treats as a duplicate and *merges* -- repointing one
+ * company's people onto the other. Small local businesses on hosted site
+ * builders are the target ICP here, so this is the common case, not an edge.
+ *
+ * A contact search against `business.site` would also search the whole
+ * platform, and pattern-guessed addresses would be minted `@business.site`.
+ */
+const PLATFORM_DOMAINS = new Set([
+  "business.site",
+  "wordpress.com",
+  "squarespace.com",
+  "weebly.com",
+  "godaddysites.com",
+  "wixsite.com",
+  "wix.com",
+  "myshopify.com",
+  "webflow.io",
+  "netlify.app",
+  "vercel.app",
+  "github.io",
+  "gitlab.io",
+  "pages.dev",
+  "blogspot.com",
+  "tumblr.com",
+  "sitey.me",
+  "strikingly.com",
+  "jimdosite.com",
+  "web.app",
+  "firebaseapp.com",
+  "glitch.me",
+  "notion.site",
+  "carrd.co",
+  "bigcartel.com",
+  "square.site",
+]);
+
+/**
+ * Is this apex a hosting platform rather than one company's own domain?
+ *
+ * Callers should refuse to *store* one of these as a company's website; the
+ * sub-label that identified the business is already gone by this point.
+ */
+export function isPlatformDomain(domain: string | null): boolean {
+  if (!domain) return false;
+  return PLATFORM_DOMAINS.has(domain.toLowerCase());
+}
+
+/**
+ * Does this look like a registrable domain at all?
+ *
+ * `normalizeDomain` returns its input unchanged when the public-suffix lookup
+ * fails, so it is a normaliser being used as a validator: "localhost", a bare
+ * label, and a 5,000-character string all came back as "domains" and were
+ * stored. Anything that reaches the database here later gets fetched.
+ */
+export function looksLikeDomain(domain: string | null): boolean {
+  if (!domain) return false;
+  if (domain.length > 253) return false;
+  // label(.label)+ with a non-numeric TLD of at least two characters.
+  return /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(
+    domain,
+  );
+}
 
 /** Check if a domain belongs to a known directory/aggregator. */
 export function isDirectoryDomain(domain: string | null): boolean {

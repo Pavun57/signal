@@ -46,7 +46,7 @@ src/
 supabase/
   config.toml
   migrations/       # one consolidated initial schema
-browserbase-functions/  # deployable Browserbase functions (env-probe, pricing-changes)
+browserbase-functions/  # deployable Browserbase functions (pricing-changes)
 scripts/            # one-off dev utilities
 e2e/                # Playwright tests (api, pages, knowledge-base, signals)
 src/__tests__/      # Vitest unit tests

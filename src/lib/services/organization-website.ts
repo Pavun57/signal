@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { isDirectoryDomain } from "@/lib/services/directory-domains";
+import { isIP } from "node:net";
+import { addressIsPublic } from "@/lib/safe-fetch";
+import {
+  isDirectoryDomain,
+  isPlatformDomain,
+  looksLikeDomain,
+} from "@/lib/services/directory-domains";
 import { resolveOrganizationDomain } from "@/lib/services/domain-resolver";
 import { normalizeDomain } from "@/lib/services/knowledge-base";
 
@@ -17,6 +23,9 @@ import { normalizeDomain } from "@/lib/services/knowledge-base";
  * dangerous part of this feature, and two copies of it is how one gets fixed
  * and the other does not.
  */
+
+/** Longest URL worth entertaining; the field had no bound at all. */
+const MAX_URL_LENGTH = 2048;
 
 /** Tables that point at an organization, and so have to move before a delete. */
 const REFERRING_TABLES = [
@@ -92,7 +101,43 @@ async function mergeOrganizations(
     taken.add(link.campaign_id);
   }
 
-  for (const table of ["people", "signal_results", "tracking_configs"]) {
+  // Only the caller's own contacts move.
+  //
+  // `people` is a shared pool with USING (true) on UPDATE, so
+  // `.update().eq("organization_id", fromId)` rewrote *every* tenant's rows at
+  // that company. Reproduced with two users: one tenant setting a website
+  // silently re-filed another tenant's contact under a different employer and
+  // left their campaign showing a company with no contacts. The database
+  // cannot scope this until people carries an owner, so the scoping is here.
+  //
+  // campaign_people is RLS-scoped through campaigns, so it names exactly the
+  // people this caller holds. Anyone else's stay put -- which also means
+  // `remaining` below stays non-zero and the old row is correctly kept.
+  const { data: atOrg } = await supabase
+    .from("people")
+    .select("id")
+    .eq("organization_id", fromId);
+  const orgPersonIds = (atOrg ?? []).map((r) => (r as { id: string }).id);
+
+  if (orgPersonIds.length > 0) {
+    const { data: heldLinks } = await supabase
+      .from("campaign_people")
+      .select("person_id")
+      .in("person_id", orgPersonIds);
+    const held = [
+      ...new Set(
+        (heldLinks ?? []).map((r) => (r as { person_id: string }).person_id),
+      ),
+    ];
+    if (held.length > 0) {
+      await supabase
+        .from("people")
+        .update({ organization_id: toId })
+        .in("id", held);
+    }
+  }
+
+  for (const table of ["signal_results", "tracking_configs"]) {
     await supabase
       .from(table)
       .update({ organization_id: toId })
@@ -111,11 +156,21 @@ async function mergeOrganizations(
     remaining += data?.length ?? 0;
   }
 
+  // Verify the delete rather than infer it. organizations had no DELETE policy
+  // until 20260804000000, so this matched zero rows and returned no error
+  // while the caller reported `deletedOld: true` and a completed merge -- the
+  // old row was still there, still holding the name, on every install.
+  let deletedOld = false;
   if (remaining === 0) {
-    await supabase.from("organizations").delete().eq("id", fromId);
+    const { data: deleted } = await supabase
+      .from("organizations")
+      .delete()
+      .eq("id", fromId)
+      .select("id");
+    deletedOld = (deleted?.length ?? 0) > 0;
   }
 
-  return { into: toId, deletedOld: remaining === 0, remaining };
+  return { into: toId, deletedOld, remaining };
 }
 
 export async function saveOrganizationWebsite(
@@ -151,7 +206,26 @@ export async function saveOrganizationWebsite(
 
   const typed = typeof args.url === "string" ? args.url.trim() : "";
   if (typed) {
-    const withScheme = /^https?:\/\//i.test(typed) ? typed : `https://${typed}`;
+    if (typed.length > MAX_URL_LENGTH) {
+      return {
+        ok: false,
+        status: 400,
+        error: "That web address is too long to be real.",
+      };
+    }
+
+    // Only a bare host or an http(s) URL. Prepending https:// to *anything*
+    // produced a parseable-but-wrong URL: "file:///etc/passwd" became the host
+    // "file" and was stored as this company's domain.
+    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(typed);
+    if (hasScheme && !/^https?:\/\//i.test(typed)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `"${typed}" is not an http or https address.`,
+      };
+    }
+    const withScheme = hasScheme ? typed : `https://${typed}`;
     let host: string;
     try {
       host = new URL(withScheme).hostname;
@@ -162,12 +236,38 @@ export async function saveOrganizationWebsite(
         error: `"${typed}" is not a valid web address.`,
       };
     }
+
+    // A company website is on the public internet. Without this an operator
+    // could store 169.254.169.254 or 127.0.0.1 as a company's domain, and
+    // every later enrichment run fetches whatever is on record.
+    if (isIP(host) && !addressIsPublic(host)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `${host} is not a public web address.`,
+      };
+    }
+
     const normalized = normalizeDomain(host);
-    if (!normalized) {
+    // normalizeDomain hands back its input when the public-suffix lookup
+    // fails, so a falsy check never fires: "localhost" and a 5,000-character
+    // string both arrived here as "domains".
+    if (!looksLikeDomain(normalized)) {
       return {
         ok: false,
         status: 400,
         error: `"${typed}" is not a valid web address.`,
+      };
+    }
+    // The sub-label that identified this business is gone by now -- two
+    // companies on the same site builder both reduce to the platform apex and
+    // would collide on organizations.domain, which this function treats as a
+    // duplicate and merges.
+    if (isPlatformDomain(normalized)) {
+      return {
+        ok: false,
+        status: 400,
+        error: `${normalized} is a website builder's own domain, not this company's. Use the full address, including the part that identifies the business.`,
       };
     }
     // A directory lists other businesses. Filed as this company's website,
