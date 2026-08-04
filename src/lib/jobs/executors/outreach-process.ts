@@ -69,13 +69,24 @@ async function handleSignalTrigger(
   supabase: ReturnType<typeof getAdminClient>,
   payload: SignalPayload,
 ) {
-  // Find active sequences triggered by this signal in this campaign
+  // Sequences triggered by this signal in this campaign.
+  //
+  // "draft" is included deliberately. `createSequence` is the only writer of
+  // this column and it only ever writes "draft" -- nothing in the codebase
+  // has ever promoted a sequence to "active", so requiring "active" here
+  // meant this function returned "no matching sequences" for every user and
+  // the whole signal -> pick -> draft -> send loop was dead code.
+  //
+  // Accepting "draft" cannot leak an unreviewed email: pickAndDraft leaves
+  // its drafts pending for the reviewer, and the send below goes through
+  // sendApprovedDraft, which requires review_status = 'approved'. "paused"
+  // and "completed" stay excluded, so pausing still halts a sequence.
   const { data: sequences } = await supabase
     .from("sequences")
     .select("id, user_id")
     .eq("trigger_signal_id", payload.signalId)
     .eq("campaign_id", payload.campaignId)
-    .eq("status", "active");
+    .in("status", ["draft", "active"]);
 
   if (!sequences || sequences.length === 0) {
     return { sent: 0, reason: "no matching sequences" };
