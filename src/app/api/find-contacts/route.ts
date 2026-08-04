@@ -71,25 +71,29 @@ export async function POST(request: Request) {
     description: string | null;
   };
 
-  return withAction(`Find contacts: ${org.name}`, async () => {
-    // All discovery goes through the one shared path — this route used to hold
-    // its own near-identical copy of it, as did the findContacts tool and the
-    // enrich-company route, so any fix landed in one and stayed broken in two.
-    const result = await findContactsForOrganization(supabase, {
-      organizationId: orgId,
-      campaignId,
-      titles: boundedTitles,
-      numResults: 3,
-    });
+  return withAction(
+    `Find contacts: ${org.name}`,
+    async () => {
+      // All discovery goes through the one shared path — this route used to hold
+      // its own near-identical copy of it, as did the findContacts tool and the
+      // enrich-company route, so any fix landed in one and stayed broken in two.
+      const result = await findContactsForOrganization(supabase, {
+        organizationId: orgId,
+        campaignId,
+        titles: boundedTitles,
+        numResults: 3,
+      });
 
-    return Response.json({
-      contacts: result.contacts,
-      totalFound: result.totalFound,
-      targetTitles,
-      verifiedCount: result.verifiedCount,
-      uncertainCount: result.uncertainCount,
-      rejectedAsWrongCompany: result.rejectedAsWrongCompany,
-      error: result.error,
-    });
-  }); // end withAction
+      return Response.json({
+        contacts: result.contacts,
+        totalFound: result.totalFound,
+        targetTitles,
+        verifiedCount: result.verifiedCount,
+        uncertainCount: result.uncertainCount,
+        rejectedAsWrongCompany: result.rejectedAsWrongCompany,
+        error: result.error,
+      });
+    },
+    user.id,
+  ); // end withAction
 }

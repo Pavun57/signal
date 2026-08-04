@@ -267,13 +267,33 @@ export async function claimAndSendDraft(
   );
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
-  const { count } = await supabase
+  const { count, error: countError } = await supabase
     .from("sent_emails")
     .select("id", { count: "exact", head: true })
     .eq("user_id", draft.user_id)
     .gte("sent_at", todayStart.toISOString());
 
-  if ((count ?? 0) >= effectiveLimit) {
+  // A failed count used to read as `count ?? 0`, so any error -- an expired
+  // JWT past the retry, a PostgREST hiccup, an RLS denial -- disabled the cap
+  // instead of enforcing it, and a 40-draft bulk send could empty itself into
+  // a mailbox rated 5/day. Everything else in this function is deliberately
+  // fail-closed ("Not sending is always recoverable; sending is not"); this
+  // one check was inverted.
+  if (countError || count === null) {
+    await supabase
+      .from("email_drafts")
+      .update({ status: "draft", updated_at: new Date().toISOString() })
+      .eq("id", draft.id)
+      .eq("status", "queued");
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      `Could not read today's send count, so the daily limit could not be checked: ${countError?.message ?? "no count returned"}`,
+    );
+  }
+
+  if (count >= effectiveLimit) {
     // Release the claim — the draft should send tomorrow, not rot in queued.
     await supabase
       .from("email_drafts")

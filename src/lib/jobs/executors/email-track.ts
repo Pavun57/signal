@@ -49,6 +49,20 @@ export async function trackEmailReplies(): Promise<{
   // to 14 days: unanswered sends and migrated legacy rows must not drag the
   // IMAP fetch window (each user's real inbox!) weeks into the past.
   const windowStart = new Date(Date.now() - 14 * 86400_000).toISOString();
+
+  // The ceiling is a backstop, not a working limit.
+  //
+  // This was 100 rows, newest-first, across *all* users. At the default 30/day
+  // cap one user passes 100 unanswered sends in about three days, and
+  // everything older was ordered out permanently -- so its reply was never
+  // seen, outreach_status never became "replied", and the follow-up job kept
+  // emailing someone who had already written back. Cold-email replies land two
+  // to seven days out, which is exactly the part that was being discarded.
+  //
+  // The 14-day window already bounds this: at the cap it is a few hundred rows
+  // per user. If the ceiling is ever actually reached that is a real backlog
+  // and it says so, rather than quietly dropping the tail.
+  const MAX_OUTSTANDING = 1000;
   const { data: emails, error } = await supabase
     .from("sent_emails")
     .select(
@@ -57,10 +71,16 @@ export async function trackEmailReplies(): Promise<{
     .in("status", ["sent", "delivered", "opened"])
     .gte("sent_at", windowStart)
     .order("sent_at", { ascending: false })
-    .limit(100);
+    .limit(MAX_OUTSTANDING);
 
   if (error || !emails || emails.length === 0) {
     return { checked: 0, updated: 0, captured: 0 };
+  }
+
+  if (emails.length === MAX_OUTSTANDING) {
+    console.warn(
+      `[email/track] ${MAX_OUTSTANDING} outstanding sends in the 14-day window; older ones are not being checked for replies this run.`,
+    );
   }
 
   // Load gmail credentials for the affected users
