@@ -485,6 +485,30 @@ async function enrichContactById(
 }> {
   const supabase = await createClient();
 
+  // Agents routinely pass the campaign_people link ID here instead of the
+  // person ID. That used to "enrich" a person that doesn't exist: no name,
+  // no socials, nothing to search, ending in status "failed" that the batch
+  // tool then filed under `succeeded`. Resolve link IDs; reject the rest.
+  const { data: personExists } = await supabase
+    .from("people")
+    .select("id")
+    .eq("id", personId)
+    .maybeSingle();
+  if (!personExists) {
+    const { data: link } = await supabase
+      .from("campaign_people")
+      .select("person_id")
+      .eq("id", personId)
+      .maybeSingle();
+    if (!link) {
+      throw new Error(
+        `No person found for ID ${personId}. Pass the person ID ` +
+          `(people.id, the person_id field on getContacts rows), not a campaign-people link ID.`,
+      );
+    }
+    personId = link.person_id;
+  }
+
   // Check recency -- skip if recently enriched
   const recent = await isRecentlyEnriched("people", personId);
   if (recent) {
@@ -506,7 +530,10 @@ async function enrichContactById(
   const { data: person } = await supabase
     .from("people")
     .select(
-      "name, title, linkedin_url, twitter_url, organization:organizations(name)",
+      // The !organization_id hint is load-bearing: people has a second FK to
+      // organizations (affiliation_detached_from), so an unhinted embed is
+      // ambiguous and PostgREST rejects the whole query.
+      "name, title, linkedin_url, twitter_url, organization:organizations!organization_id(name)",
     )
     .eq("id", personId)
     .single();
@@ -785,7 +812,12 @@ export const enrichContact = tool({
   description:
     "Enrich a single contact and write results to the DB. Returns a THIN summary (counts of news/articles, has-linkedin flags) -- NOT the full enrichment payload. If you need to read the enriched content (e.g. to personalize an email), call getContactDetail(personId). For multiple contacts, use enrichContacts (parallel). Skips if recently enriched (<7 days).",
   inputSchema: z.object({
-    contactId: z.string().uuid().describe("Person ID to enrich"),
+    contactId: z
+      .string()
+      .uuid()
+      .describe(
+        "Person ID (people.id, the person_id field on getContacts rows), NOT the campaign-people link ID",
+      ),
     linkedinUrl: z
       .string()
       .optional()
@@ -811,7 +843,9 @@ export const enrichContacts = tool({
       .array(z.string().uuid())
       .min(1)
       .max(10)
-      .describe("Array of person IDs to enrich (max 10)"),
+      .describe(
+        "Array of person IDs (people.id, the person_id field on getContacts rows, NOT campaign-people link IDs). Max 10.",
+      ),
   }),
   execute: async (input, { experimental_context }) => {
     const deadlineAt = deadlineFrom(experimental_context);
@@ -842,11 +876,23 @@ export const enrichContacts = tool({
 
       results.forEach((result, j) => {
         if (result.status === "fulfilled") {
-          succeeded.push({
-            contactId: result.value.contactId,
-            status: result.value.status,
-            skipped: result.value.skipped,
-          });
+          // A fulfilled promise whose enrichment ended in status "failed" is
+          // a failure. Filing it under `succeeded` made the summary read
+          // "succeeded: N, failed: 0" while every row said failed.
+          if (result.value.status === "failed") {
+            failed.push({
+              contactId: result.value.contactId,
+              error:
+                result.value.errors?.join("; ") ||
+                "All enrichment sources failed",
+            });
+          } else {
+            succeeded.push({
+              contactId: result.value.contactId,
+              status: result.value.status,
+              skipped: result.value.skipped,
+            });
+          }
         } else {
           failed.push({
             contactId: chunk[j],
@@ -1481,6 +1527,12 @@ export const enrichCompany = tool({
       .string()
       .uuid()
       .describe("Organization ID or campaign-organization link ID to enrich"),
+    companyName: z
+      .string()
+      .optional()
+      .describe(
+        "Company name for the UI. Display-only: the lookup always uses companyId. Always pass when known.",
+      ),
     campaignId: z
       .string()
       .uuid()
@@ -1501,6 +1553,12 @@ export const enrichCompanies = tool({
       .max(10)
       .describe(
         "Array of organization IDs or campaign-organization link IDs to enrich (max 10)",
+      ),
+    companyNames: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Company names matching companyIds, in the same order. Display-only: shown in the UI while the batch runs; lookups always use the IDs. Always pass when known.",
       ),
     campaignId: z
       .string()
@@ -1698,19 +1756,33 @@ export const findContacts = tool({
     }
 
     // Resolve the organization — either via the campaign link or directly.
+    // Agents regularly cross the two ID kinds, so a miss on the link table
+    // falls back to treating the ID as an organization ID before failing.
+    // The old path surfaced PostgREST's "Cannot coerce the result to a
+    // single JSON object", which tells the agent nothing actionable.
     let orgId: string;
     if (input.companyId) {
-      const { data: link, error: linkError } = await supabase
+      const { data: link } = await supabase
         .from("campaign_organizations")
         .select("organization_id")
         .eq("id", input.companyId)
-        .single();
-      if (linkError || !link) {
-        throw new Error(
-          `Company not found: ${linkError?.message || "Unknown"}`,
-        );
+        .maybeSingle();
+      if (link) {
+        orgId = link.organization_id;
+      } else {
+        const { data: org } = await supabase
+          .from("organizations")
+          .select("id")
+          .eq("id", input.companyId)
+          .maybeSingle();
+        if (!org) {
+          throw new Error(
+            `No campaign-organization link or organization found for ID ${input.companyId}. ` +
+              `Use the "id" of a row from getCompanies as companyId, or pass an organization ID as organizationId.`,
+          );
+        }
+        orgId = org.id;
       }
-      orgId = link.organization_id;
     } else {
       orgId = input.organizationId!;
     }
@@ -1778,7 +1850,7 @@ export const getContacts = tool({
     const query = supabase
       .from("campaign_people")
       .select(
-        "id, person_id, campaign_id, outreach_status, priority_score, score_reason, created_at, updated_at, person:people(name, title, work_email, personal_email, linkedin_url, twitter_url, enrichment_status, source, organization_id, organization:organizations(name, domain, industry))",
+        "id, person_id, campaign_id, outreach_status, priority_score, score_reason, created_at, updated_at, person:people(name, title, work_email, personal_email, linkedin_url, twitter_url, enrichment_status, source, organization_id, organization:organizations!organization_id(name, domain, industry))",
       )
       .eq("campaign_id", input.campaignId)
       .order("priority_score", { ascending: false, nullsFirst: false })
@@ -1799,22 +1871,37 @@ export const getContacts = tool({
       );
     }
 
-    // Filter by company (campaign_organizations link)
+    // Filter by company (campaign_organizations link). A bad ID used to be
+    // silently ignored, returning the unfiltered list as if it were the
+    // company's contacts — fail loudly instead, accepting either ID kind.
     if (input.companyId) {
-      // Get the organization_id for this campaign_organizations link
       const { data: link } = await supabase
         .from("campaign_organizations")
         .select("organization_id")
         .eq("id", input.companyId)
-        .single();
+        .maybeSingle();
 
-      if (link) {
-        results = results.filter(
-          (r) =>
-            (r.person as unknown as { organization_id: string | null } | null)
-              ?.organization_id === link.organization_id,
+      let filterOrgId = link?.organization_id;
+      if (!filterOrgId) {
+        const { data: org } = await supabase
+          .from("organizations")
+          .select("id")
+          .eq("id", input.companyId)
+          .maybeSingle();
+        filterOrgId = org?.id;
+      }
+      if (!filterOrgId) {
+        throw new Error(
+          `No campaign-organization link or organization found for companyId ${input.companyId}. ` +
+            `Use the "id" of a row from getCompanies, or omit companyId for all contacts.`,
         );
       }
+
+      results = results.filter(
+        (r) =>
+          (r.person as unknown as { organization_id: string | null } | null)
+            ?.organization_id === filterOrgId,
+      );
     }
 
     // Flatten for backwards compat
@@ -1875,7 +1962,7 @@ export const getContactDetail = tool({
     const { data, error } = await supabase
       .from("people")
       .select(
-        "id, name, title, work_email, personal_email, linkedin_url, twitter_url, enrichment_status, enrichment_data, organization:organizations(id, name, domain, industry, location, description, enrichment_data, enrichment_status)",
+        "id, name, title, work_email, personal_email, linkedin_url, twitter_url, enrichment_status, enrichment_data, organization:organizations!organization_id(id, name, domain, industry, location, description, enrichment_data, enrichment_status)",
       )
       .eq("id", personId)
       .single();
@@ -1985,6 +2072,12 @@ export const scoreCompany = tool({
       .string()
       .uuid()
       .describe("Campaign-organization link ID to score"),
+    companyName: z
+      .string()
+      .optional()
+      .describe(
+        "Company name for the UI. Display-only: the lookup always uses companyId. Always pass when known.",
+      ),
     score: z
       .number()
       .min(1)

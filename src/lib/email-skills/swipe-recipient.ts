@@ -29,7 +29,9 @@ export interface ContactRow {
 }
 
 export const CONTACT_SELECT =
-  "person_id, person:people(name, title, enrichment_data, organization:organizations(name))";
+  // !organization_id disambiguates: people carries a second FK to
+  // organizations (affiliation_detached_from), so unhinted embeds error.
+  "person_id, person:people(name, title, enrichment_data, organization:organizations!organization_id(name))";
 
 export interface ResolvedRecipient {
   personId: string;

@@ -92,7 +92,10 @@ export default function CampaignDetailPage() {
       supabase
         .from("campaign_people")
         .select(
-          "*, person:people(*, organization:organizations(name, domain, industry))",
+          // The !organization_id hint is load-bearing: people has a second FK
+          // to organizations (affiliation_detached_from), so an unhinted
+          // embed is ambiguous and the whole query errors.
+          "*, person:people(*, organization:organizations!organization_id(name, domain, industry))",
         )
         .eq("campaign_id", campaignId)
         .order("priority_score", { ascending: false, nullsFirst: false })
@@ -103,6 +106,15 @@ export default function CampaignDetailPage() {
 
     if (campaignRes.error) {
       setError("Campaign not found");
+      setLoading(false);
+      return;
+    }
+
+    // A failed sub-query must not render as an empty campaign: that is how a
+    // broken embed shipped as "0 contacts" without anyone noticing.
+    const subError = companiesRes.error || contactsRes.error;
+    if (subError) {
+      setError(`Failed to load campaign data: ${subError.message}`);
       setLoading(false);
       return;
     }
@@ -266,6 +278,7 @@ export default function CampaignDetailPage() {
     setCampaign(campaignRes.data as Campaign);
     setCompanies(newCompanies);
     setContacts(newContacts);
+    setError(null);
     setLoading(false);
   }, [campaignId]);
 

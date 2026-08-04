@@ -26,7 +26,9 @@ export interface PersonEnrichmentResult {
 
 /** The columns enrichment reads. Exported so callers can select exactly these. */
 export const PERSON_ENRICH_COLUMNS =
-  "name, title, linkedin_url, twitter_url, organization:organizations(name)";
+  // !organization_id disambiguates: people carries a second FK to
+  // organizations (affiliation_detached_from), so unhinted embeds error.
+  "name, title, linkedin_url, twitter_url, organization:organizations!organization_id(name)";
 
 export interface PersonForEnrichment {
   name: string;

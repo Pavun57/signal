@@ -2,19 +2,27 @@
 
 import { useState } from "react";
 import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  Bookmark,
   Building2,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   ExternalLink,
-  Loader2,
-  Search,
-  Users,
-  BarChart3,
+  FileText,
+  Github,
   Globe,
-  Bookmark,
   List,
-  AlertCircle,
+  Loader2,
+  Mail,
+  Mic,
+  Search,
+  Send,
+  Star,
+  Trash2,
+  Users,
 } from "lucide-react";
 
 import { ContactCards } from "./contact-card";
@@ -28,28 +36,140 @@ export interface ToolCallCardProps {
   liveViewUrl?: string;
 }
 
+// Every tool in src/lib/tools/index.ts gets a user-facing label; the raw
+// camelCase name is only a fallback for tools added after this map.
 const TOOL_CONFIG: Record<
   string,
   { label: string; icon: React.ComponentType<{ className?: string }> }
 > = {
+  // Campaigns
   saveCampaign: { label: "Saving campaign", icon: Bookmark },
   getCampaign: { label: "Loading campaign", icon: Bookmark },
   listCampaigns: { label: "Listing campaigns", icon: List },
-  searchCompanies: { label: "Searching companies", icon: Search },
-  getCompanies: { label: "Loading companies", icon: Building2 },
   getCampaignSummary: { label: "Loading summary", icon: BarChart3 },
+  // Company search & discovery
+  searchCompanies: { label: "Searching companies", icon: Search },
+  discoverCompanies: { label: "Discovering companies", icon: Search },
+  searchYCCompanies: { label: "Searching YC companies", icon: Search },
+  getCompanies: { label: "Loading companies", icon: Building2 },
+  getCompanyDetail: { label: "Loading company detail", icon: Building2 },
+  updateCompanyStatus: { label: "Updating company status", icon: Building2 },
+  setCompanyWebsite: { label: "Setting company website", icon: Globe },
+  deleteCompanies: { label: "Removing companies", icon: Trash2 },
+  // Enrichment & scoring
+  enrichCompany: { label: "Enriching company", icon: Building2 },
+  enrichCompanies: { label: "Enriching companies", icon: Building2 },
+  scoreCompany: { label: "Scoring company", icon: Star },
+  scoreContact: { label: "Scoring contact", icon: Star },
+  getDataQualityReport: { label: "Checking data quality", icon: BarChart3 },
+  getGoogleReviews: { label: "Loading Google reviews", icon: Star },
+  // People & contacts
   searchPeople: { label: "Searching people", icon: Users },
-  enrichContact: { label: "Enriching contact", icon: Users },
-  extractWebContent: { label: "Extracting web content", icon: Globe },
+  findContacts: { label: "Finding contacts", icon: Users },
   getContacts: { label: "Loading contacts", icon: Users },
+  getContactDetail: { label: "Loading contact detail", icon: Users },
+  enrichContact: { label: "Enriching contact", icon: Users },
+  enrichContacts: { label: "Enriching contacts", icon: Users },
+  deleteContacts: { label: "Removing contacts", icon: Trash2 },
+  // Web & scraping
+  extractWebContent: { label: "Extracting web content", icon: Globe },
+  fetchSitemap: { label: "Fetching sitemap", icon: Globe },
+  scrapeJobListings: { label: "Scanning job listings", icon: Globe },
+  scrapeJobListingsBatch: { label: "Scanning job listings", icon: Globe },
+  // Profiles
+  getUserProfile: { label: "Loading profile", icon: Users },
+  updateUserProfile: { label: "Updating profile", icon: Users },
+  listProfiles: { label: "Listing profiles", icon: List },
+  // Signals
+  getSignalAuthoringGuide: { label: "Loading signal guide", icon: FileText },
+  testSignalRecipe: { label: "Testing signal recipe", icon: Activity },
+  getSignals: { label: "Loading signals", icon: Activity },
+  getSignalDetail: { label: "Loading signal detail", icon: Activity },
+  getCampaignSignals: { label: "Loading campaign signals", icon: Activity },
+  toggleCampaignSignal: { label: "Toggling campaign signal", icon: Activity },
+  createSignal: { label: "Creating signal", icon: Activity },
+  updateSignal: { label: "Updating signal", icon: Activity },
+  makeSignalPublic: { label: "Publishing signal", icon: Activity },
+  getSignalResults: { label: "Loading signal results", icon: Activity },
+  // GitHub
+  fetchGitHubStargazers: { label: "Fetching GitHub stargazers", icon: Github },
+  enrichGitHubProfiles: { label: "Enriching GitHub profiles", icon: Github },
+  searchGitHubRepos: { label: "Searching GitHub repos", icon: Github },
+  // Tracking
+  createTracking: { label: "Setting up tracking", icon: Activity },
+  bulkCreateTracking: { label: "Setting up tracking", icon: Activity },
+  getTrackingConfigs: { label: "Loading tracking", icon: Activity },
+  getTrackingHistory: { label: "Loading tracking history", icon: Activity },
+  updateTracking: { label: "Updating tracking", icon: Activity },
+  // Email
+  findEmail: { label: "Finding email address", icon: Mail },
+  findEmails: { label: "Finding email addresses", icon: Mail },
+  writeEmail: { label: "Drafting email", icon: Mail },
+  sendEmail: { label: "Sending email", icon: Send },
+  sendBulkEmails: { label: "Sending emails", icon: Send },
+  listDrafts: { label: "Listing drafts", icon: Mail },
+  discardDraft: { label: "Discarding draft", icon: Trash2 },
+  // Sequences
+  createSequence: { label: "Creating sequence", icon: List },
+  draftSequenceEmails: { label: "Drafting sequence emails", icon: Mail },
+  draftEmailsForSequence: { label: "Drafting sequence emails", icon: Mail },
+  getSequenceStatus: { label: "Loading sequence status", icon: List },
+  // Voice
+  startVoiceRun: { label: "Starting voice drafting", icon: Mic },
+  rewriteVoiceDrafts: { label: "Rewriting drafts", icon: Mic },
+  saveVoiceProfile: { label: "Saving voice profile", icon: Mic },
+  refineEmailVoice: { label: "Refining email voice", icon: Mic },
 };
 
 // Tools that show their results inline (not collapsible)
-const INLINE_TOOLS = new Set(["searchPeople"]);
+export const INLINE_TOOLS = new Set(["searchPeople"]);
+
+/**
+ * A short human-readable subject for a call — which company, query, or URL
+ * it is about — pulled from well-known input fields. Batch enrichment only
+ * carries UUIDs at input time, so completed calls fall back to the names in
+ * the output.
+ */
+function toolSubject(
+  toolName: string,
+  input: unknown,
+  output: unknown,
+): string | null {
+  const str = (v: unknown) =>
+    typeof v === "string" && v.trim() ? v.trim() : null;
+  const list = (v: unknown) =>
+    Array.isArray(v) && v.length > 0
+      ? v.filter((s): s is string => typeof s === "string").join(", ") || null
+      : null;
+
+  const d = (input ?? {}) as Record<string, unknown>;
+  const fromInput =
+    str(d.query) ??
+    str(d.companyName) ??
+    list(d.companyNames) ??
+    str(d.name) ??
+    str(d.url) ??
+    str(d.domain) ??
+    list(d.titles);
+  if (fromInput) return fromInput;
+
+  // enrichCompanies output names each company it touched
+  if (toolName === "enrichCompanies" && output && typeof output === "object") {
+    const results = (output as Record<string, unknown>).results;
+    if (Array.isArray(results)) {
+      const names = results
+        .map((r) => (r as Record<string, unknown>)?.companyName)
+        .filter((n): n is string => typeof n === "string");
+      if (names.length > 0) return names.join(", ");
+    }
+  }
+  return null;
+}
 
 export function ToolCallCard({
   toolName,
   state,
+  input,
   output,
   errorText,
   liveViewUrl,
@@ -60,6 +180,7 @@ export function ToolCallCard({
     icon: Search,
   };
   const Icon = config.icon;
+  const subject = toolSubject(toolName, input, output);
 
   const isLoading = state === "input-streaming" || state === "input-available";
   const hasOutput = state === "output-available";
@@ -75,6 +196,9 @@ export function ToolCallCard({
           <Icon className="text-muted-foreground h-4 w-4" />
           <span className="text-muted-foreground flex-1 truncate">
             {config.label}
+            {subject && (
+              <span className="text-muted-foreground/70"> · {subject}</span>
+            )}
           </span>
         </div>
         <InlineToolResult toolName={toolName} result={output} />
@@ -101,6 +225,9 @@ export function ToolCallCard({
           <Icon className="text-muted-foreground h-4 w-4" />
           <span className="text-muted-foreground flex-1 truncate">
             {isLoading ? config.label + "..." : config.label}
+            {subject && (
+              <span className="text-muted-foreground/70"> · {subject}</span>
+            )}
           </span>
         </button>
         {showLiveView && (
@@ -133,6 +260,67 @@ export function ToolCallCard({
           <CollapsibleToolResult toolName={toolName} result={output} />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A run of consecutive calls to the same tool, collapsed to a single row
+ * ("Scoring company ×10") that expands to the individual cards. Keeps batch
+ * work from filling the transcript with near-identical rows.
+ */
+export function ToolCallGroup({
+  calls,
+}: {
+  calls: Array<ToolCallCardProps & { toolCallId: string }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const toolName = calls[0].toolName;
+  const config = TOOL_CONFIG[toolName] || { label: toolName, icon: Search };
+  const Icon = config.icon;
+
+  const anyLoading = calls.some(
+    (c) => c.state === "input-streaming" || c.state === "input-available",
+  );
+  const anyError = calls.some((c) => c.state === "output-error");
+  const doneCount = calls.filter((c) => c.state === "output-available").length;
+
+  return (
+    <div className="bg-muted/40 border-border my-1 overflow-hidden rounded-lg border text-sm">
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {anyLoading ? (
+          <Loader2 className="text-muted-foreground h-4 w-4 animate-spin" />
+        ) : anyError ? (
+          <AlertCircle className="h-4 w-4 text-destructive" />
+        ) : (
+          <CheckCircle2 className="h-4 w-4 text-success" />
+        )}
+        <Icon className="text-muted-foreground h-4 w-4" />
+        <span className="text-muted-foreground flex-1 truncate">
+          {config.label} ×{calls.length}
+          {anyLoading && (
+            <span className="text-muted-foreground/70">
+              {" "}
+              · {doneCount}/{calls.length} done
+            </span>
+          )}
+        </span>
+        {expanded ? (
+          <ChevronDown className="text-muted-foreground h-3 w-3" />
+        ) : (
+          <ChevronRight className="text-muted-foreground h-3 w-3" />
+        )}
+      </button>
+      {expanded && (
+        <div className="border-border border-t px-2 pb-1 pt-0.5">
+          {calls.map(({ toolCallId, ...call }) => (
+            <ToolCallCard key={toolCallId} {...call} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

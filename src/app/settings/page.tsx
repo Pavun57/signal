@@ -5,7 +5,6 @@ import { useTheme } from "next-themes";
 
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CostCenter } from "@/components/settings/cost-center";
 import { EmailSettings } from "@/components/settings/email-settings";
 import { IntegrationsPanel } from "@/components/settings/integrations-panel";
 import { SettingsSection } from "@/components/settings/settings-section";
@@ -52,7 +51,6 @@ export default function SettingsPage() {
             <TabsTrigger value="email">Email</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
-            <TabsTrigger value="usage">Usage</TabsTrigger>
           </TabsList>
 
           <TabsContent value="email" className="space-y-8">
@@ -74,9 +72,9 @@ export default function SettingsPage() {
             </SettingsSection>
           </TabsContent>
 
-          <TabsContent value="usage">
-            <CostCenter />
-          </TabsContent>
+          {/* Usage/cost reporting is intentionally not user-facing: the
+              CostCenter component and /api/settings/costs stay in the tree
+              for a future admin-only view. */}
         </Tabs>
       </div>
     </div>

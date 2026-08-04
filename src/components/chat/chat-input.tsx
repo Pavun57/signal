@@ -18,6 +18,12 @@ interface ChatInputProps {
   disabled?: boolean;
 }
 
+/**
+ * Auto-grow ceiling (~6 lines of text-sm). One constant so the CSS max
+ * and the JS measurement can't drift apart; past this the textarea scrolls.
+ */
+const MAX_INPUT_HEIGHT = 160;
+
 export function ChatInput({
   input,
   isLoading,
@@ -106,7 +112,8 @@ export function ChatInput({
           <Textarea
             ref={textareaRef}
             placeholder="Ask Signal anything..."
-            className="max-h-[72px] min-h-[44px] resize-none overflow-y-auto text-sm transition-[height] duration-100"
+            className="min-h-[44px] resize-none overflow-y-auto text-sm transition-[height] duration-100"
+            style={{ maxHeight: MAX_INPUT_HEIGHT }}
             rows={1}
             value={input}
             disabled={disabled}
@@ -115,7 +122,7 @@ export function ChatInput({
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement;
               target.style.height = "auto";
-              target.style.height = `${Math.min(target.scrollHeight, 72)}px`;
+              target.style.height = `${Math.min(target.scrollHeight, MAX_INPUT_HEIGHT)}px`;
             }}
           />
           {isLoading ? (
