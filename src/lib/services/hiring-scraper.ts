@@ -4,6 +4,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { MODELS } from "@/lib/ai/models";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
 import {
   UNTRUSTED_NOTICE,
   stringify,
@@ -167,15 +168,15 @@ async function findCareersPage(cleanDomain: string): Promise<{
   for (const path of COMMON_CAREERS_PATHS) {
     const probeUrl = `https://${cleanDomain}${path}`;
     try {
-      const res = await fetchWithTimeout(
+      const res = await safeFetch(
         probeUrl,
         { headers: BROWSER_HEADERS },
-        PROBE_TIMEOUT_MS,
+        { timeoutMs: PROBE_TIMEOUT_MS },
       );
       if (res.ok) {
         return {
           careersUrl: res.url || probeUrl,
-          careersHtml: await res.text().catch(() => null),
+          careersHtml: await readBodyCapped(res).catch(() => null),
           homepageHtml: null,
         };
       }
@@ -187,12 +188,12 @@ async function findCareersPage(cleanDomain: string): Promise<{
   // No path hit: fetch the homepage and look for a careers link.
   let homepageHtml: string | null = null;
   try {
-    const res = await fetchWithTimeout(
+    const res = await safeFetch(
       `https://${cleanDomain}`,
       { headers: BROWSER_HEADERS },
-      PAGE_FETCH_TIMEOUT_MS,
+      { timeoutMs: PAGE_FETCH_TIMEOUT_MS },
     );
-    if (res.ok) homepageHtml = await res.text();
+    if (res.ok) homepageHtml = await readBodyCapped(res);
   } catch {
     homepageHtml = null;
   }
@@ -201,15 +202,17 @@ async function findCareersPage(cleanDomain: string): Promise<{
     const link = findCareersLink(homepageHtml, `https://${cleanDomain}`);
     if (link) {
       try {
-        const res = await fetchWithTimeout(
+        // `link` came out of the HTML of a page we just fetched, so the
+        // remote host chose it. It gets the same vetting as any other URL.
+        const res = await safeFetch(
           link,
           { headers: BROWSER_HEADERS },
-          PAGE_FETCH_TIMEOUT_MS,
+          { timeoutMs: PAGE_FETCH_TIMEOUT_MS },
         );
         if (res.ok) {
           return {
             careersUrl: res.url || link,
-            careersHtml: await res.text().catch(() => null),
+            careersHtml: await readBodyCapped(res).catch(() => null),
             homepageHtml,
           };
         }

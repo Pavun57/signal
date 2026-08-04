@@ -1,3 +1,4 @@
+import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
@@ -114,16 +115,14 @@ const TEAM_KEYWORDS = [
  */
 async function fetchSitemapUrls(domain: string): Promise<string[]> {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(`https://${domain}/sitemap.xml`, {
-      signal: controller.signal,
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    clearTimeout(timeoutId);
+    const response = await safeFetch(
+      `https://${domain}/sitemap.xml`,
+      { headers: { "User-Agent": "Mozilla/5.0" } },
+      { timeoutMs: 5000 },
+    );
 
     if (!response.ok) return [];
-    const xml = await response.text();
+    const xml = await readBodyCapped(response);
     const urls: string[] = [];
     const locRegex = /<loc>(.*?)<\/loc>/g;
     let match;

@@ -32,6 +32,14 @@ vi.mock("@/lib/fetch-with-timeout", () => ({
     throw new Error("no fetch in test");
   }),
 }));
+vi.mock("@/lib/safe-fetch", () => ({
+  // The direct-fetch tier now goes through safeFetch, which would otherwise
+  // resolve DNS and hit the network -- and hang under fake timers.
+  safeFetch: vi.fn(async () => {
+    throw new Error("no fetch in test");
+  }),
+  readBodyCapped: vi.fn(async () => ""),
+}));
 
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 

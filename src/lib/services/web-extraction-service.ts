@@ -3,6 +3,7 @@ import { chromium } from "playwright-core";
 import Browserbase from "@browserbasehq/sdk";
 import { PRICING, trackUsage } from "@/lib/services/cost-tracker";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
+import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
 import { withTimeout } from "@/lib/utils/timeout";
 
 /** Waiting longer than this means we're queued behind the plan's session cap. */
@@ -55,21 +56,24 @@ export class WebExtractionService {
     try {
       console.log(`[WebExtract] Fetching: ${url}`);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9",
+      // This URL is never ours. It arrives from CSV import, from the agent,
+      // from an Exa result, or from a link on a page we just scraped, and the
+      // body comes back in an API response and is stored in enrichment_data.
+      // safeFetch vets the scheme and every resolved address, revalidates each
+      // redirect hop, and keeps its deadline armed through the body read.
+      const response = await safeFetch(
+        url,
+        {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Accept:
+              "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
         },
-      });
-
-      clearTimeout(timeoutId);
+        { timeoutMs: timeout },
+      );
 
       if (!response.ok) {
         // Definitive HTTP errors: no point cascading to Browserbase
@@ -90,7 +94,7 @@ export class WebExtractionService {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const html = await response.text();
+      const html = await readBodyCapped(response);
       const result = this.parseHtml(html, url, {
         includeMetadata,
         includeLinks,

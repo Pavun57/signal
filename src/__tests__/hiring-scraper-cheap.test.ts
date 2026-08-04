@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchWithTimeoutMock = vi.fn();
+// The page fetches moved to safeFetch (scheme/address vetting, revalidated
+// redirects, capped body); the ATS JSON call still uses fetchWithTimeout.
+// Both route through the same mock so routeFetches keeps describing the whole
+// transport surface.
+vi.mock("@/lib/safe-fetch", () => ({
+  safeFetch: (...args: unknown[]) => fetchWithTimeoutMock(...args),
+  readBodyCapped: (r: { text: () => Promise<string> }) => r.text(),
+}));
 vi.mock("@/lib/fetch-with-timeout", () => ({
   fetchWithTimeout: (...args: unknown[]) => fetchWithTimeoutMock(...args),
 }));
