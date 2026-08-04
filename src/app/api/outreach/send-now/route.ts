@@ -80,9 +80,18 @@ export async function POST(request: Request) {
     );
   }
 
+  // sendApprovedDraft resolves the draft to send from the *enrollment*, not
+  // from body.draftId, and this runs on the admin client. enrollment_id is an
+  // attacker-settable column on a row they own -- email_drafts_insert only
+  // asserts user_id -- and sequence_enrollments carries no user_id of its own,
+  // so ownership has to be read through the sequence. Without this join a
+  // crafted draft pointing at someone else's enrollment sends their approved
+  // email, from their mailbox, against their daily cap.
   const { data: enrollment } = await supabase
     .from("sequence_enrollments")
-    .select("id, sequence_id, person_id, campaign_people_id, current_step")
+    .select(
+      "id, sequence_id, person_id, campaign_people_id, current_step, sequence:sequences!inner(user_id)",
+    )
     .eq("id", draft.enrollment_id)
     .single();
 
@@ -91,6 +100,13 @@ export async function POST(request: Request) {
       { ok: false, blocker: "no_enrollment", error: "Enrollment not found" },
       { status: 404 },
     );
+  }
+
+  const enrollmentOwner = (
+    enrollment.sequence as unknown as { user_id?: string } | null
+  )?.user_id;
+  if (!enrollmentOwner || enrollmentOwner !== user.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // sendApprovedDraft resolves the draft from the enrollment's current step,
