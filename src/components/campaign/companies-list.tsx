@@ -690,105 +690,80 @@ export function CompaniesList({
                         isRefreshing={enrichingCompanyIds.has(company.id)}
                       />
 
-                      {companyContacts.length === 0 ? (
-                        <div className="border-border border-t px-4 py-6 text-center">
-                          <p className="text-muted-foreground text-sm">
-                            No leads found for this company yet.
-                          </p>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="mt-2"
-                            aria-label={`Find contacts for ${company.name}`}
-                            onClick={() => findContactsHandler(company.id)}
-                            disabled={findingContactsIds.has(company.id)}
-                          >
-                            {findingContactsIds.has(company.id) ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <UserSearch className="h-3.5 w-3.5" />
-                            )}
-                            {findingContactsIds.has(company.id)
-                              ? "Searching..."
-                              : "Find leads"}
-                          </Button>
-                        </div>
-                      ) : (
-                        <>
-                          {(() => {
-                            // A company with no organization id has no chart to
-                            // show, so it stays on the list whatever is stored.
-                            const chartMode =
-                              chartModeCompanyIds.has(company.id) &&
-                              !!company.organization_id;
-                            return (
-                              <div className="border-border flex items-center justify-end gap-1.5 border-t px-4 py-2">
-                                <span className="text-muted-foreground mr-1 text-xs">
-                                  View:
-                                </span>
-                                <TogglePill
-                                  active={chartMode}
-                                  onClick={() =>
-                                    setCompanyView(company.id, "chart")
-                                  }
-                                  disabled={!company.organization_id}
-                                  title={
-                                    company.organization_id
-                                      ? "Org chart"
-                                      : "Chart unavailable: company has no organization id"
-                                  }
-                                >
-                                  Org chart
-                                </TogglePill>
-                                <TogglePill
-                                  active={!chartMode}
-                                  onClick={() =>
-                                    setCompanyView(company.id, "table")
-                                  }
-                                >
-                                  List
-                                </TogglePill>
-                              </div>
-                            );
-                          })()}
+                      <>
+                        {(() => {
+                          // A company with no organization id has no chart to
+                          // show, so it stays on the list whatever is stored.
+                          const chartMode =
+                            chartModeCompanyIds.has(company.id) &&
+                            !!company.organization_id;
+                          return (
+                            <div className="border-border flex items-center justify-end gap-1.5 border-t px-4 py-2">
+                              <span className="text-muted-foreground mr-1 text-xs">
+                                View:
+                              </span>
+                              <TogglePill
+                                active={chartMode}
+                                onClick={() =>
+                                  setCompanyView(company.id, "chart")
+                                }
+                                disabled={!company.organization_id}
+                                title={
+                                  company.organization_id
+                                    ? "Org chart"
+                                    : "Chart unavailable: company has no organization id"
+                                }
+                              >
+                                Org chart
+                              </TogglePill>
+                              <TogglePill
+                                active={!chartMode}
+                                onClick={() =>
+                                  setCompanyView(company.id, "table")
+                                }
+                              >
+                                List
+                              </TogglePill>
+                            </div>
+                          );
+                        })()}
 
-                          {chartModeCompanyIds.has(company.id) &&
-                          company.organization_id ? (
-                            <EmbeddedOrgChart
-                              organizationId={company.organization_id}
-                              campaignId={campaignId}
-                              contacts={companyContacts}
-                              onEnrich={enrichContact}
-                              onDataChanged={onDataChanged}
-                            />
-                          ) : (
-                            <ContactsTable
-                              contacts={companyContacts}
-                              expandedContactIds={expandedContactIds}
-                              highlightedIds={highlightedIds}
-                              enrichingIds={enrichingIds}
-                              findingEmailIds={findingEmailIds}
-                              onToggle={toggleContact}
-                              onEnrich={enrichContact}
-                              onFindEmail={findEmailForContact}
-                              onEmailEdit={updateContactEmail}
-                              columnSpan={7}
-                              showOutreach
-                              review={
-                                company.organization_id
-                                  ? {
-                                      organizationId: company.organization_id,
-                                      pendingIds: reviewPendingIds,
-                                      confirmedIds: confirmedContactIds,
-                                      onConfirm: confirmAffiliation,
-                                      onNotHere: detachContact,
-                                    }
-                                  : undefined
-                              }
-                            />
-                          )}
-                        </>
-                      )}
+                        {chartModeCompanyIds.has(company.id) &&
+                        company.organization_id ? (
+                          <EmbeddedOrgChart
+                            organizationId={company.organization_id}
+                            campaignId={campaignId}
+                            contacts={companyContacts}
+                            onEnrich={enrichContact}
+                            onDataChanged={onDataChanged}
+                          />
+                        ) : (
+                          <ContactsTable
+                            contacts={companyContacts}
+                            expandedContactIds={expandedContactIds}
+                            highlightedIds={highlightedIds}
+                            enrichingIds={enrichingIds}
+                            findingEmailIds={findingEmailIds}
+                            onToggle={toggleContact}
+                            onEnrich={enrichContact}
+                            onFindEmail={findEmailForContact}
+                            onEmailEdit={updateContactEmail}
+                            columnSpan={7}
+                            showOutreach
+                            review={
+                              company.organization_id
+                                ? {
+                                    organizationId: company.organization_id,
+                                    pendingIds: reviewPendingIds,
+                                    confirmedIds: confirmedContactIds,
+                                    onConfirm: confirmAffiliation,
+                                    onNotHere: detachContact,
+                                  }
+                                : undefined
+                            }
+                          />
+                        )}
+                      </>
                     </div>
                   )}
                 </div>
