@@ -84,7 +84,11 @@ export async function extractClaims(
               .string()
               .nullable()
               .describe("Date of the underlying fact if the source states one"),
-            confidence: z.number().min(0).max(1),
+            // No .min/.max here: Zod range checks compile to JSON Schema
+            // minimum/maximum, which Anthropic structured outputs reject
+            // with a 400 for number types. Range lives in prose; the value
+            // is clamped after parsing.
+            confidence: z.number().describe("Confidence in the claim, 0 to 1"),
           }),
         ),
       }),
@@ -126,7 +130,7 @@ ${wrapUntrusted(sourceBlocks.join("\n\n"))}`,
         statement: c.statement,
         sourceUrl: sources[c.sourceIndex].url,
         publishedDate: c.publishedDate ?? sources[c.sourceIndex].publishedDate,
-        confidence: c.confidence,
+        confidence: Math.min(1, Math.max(0, c.confidence)),
         extractedAt,
         status: "unverified" as const,
       }));

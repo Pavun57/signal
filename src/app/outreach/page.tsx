@@ -73,7 +73,7 @@ export default function OutreachPage() {
           `
             id, sequence_id, person_id, campaign_people_id,
             current_step, status, next_send_at,
-            people(name, title, organization_id, organizations(name)),
+            people(name, title, organization_id, organizations!organization_id(name)),
             campaign_people(outreach_status),
             sequences(name)
           `,
@@ -89,7 +89,7 @@ export default function OutreachPage() {
             sequence_enrollments(next_send_at, sequence_id),
             sequence_steps(step_number),
             sequences(name),
-            people(name, title, organizations(name))
+            people(name, title, organizations!organization_id(name))
           `,
         )
         .in("status", ["draft"])

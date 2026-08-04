@@ -87,6 +87,13 @@ interface SelectSpec {
     alias: string;
     table: string;
     inner: boolean;
+    /**
+     * FK-column disambiguation hint (`alias:table!column(...)`), used when
+     * two FKs link the same pair of tables. The fake checks it against the
+     * registered relation's localKey so a hint naming the wrong column fails
+     * here the same way PostgREST would fail it in production.
+     */
+    hint: string | null;
     spec: SelectSpec;
   }>;
   /** The original string, quoted back in error messages. */
@@ -94,7 +101,7 @@ interface SelectSpec {
 }
 
 const EMBED =
-  /^([a-z_][a-z0-9_]*)\s*:\s*([a-z_][a-z0-9_]*)(![a-z]+)?\s*\(([\s\S]*)\)$/i;
+  /^([a-z_][a-z0-9_]*)\s*:\s*([a-z_][a-z0-9_]*)(![a-z0-9_]+)?\s*\(([\s\S]*)\)$/i;
 const PLAIN_COLUMN = /^[a-z_][a-z0-9_]*$/i;
 
 /**
@@ -161,15 +168,11 @@ export function parseSelect(source: string): SelectSpec {
     const embed = EMBED.exec(part);
     if (embed) {
       const [, alias, table, modifier, inner] = embed;
-      if (modifier && modifier !== "!inner") {
-        throw new Error(
-          `[supabase fake] select("${source}") uses the "${modifier}" hint, which this fake does not implement. Implement it here rather than working around it in the test.`,
-        );
-      }
       spec.embeds.push({
         alias,
         table,
         inner: modifier === "!inner",
+        hint: modifier && modifier !== "!inner" ? modifier.slice(1) : null,
         spec: parseSelect(inner),
       });
       continue;
@@ -261,6 +264,11 @@ export function createSupabaseFake(
       if (!relation) {
         throw new Error(
           `[supabase fake] select("${spec.source}") embeds "${embed.alias}" on "${table}", but no relation is registered for it. Declare it in the fake's \`relations\` so the join is modelled rather than guessed.`,
+        );
+      }
+      if (embed.hint && embed.hint !== relation.localKey) {
+        throw new Error(
+          `[supabase fake] select("${spec.source}") hints "${embed.alias}" through "${embed.hint}", but the registered relation joins via "${relation.localKey}". Either the hint names the wrong FK column or the relation registration is stale.`,
         );
       }
       const foreignKey = relation.foreignKey ?? "id";

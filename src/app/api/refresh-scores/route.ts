@@ -57,7 +57,7 @@ export async function POST(request: Request) {
     const { data: links, error: linksError } = await supabase
       .from("campaign_people")
       .select(
-        "id, person_id, person:people(id, name, title, linkedin_url, twitter_url, enrichment_data, enrichment_status, organization:organizations(name, domain, industry, enrichment_data))",
+        "id, person_id, person:people(id, name, title, linkedin_url, twitter_url, enrichment_data, enrichment_status, organization:organizations!organization_id(name, domain, industry, enrichment_data))",
       )
       .eq("campaign_id", campaignId);
 
