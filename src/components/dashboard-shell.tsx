@@ -13,6 +13,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { CampaignProvider, useCampaign } from "@/lib/campaign-context";
+import { VoiceRunProvider } from "@/lib/voice-run-context";
 
 function HeaderAgentButton() {
   const { activeCampaignId, agentOpen, setAgentOpen } = useCampaign();
@@ -56,32 +57,37 @@ export function DashboardShell({
 }) {
   return (
     <CampaignProvider>
-      <SidebarProvider>
-        <AppSidebar />
-        <SidebarInset className="max-h-dvh overflow-hidden">
-          {banner}
-          <header className="bg-background/50 sticky top-0 z-50 flex h-12 shrink-0 items-center gap-2 border-b px-4 backdrop-blur-md lg:px-6">
-            <div className="flex w-full items-center justify-between">
-              <div className="flex items-center gap-1 lg:gap-2">
-                <SidebarTrigger className="-ml-1" />
-                <Separator
-                  orientation="vertical"
-                  className="mx-2 data-[orientation=vertical]:h-4"
-                />
+      {/* Inside CampaignProvider (it drives the panel via openAgentWith) and
+          outside the content/panel split, so the deck and the agent panel see
+          the same run. */}
+      <VoiceRunProvider>
+        <SidebarProvider>
+          <AppSidebar />
+          <SidebarInset className="max-h-dvh overflow-hidden">
+            {banner}
+            <header className="bg-background/50 sticky top-0 z-50 flex h-12 shrink-0 items-center gap-2 border-b px-4 backdrop-blur-md lg:px-6">
+              <div className="flex w-full items-center justify-between">
+                <div className="flex items-center gap-1 lg:gap-2">
+                  <SidebarTrigger className="-ml-1" />
+                  <Separator
+                    orientation="vertical"
+                    className="mx-2 data-[orientation=vertical]:h-4"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <HeaderAgentButton />
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <HeaderAgentButton />
+            </header>
+            <div className="relative flex min-h-0 flex-1">
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                {children}
               </div>
+              <AgentPanel />
             </div>
-          </header>
-          <div className="relative flex min-h-0 flex-1">
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              {children}
-            </div>
-            <AgentPanel />
-          </div>
-        </SidebarInset>
-      </SidebarProvider>
+          </SidebarInset>
+        </SidebarProvider>
+      </VoiceRunProvider>
     </CampaignProvider>
   );
 }

@@ -1,13 +1,13 @@
 /**
  * Voice capture by swiping, rather than by interview.
  *
- * The existing wizard at /email-skills asks questions and offers A/B pairs
- * whose only permitted answers are "Prefers option A/B" or "no strong feeling"
- * — see interview-move.tsx. That format can't express "the opener is right but
- * the close is wrong", and a pick between two of the agent's own drafts says
- * little about how the user would have written it themselves.
+ * The interview this replaced asked questions and offered A/B pairs whose
+ * only permitted answers were "Prefers option A/B" or "no strong feeling".
+ * That format couldn't express "the opener is right but the close is wrong",
+ * and a pick between two of the agent's own drafts says little about how the
+ * user would have written it themselves.
  *
- * This module holds the pure logic for the alternative: judge a stream of
+ * This module holds the pure logic for the replacement: judge a stream of
  * varied drafts, and derive the rules from what actually gets kept.
  *
  * Everything here is deliberately free of React and of any network call, so
