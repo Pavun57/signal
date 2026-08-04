@@ -71,7 +71,7 @@ function getSuggestions(pathname: string, campaignId: string | null): string[] {
     ];
   }
 
-  if (pathname === "/profile") {
+  if (pathname.startsWith("/profile")) {
     return [
       "Update my profile with my company details",
       "Create a new profile for a different offering",
@@ -117,7 +117,8 @@ function pageContextFromPath(
     return "Signals library (browse, toggle, create signals)";
   if (pathname === "/tracking")
     return "Tracking page (monitored companies and signal history)";
-  if (pathname === "/profile") return "Profiles page (user seller profiles)";
+  if (pathname.startsWith("/profile"))
+    return "Profiles page (user seller profiles)";
   if (pathname === "/outreach")
     return "Outreach dashboard (sequences, signal queue, kanban pipeline)";
   if (pathname.startsWith("/outreach/review"))
