@@ -14,6 +14,22 @@ import {
 } from "@/lib/services/chat-history";
 import { createClient } from "@/lib/supabase/client";
 
+/** How many chats show before the list collapses behind "Show all". */
+const VISIBLE_CHATS = 8;
+
+/**
+ * Chat titles come from the first message and often carry raw markdown
+ * ("# Heading", "**bold**", backticks). Strip the syntax for the list.
+ */
+function cleanTitle(title: string): string {
+  return title
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\*\*([^*]*)\*\*/g, "$1")
+    .replace(/\*([^*]*)\*/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .trim();
+}
+
 function timeAgo(dateStr: string): string {
   const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (seconds < 60) return "just now";
@@ -29,6 +45,7 @@ export default function ChatPage() {
   const router = useRouter();
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showAll, setShowAll] = useState(false);
   const [input, setInput] = useState("");
   const mountedRef = useRef(true);
 
@@ -90,7 +107,7 @@ export default function ChatPage() {
               <h3 className="text-muted-foreground mb-3 text-xs font-medium uppercase tracking-wide">
                 Recent chats
               </h3>
-              {chats.map((chat) => (
+              {(showAll ? chats : chats.slice(0, VISIBLE_CHATS)).map((chat) => (
                 <div
                   key={chat.id}
                   className="hover:bg-muted/50 group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors"
@@ -101,7 +118,7 @@ export default function ChatPage() {
                   >
                     <MessageCircle className="text-muted-foreground h-4 w-4 shrink-0" />
                     <span className="min-w-0 flex-1 truncate text-sm">
-                      {chat.title}
+                      {cleanTitle(chat.title)}
                     </span>
                     <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
                       {timeAgo(chat.updated_at)}
@@ -110,7 +127,7 @@ export default function ChatPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={`Delete chat "${chat.title}"`}
+                    aria-label={`Delete chat "${cleanTitle(chat.title)}"`}
                     className="text-muted-foreground hover:text-destructive h-7 w-7 shrink-0 opacity-60 transition-opacity hover:opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
                     onClick={(e) => {
                       e.preventDefault();
@@ -127,6 +144,16 @@ export default function ChatPage() {
                   </Button>
                 </div>
               ))}
+              {chats.length > VISIBLE_CHATS && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground w-full"
+                  onClick={() => setShowAll((prev) => !prev)}
+                >
+                  {showAll ? "Show less" : `Show all (${chats.length})`}
+                </Button>
+              )}
             </div>
           )}
         </div>

@@ -7,7 +7,15 @@ import type { UIMessage } from "ai";
 import { isToolUIPart, getToolName } from "ai";
 import { Bot, User } from "lucide-react";
 
-import { ToolCallCard } from "./tool-call-card";
+import {
+  INLINE_TOOLS,
+  ToolCallCard,
+  ToolCallGroup,
+  type ToolCallCardProps,
+} from "./tool-call-card";
+
+/** Runs of at least this many same-tool calls collapse into one group row. */
+const MIN_RUN_TO_COLLAPSE = 3;
 
 const Markdown = dynamic(
   () => import("@/components/ui/markdown").then((m) => m.Markdown),
@@ -85,44 +93,93 @@ export const ChatMessageBubble = memo(
           <Bot className="text-muted-foreground h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          {parts.map((part, i) => {
-            if (isToolUIPart(part)) {
-              return (
-                <ToolCallCard
-                  key={part.toolCallId}
-                  toolName={getToolName(part)}
-                  state={part.state}
-                  input={"input" in part ? part.input : undefined}
-                  output={"output" in part ? part.output : undefined}
-                  errorText={
-                    "errorText" in part ? (part.errorText as string) : undefined
+          {(() => {
+            const toCardProps = (
+              part: Extract<(typeof parts)[number], { toolCallId: string }>,
+            ): ToolCallCardProps & { toolCallId: string } => ({
+              toolCallId: part.toolCallId,
+              toolName: getToolName(part),
+              state: part.state,
+              input: "input" in part ? part.input : undefined,
+              output: "output" in part ? part.output : undefined,
+              errorText:
+                "errorText" in part ? (part.errorText as string) : undefined,
+              liveViewUrl: liveViewByToolCall.get(part.toolCallId),
+            });
+
+            const rendered: React.ReactNode[] = [];
+            let i = 0;
+            while (i < parts.length) {
+              const part = parts[i];
+
+              if (isToolUIPart(part) && !INLINE_TOOLS.has(getToolName(part))) {
+                // Collect the run of consecutive same-tool calls. step-start
+                // markers between agent steps are invisible in the transcript,
+                // so a run may continue across them.
+                const name = getToolName(part);
+                const run = [part];
+                let j = i + 1;
+                while (j < parts.length) {
+                  const next = parts[j];
+                  if (next.type === "step-start") {
+                    j++;
+                    continue;
                   }
-                  liveViewUrl={liveViewByToolCall.get(part.toolCallId)}
-                />
-              );
+                  if (isToolUIPart(next) && getToolName(next) === name) {
+                    run.push(next);
+                    j++;
+                    continue;
+                  }
+                  break;
+                }
+
+                if (run.length >= MIN_RUN_TO_COLLAPSE) {
+                  rendered.push(
+                    <ToolCallGroup
+                      key={part.toolCallId}
+                      calls={run.map(toCardProps)}
+                    />,
+                  );
+                  i = j;
+                  continue;
+                }
+
+                const { toolCallId, ...cardProps } = toCardProps(part);
+                rendered.push(<ToolCallCard key={toolCallId} {...cardProps} />);
+                i++;
+                continue;
+              }
+
+              if (isToolUIPart(part)) {
+                const { toolCallId, ...cardProps } = toCardProps(part);
+                rendered.push(<ToolCallCard key={toolCallId} {...cardProps} />);
+                i++;
+                continue;
+              }
+
+              if (part.type === "text" && part.text) {
+                const isLastText = i === lastTextIndex;
+                const isActivelyStreaming = isStreaming && isLastText;
+
+                rendered.push(
+                  <div
+                    key={`text-${i}`}
+                    className="bg-muted/60 my-1 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm"
+                  >
+                    {isActivelyStreaming ? (
+                      <StreamingMarkdown text={part.text} />
+                    ) : (
+                      <Markdown>{part.text}</Markdown>
+                    )}
+                  </div>,
+                );
+              }
+
+              // Other part types (step-start, reasoning, etc.) render nothing.
+              i++;
             }
-
-            if (part.type === "text" && part.text) {
-              const isLastText = i === lastTextIndex;
-              const isActivelyStreaming = isStreaming && isLastText;
-
-              return (
-                <div
-                  key={`text-${i}`}
-                  className="bg-muted/60 my-1 rounded-2xl rounded-bl-md px-4 py-2.5 text-sm"
-                >
-                  {isActivelyStreaming ? (
-                    <StreamingMarkdown text={part.text} />
-                  ) : (
-                    <Markdown>{part.text}</Markdown>
-                  )}
-                </div>
-              );
-            }
-
-            // Skip other part types (step-start, reasoning, etc.)
-            return null;
-          })}
+            return rendered;
+          })()}
         </div>
       </div>
     );
