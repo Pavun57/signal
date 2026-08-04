@@ -6,6 +6,8 @@ import { ExaService } from "@/lib/services/exa-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
 import {
   claimAndSendDraft,
+  advanceEnrollmentForDraft,
+  draftIsCurrentStep,
   type DraftForSend,
 } from "@/lib/services/outreach-sender";
 import { resolveSenderConfig } from "@/lib/services/email-transport";
@@ -921,6 +923,14 @@ export const sendEmail = tool({
       };
     }
 
+    // Drafts exist for every step of a sequence from enrollment onwards, so
+    // "approved and unsent" does not mean "due". Sending step 3 now would
+    // deliver the breakup email before the follow-up it refers to.
+    const stepCheck = await draftIsCurrentStep(supabase, draft);
+    if (!stepCheck.current) {
+      return { error: stepCheck.reason };
+    }
+
     const sender = await resolveSenderConfig(supabase, draft.user_id);
     if ("error" in sender) {
       return { error: sender.error };
@@ -935,6 +945,9 @@ export const sendEmail = tool({
     if (!result.ok) {
       return { error: `Failed to send email: ${result.reason}` };
     }
+
+    // Without this the enrollment stays pinned to the step just sent.
+    await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
 
     return {
       emailId: result.messageId,
@@ -1063,10 +1076,6 @@ export const sendBulkEmails = tool({
     if (!firstDraft) {
       return { error: "No sendable drafts found." };
     }
-    const sender = await resolveSenderConfig(supabase, firstDraft.user_id);
-    if ("error" in sender) {
-      return { error: sender.error };
-    }
 
     const results: Array<{ draftId: string; status: string; error?: string }> =
       [];
@@ -1074,12 +1083,36 @@ export const sendBulkEmails = tool({
     // Sequential on purpose: keeps Gmail SMTP happy, and each send claims its
     // draft atomically so a concurrent cron can't double-send any of them.
     for (const draft of drafts ?? []) {
+      // Later steps of a sequence are approved long before they are due.
+      const stepCheck = await draftIsCurrentStep(supabase, draft);
+      if (!stepCheck.current) {
+        results.push({
+          draftId: draft.id,
+          status: "scheduled",
+          error: stepCheck.reason,
+        });
+        continue;
+      }
+
+      // Re-resolved per draft rather than once up front: the pause switch has
+      // to bite mid-batch, which is exactly when someone reaches for it.
+      const sender = await resolveSenderConfig(supabase, draft.user_id);
+      if ("error" in sender) {
+        results.push({
+          draftId: draft.id,
+          status: "failed",
+          error: sender.error,
+        });
+        continue;
+      }
+
       const result = await claimAndSendDraft(
         supabase,
         draft as DraftForSend,
         sender,
       );
       if (result.ok) {
+        await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
         results.push({ draftId: draft.id, status: "sent" });
       } else if (result.reason.includes("claimed")) {
         results.push({
@@ -1098,11 +1131,13 @@ export const sendBulkEmails = tool({
 
     const sent = results.filter((r) => r.status === "sent").length;
     const failed = results.filter((r) => r.status === "failed").length;
+    const scheduled = results.filter((r) => r.status === "scheduled").length;
     const skippedHeld = awaitingReview + rejected;
 
     return {
       sent,
       failed,
+      scheduled,
       awaitingReview,
       rejected,
       total: inScope.length,
@@ -1110,6 +1145,9 @@ export const sendBulkEmails = tool({
       summary:
         `Sent ${sent} of ${approvedIds.length} approved drafts.` +
         (failed > 0 ? ` ${failed} failed.` : "") +
+        (scheduled > 0
+          ? ` ${scheduled} belong to a later step of their sequence and will send when that step comes due.`
+          : "") +
         (skippedHeld > 0
           ? ` ${awaitingReview} held for review and ${rejected} rejected, not sent.`
           : ""),
