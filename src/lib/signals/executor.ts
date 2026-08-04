@@ -7,6 +7,11 @@ import { getRecipe } from "./recipes";
 import type { Signal } from "@/lib/types/signal";
 import type { SignalOutput, RecipeContext } from "./types";
 
+/** The shape zod's safeParse returns, without importing zod's generics here. */
+type SafeParseResult =
+  | { success: true; data: unknown; error?: undefined }
+  | { success: false; data?: undefined; error?: { message: string } };
+
 export interface ExecuteSignalContext {
   organizationId?: string;
   domain?: string;
@@ -190,8 +195,33 @@ async function executeToolCall(
     };
   }
 
+  // `tool.execute` is the raw implementation: calling it directly skips the
+  // AI SDK's inputSchema, which is the only thing validating these arguments.
+  // `signal.config` is a user-writable jsonb column that is spread wholesale
+  // into `args`, so every constraint the tool declares -- extractWebContent's
+  // url(), scrapeJobListings' uuid() and max(50) -- was being bypassed. This
+  // path also runs under the admin client in the cron, with its output stored
+  // in signal_results. Parse first; a signal with bad config is a bad signal,
+  // not a licence to call a tool with anything.
+  let validated: unknown = args;
+  if (tool.inputSchema && "parse" in tool.inputSchema) {
+    const parsed = (
+      tool.inputSchema as { safeParse?: (v: unknown) => SafeParseResult }
+    ).safeParse?.(args);
+    if (parsed && !parsed.success) {
+      return {
+        found: false,
+        summary: `Signal "${signal.slug}" has invalid config for ${toolKey}: ${parsed.error?.message ?? "does not match the tool's inputs"}`,
+        evidence: [],
+        data: {},
+        confidence: "low",
+      };
+    }
+    if (parsed?.success) validated = parsed.data;
+  }
+
   try {
-    const result = await tool.execute(args, {
+    const result = await tool.execute(validated, {
       toolCallId: `signal-${signal.id}`,
       messages: [],
     });

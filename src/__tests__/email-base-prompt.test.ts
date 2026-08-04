@@ -4,6 +4,7 @@ import {
   EMAIL_SKILL_SYSTEM_PROMPT,
   buildEmailSystemPrompt,
 } from "@/lib/email-composition/skill";
+import { UNTRUSTED_NOTICE } from "@/lib/prompt-safety";
 import type { VoiceProfile } from "@/lib/types/email-voice";
 
 // The base prompt IS the product for cold-email quality — a careless edit
@@ -80,8 +81,12 @@ describe("EMAIL_SKILL_SYSTEM_PROMPT length targets", () => {
 // ─── buildEmailSystemPrompt layering ──────────────────────────────────────
 
 describe("buildEmailSystemPrompt", () => {
-  it("returns the base prompt alone when the user has no voice profile", () => {
-    expect(buildEmailSystemPrompt(null)).toBe(EMAIL_SKILL_SYSTEM_PROMPT);
+  it("returns the base prompt plus the untrusted-content notice when the user has no voice profile", () => {
+    const prompt = buildEmailSystemPrompt(null);
+    expect(prompt).toContain(EMAIL_SKILL_SYSTEM_PROMPT);
+    // The composer reads enrichment_data built from scraped pages and its
+    // output is the body that gets sent, so the notice belongs on every call.
+    expect(prompt).toContain(UNTRUSTED_NOTICE);
   });
 
   it("adds no voice section when the user has no voice profile", () => {
