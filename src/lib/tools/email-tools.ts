@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { createClient, getSupabaseAndUser } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 import { callerHoldsPerson, toolSession } from "@/lib/tools/ownership";
 import { ExaService } from "@/lib/services/exa-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
@@ -931,7 +932,16 @@ export const sendEmail = tool({
       return { error: stepCheck.reason };
     }
 
-    const sender = await resolveSenderConfig(supabase, draft.user_id);
+    // The credential read has to go through the admin client.
+    //
+    // gmail_app_password_enc is not selectable by the `authenticated` role --
+    // only server code needs the ciphertext, so the browser's grant was
+    // removed rather than left to RLS. Handing resolveSenderConfig this
+    // request's RLS-scoped client makes PostgREST refuse the whole select with
+    // "permission denied for table user_settings", which reads here as an
+    // unconfigured mailbox: every agent-initiated send would refuse with
+    // "Email is not configured" while the cron path kept working.
+    const sender = await resolveSenderConfig(getAdminClient(), draft.user_id);
     if ("error" in sender) {
       return { error: sender.error };
     }
@@ -1096,7 +1106,8 @@ export const sendBulkEmails = tool({
 
       // Re-resolved per draft rather than once up front: the pause switch has
       // to bite mid-batch, which is exactly when someone reaches for it.
-      const sender = await resolveSenderConfig(supabase, draft.user_id);
+      // Admin client for the same reason as sendEmail above.
+      const sender = await resolveSenderConfig(getAdminClient(), draft.user_id);
       if ("error" in sender) {
         results.push({
           draftId: draft.id,

@@ -6,11 +6,20 @@ import { sendGmailMessage } from "@/lib/services/gmail-service";
 const h = vi.hoisted(() => ({
   createClient: vi.fn(),
   getSupabaseAndUser: vi.fn(),
+  // getAdminClient is synchronous, unlike createClient, so it needs its own
+  // handle rather than reusing the resolved one.
+  adminClient: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: h.createClient,
   getSupabaseAndUser: h.getSupabaseAndUser,
+}));
+// The send tools resolve the sender through the admin client, because
+// gmail_app_password_enc is not readable by the `authenticated` role. Same
+// fake, so the ordered responses below still describe the whole conversation.
+vi.mock("@/lib/supabase/admin", () => ({
+  getAdminClient: () => h.adminClient(),
 }));
 vi.mock("@/lib/services/gmail-service", async (importOriginal) => {
   const actual =
@@ -104,6 +113,7 @@ beforeEach(() => {
   process.env.EMAIL_CREDENTIALS_KEY = Buffer.alloc(32, 7).toString("base64");
   sendGmailMock.mockReset();
   h.createClient.mockReset();
+  h.adminClient.mockReset();
 });
 
 afterEach(() => {
@@ -130,6 +140,7 @@ describe("sendEmail review gating", () => {
   ) {
     const fake = fakeSupabase(responses);
     h.createClient.mockResolvedValue(fake.client);
+    h.adminClient.mockReturnValue(fake.client);
     return fake;
   }
 
@@ -244,6 +255,7 @@ describe("sendBulkEmails review gating", () => {
       {}, // campaign_people → sent
     ]);
     h.createClient.mockResolvedValue(fake.client);
+    h.adminClient.mockReturnValue(fake.client);
     sendGmailMock.mockResolvedValue({ messageId: "<m1@sahnan.co>" });
 
     const result = (await sendBulkEmails.execute!(
@@ -280,6 +292,7 @@ describe("sendBulkEmails review gating", () => {
       },
     ]);
     h.createClient.mockResolvedValue(fake.client);
+    h.adminClient.mockReturnValue(fake.client);
 
     const result = (await sendBulkEmails.execute!(
       { campaignId: "camp_1" },
