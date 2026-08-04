@@ -10,6 +10,7 @@ import {
 } from "ai";
 
 import { MODELS } from "@/lib/ai/models";
+import { VoiceRunBodySchema } from "@/lib/email-skills/swipe-service";
 import { getProfileForPrompt } from "@/lib/profile";
 import { getActiveSignals } from "@/lib/signals";
 import {
@@ -109,6 +110,22 @@ export async function POST(request: Request) {
   };
   const persistChatId =
     typeof chatId === "string" && UUID_RE.test(chatId) ? chatId : null;
+
+  // The active email-voice run, when the deck has one. Fully validated and
+  // bounded before any tool sees it: the transcript is client-controlled text
+  // that ends up inside an Opus prompt on the operator's key. Invalid or
+  // over-long payloads drop to null rather than failing the chat, because a
+  // broken run must not take the whole agent down with it.
+  let voiceRun = null;
+  if (body.voiceRun) {
+    const parsedRun = VoiceRunBodySchema.safeParse(body.voiceRun);
+    if (
+      parsedRun.success &&
+      JSON.stringify(parsedRun.data.transcript).length <= 120_000
+    ) {
+      voiceRun = parsedRun.data;
+    }
+  }
   const modelMessages = trimMessages(await convertToModelMessages(uiMessages));
 
   // Mark the last message with ephemeral cache_control so everything before
@@ -187,6 +204,9 @@ export async function POST(request: Request) {
           // Batch tools (enrichCompanies/enrichContacts) check this before
           // starting a chunk they can't finish inside the turn budget.
           deadlineAt,
+          // The voice tools read the run from here; drafts go back to the
+          // deck through `writer` as transient data parts, never as text.
+          voiceRun,
         },
         onFinish({ usage, finishReason }) {
           // "tool-calls" as the FINAL finish reason means the model still
@@ -197,8 +217,7 @@ export async function POST(request: Request) {
             writer.write({
               type: "data-turn-paused",
               data: {
-                reason:
-                  Date.now() >= deadlineAt ? "time-budget" : "step-limit",
+                reason: Date.now() >= deadlineAt ? "time-budget" : "step-limit",
               },
               transient: true,
             });

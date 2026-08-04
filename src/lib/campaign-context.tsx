@@ -9,12 +9,22 @@ import {
   type ReactNode,
 } from "react";
 
+/**
+ * Nonce-keyed so that queueing the same text twice is two sends: the voice
+ * deck legitimately asks "write the next batch" many times in one session,
+ * and the panel keys its consume effect on the nonce rather than the string.
+ */
+export interface PendingPrompt {
+  nonce: number;
+  text: string;
+}
+
 interface CampaignContextValue {
   activeCampaignId: string | null;
   setActiveCampaignId: (id: string | null) => void;
   agentOpen: boolean;
   setAgentOpen: (open: boolean) => void;
-  pendingPrompt: string | null;
+  pendingPrompt: PendingPrompt | null;
   consumePendingPrompt: () => string | null;
   openAgentWith: (prefill?: string) => void;
 }
@@ -29,19 +39,26 @@ const CampaignContext = createContext<CampaignContextValue>({
   openAgentWith: () => {},
 });
 
+let promptNonce = 0;
+
 export function CampaignProvider({ children }: { children: ReactNode }) {
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
-  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(
+    null,
+  );
 
   const consumePendingPrompt = useCallback(() => {
     const value = pendingPrompt;
     if (value !== null) setPendingPrompt(null);
-    return value;
+    return value?.text ?? null;
   }, [pendingPrompt]);
 
   const openAgentWith = useCallback((prefill?: string) => {
-    if (prefill) setPendingPrompt(prefill);
+    if (prefill) {
+      promptNonce += 1;
+      setPendingPrompt({ nonce: promptNonce, text: prefill });
+    }
     setAgentOpen(true);
   }, []);
 

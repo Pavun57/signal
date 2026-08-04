@@ -12,7 +12,9 @@ import { ChatInput } from "@/components/chat/chat-input";
 import { ChatMessages } from "@/components/chat/chat-messages";
 import { createChatTransport } from "@/lib/chat-transport";
 import { useCampaign } from "@/lib/campaign-context";
+import { toTranscript } from "@/lib/email-skills/swipe-run";
 import { useStreaming } from "@/lib/streaming-context";
+import { useVoiceRun } from "@/lib/voice-run-context";
 import { saveChat } from "@/lib/services/chat-history";
 import { createClient } from "@/lib/supabase/client";
 
@@ -89,6 +91,15 @@ function getSuggestions(pathname: string, campaignId: string | null): string[] {
     ];
   }
 
+  if (pathname.startsWith("/email-skills")) {
+    return [
+      "What has my voice run picked up so far?",
+      "They're all too long",
+      "Never open with a compliment",
+      "Refine my email voice: be blunter",
+    ];
+  }
+
   if (pathname === "/" || pathname === "") {
     return [
       "Show me my campaign performance",
@@ -124,6 +135,8 @@ function pageContextFromPath(
   if (pathname.startsWith("/outreach/review"))
     return "Email review flow (approving/rejecting AI-drafted outreach emails)";
   if (pathname === "/settings") return "Settings page";
+  if (pathname.startsWith("/email-skills"))
+    return "Email voice page (the swipe deck: judging drafts to build the voice profile)";
   if (pathname === "/chat") return "Chat home (recent conversations)";
   if (pathname.startsWith("/chat/")) return "Inside a specific chat thread";
   if (pathname.startsWith("/campaigns/") && campaignId) {
@@ -151,9 +164,20 @@ function AgentPanelInner({
   const startWidth = useRef(0);
   const pathname = usePathname();
   const { register } = useStreaming();
-  const { consumePendingPrompt } = useCampaign();
+  const { consumePendingPrompt, pendingPrompt } = useCampaign();
+  const {
+    run: voiceRun,
+    ingest: ingestVoicePart,
+    notifyTurnDone: notifyVoiceTurnDone,
+  } = useVoiceRun();
+  // Mirrored into a ref so buildRequestOptions can read the latest run
+  // without changing identity on every swipe.
+  const voiceRunRef = useRef(voiceRun);
+  useEffect(() => {
+    voiceRunRef.current = voiceRun;
+  }, [voiceRun]);
   const { userId } = useAuth();
-  const didAutoSend = useRef(false);
+  const consumedNonceRef = useRef<number | null>(null);
 
   const transport = useMemo(() => createChatTransport(), []);
 
@@ -169,6 +193,11 @@ function AgentPanelInner({
     transport,
     onData(part) {
       if (part.type === "data-turn-paused") turnPausedRef.current = true;
+      // Voice drafts and saves ride the stream as transient parts; the run
+      // provider applies them so the deck updates while the agent talks.
+      if (part.type.startsWith("data-voice-")) {
+        ingestVoicePart(part as { type: string; data?: unknown });
+      }
     },
     onFinish({ messages: allMessages }) {
       if (userId) {
@@ -187,6 +216,9 @@ function AgentPanelInner({
           setContinueTick((tick) => tick + 1);
         }
       }
+      // After the turn settles: if the deck was waiting on drafts that never
+      // arrived, this turns the spinner into a retry instead of a hang.
+      notifyVoiceTurnDone();
     },
   });
 
@@ -203,6 +235,18 @@ function AgentPanelInner({
     // mid-stream and the client-side onFinish save never runs.
     const body: Record<string, unknown> = { pageContext, chatId };
     if (campaignId) body.campaignId = campaignId;
+    // The active voice run rides every message while it lasts, so the voice
+    // tools always judge the current transcript. Read through a ref: this
+    // callback must not change identity on every swipe.
+    const run = voiceRunRef.current;
+    if (run && !run.finished) {
+      body.voiceRun = {
+        campaignId: run.campaignId,
+        transcript: toTranscript(run),
+        recipientPersonId: run.recipientPersonId,
+        queued: Math.min(run.queue.length, 24),
+      };
+    }
     return { body };
   }, [campaignId, chatId, pathname]);
 
@@ -217,16 +261,21 @@ function AgentPanelInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [continueTick]);
 
-  // Auto-send any prompt that was queued via openAgentWith()
+  // Auto-send any prompt queued via openAgentWith(). Keyed on the nonce, not
+  // the text: the voice deck queues identical texts many times per run, and
+  // each one is a real send. The ref guards StrictMode's double-invoke.
   useEffect(() => {
-    if (didAutoSend.current) return;
+    if (!pendingPrompt || consumedNonceRef.current === pendingPrompt.nonce) {
+      return;
+    }
+    consumedNonceRef.current = pendingPrompt.nonce;
     const pending = consumePendingPrompt();
     if (pending) {
-      didAutoSend.current = true;
+      autoContinuesRef.current = 0;
       sendMessage({ text: pending }, buildRequestOptions());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pendingPrompt]);
 
   const handleSuggestionClick = (text: string) => {
     autoContinuesRef.current = 0;

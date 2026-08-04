@@ -280,7 +280,7 @@ export const draftEmailsForSequence = tool({
     "to loop through contacts or call writeEmail itself. Use writeEmail only " +
     "for ad-hoc single-draft flows outside a sequence. " +
     "If the campaign has no email voice yet this returns needsVoice instead of " +
-    "drafting; offer the user the interview or an explicit skip, then call " +
+    "drafting; offer the user the swipe run or an explicit skip, then call " +
     "again with voiceChoice.",
   inputSchema: z.object({
     sequenceId: z.string().uuid().describe("Sequence ID to draft emails for."),
@@ -382,7 +382,7 @@ export const draftEmailsForSequence = tool({
     );
 
     // Gate the first drafting run on a decision about this campaign's voice.
-    // A voice interviewed against this campaign's ICP writes about the right
+    // A voice built against this campaign's ICP writes about the right
     // signals in the user's own register; the alternative is copy that reads
     // as generic, which is the failure mode the base rules spend most of their
     // length trying to avoid. The user can still decline — but explicitly,
@@ -396,11 +396,11 @@ export const draftEmailsForSequence = tool({
         usingFallbackVoice: Boolean(voice),
         message:
           `"${campaign.name}" has no email voice yet. Ask the user whether to build one before drafting, and tell them why it matters: ` +
-          `the interview learns how they write and which signals to open on for this specific audience, so the drafts read as written by them rather than as generic outreach. ` +
+          `the swipe run learns how they write and which signals to open on for this specific audience, so the drafts read as written by them rather than as generic outreach. ` +
           (voice
             ? "If they skip, drafting will use their default voice, which was built for a different campaign and may reference the wrong kind of signal. "
             : "If they skip, drafting will use the base rules only, with no personal voice at all. ") +
-          `They can build it at /email-skills?campaign=${sequence.campaign_id} (about 8-14 questions). ` +
+          `They can build it at /email-skills?campaign=${sequence.campaign_id} (they judge a handful of drafts; a couple of minutes). ` +
           `Once they have decided, call this tool again with voiceChoice: "interviewed" or "skip".`,
       };
     }

@@ -73,6 +73,12 @@ import {
   draftEmailsForSequence,
   getSequenceStatus,
 } from "./sequence-tools";
+import {
+  startVoiceRun,
+  rewriteVoiceDrafts,
+  saveVoiceProfile,
+  refineEmailVoice,
+} from "./voice-tools";
 import { getPostHogClient } from "@/lib/posthog-server";
 
 const rawTools = {
@@ -137,6 +143,10 @@ const rawTools = {
   draftSequenceEmails,
   draftEmailsForSequence,
   getSequenceStatus,
+  startVoiceRun,
+  rewriteVoiceDrafts,
+  saveVoiceProfile,
+  refineEmailVoice,
 };
 
 type ToolCtx = { userId?: string; campaignId?: string | null };

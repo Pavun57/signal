@@ -1,0 +1,367 @@
+import { anthropic } from "@ai-sdk/anthropic";
+import { generateObject } from "ai";
+import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { MODELS } from "@/lib/ai/models";
+import { salvageObject } from "@/lib/ai/salvage-object";
+import {
+  BatchSchema,
+  MAX_INSTRUCTIONS_IN_PROMPT,
+  MAX_JUDGED_IN_PROMPT,
+  MAX_SAMPLES_IN_PROMPT,
+  SkillSchema,
+  buildBatchPrompt,
+  buildBatchSystem,
+  buildRefinementTranscript,
+  buildSkillPrompt,
+  buildSkillSystem,
+  normaliseInstructions,
+  recipientLabel,
+  type Draft,
+  type SavedVoice,
+  type SwipeCampaign,
+  type SwipePersona,
+  type SwipeTranscript,
+} from "@/lib/email-skills/swipe-prompts";
+import { resolveRecipient } from "@/lib/email-skills/swipe-recipient";
+import { getProfileForPrompt } from "@/lib/profile";
+import { llmTimeout } from "@/lib/utils/timeout";
+
+/**
+ * The server side of voice-by-swiping: generate the next batch of drafts, and
+ * write the finished (or refined) rule-set into email_voice_profiles.
+ *
+ * Called from the voice agent tools, which run inside the chat route. The
+ * instructions the user types are never parsed here. They ride in the
+ * transcript and are honoured by the model on the next generation, which is
+ * the only way an instruction like "make it warmer" can be satisfied at all.
+ */
+
+// Every string is bounded. The client controls the transcript and it is
+// stringified straight into an Opus prompt, so unbounded fields would let one
+// authenticated request push megabytes of attacker-chosen text through a
+// 1M-token context window on the operator's key.
+const AxesSchema = z.object({
+  opener: z.string().max(20),
+  tone: z.string().max(20),
+  close: z.string().max(20),
+  greeting: z.string().max(20),
+  signoff: z.string().max(20),
+});
+
+const JudgedSchema = z.object({
+  subject: z.string().max(300),
+  body: z.string().max(4_000),
+  axes: AxesSchema,
+  kept: z.boolean(),
+  notes: z
+    .array(
+      z.object({ phrase: z.string().max(400), note: z.string().max(1_000) }),
+    )
+    .max(20)
+    .optional(),
+});
+
+/**
+ * One pasted email. Matches the paste step's textarea cap, which is the number
+ * the user is actually held to on the way in.
+ */
+const MAX_SAMPLE_PASTE_CHARS = 20_000;
+
+export const TranscriptSchema = z.object({
+  judged: z.array(JudgedSchema).max(MAX_JUDGED_IN_PROMPT + 10),
+  instructions: z
+    .array(z.string().max(2_000))
+    .max(MAX_INSTRUCTIONS_IN_PROMPT + 10),
+  // Emails the user pasted before the first batch. Bounded like everything
+  // else: this is the one field the user fills by pasting, so it is where an
+  // accidental megabyte would arrive.
+  samples: z
+    .array(z.string().max(MAX_SAMPLE_PASTE_CHARS))
+    .max(MAX_SAMPLES_IN_PROMPT)
+    .optional(),
+  // `prior` is deliberately absent. It is built server-side from the saved row
+  // on a refinement; accepting it here would let a request assert that any
+  // rules it liked had already been accepted.
+});
+
+/** The chat body's voice-run envelope, validated before it reaches any tool. */
+export const VoiceRunBodySchema = z.object({
+  campaignId: z.string().uuid().nullish(),
+  transcript: TranscriptSchema,
+  // The person the run is written about, pinned by the client after the
+  // opening batch resolved them. An id, never the contact's details: the
+  // client may say *which* of its own contacts, and the server re-reads the
+  // facts. See resolveRecipient.
+  recipientPersonId: z.string().uuid().nullish(),
+  // How many drafts are still waiting on the deck, so a rewrite can replace
+  // exactly that many. A count, deliberately not the drafts themselves.
+  queued: z.number().int().min(0).max(24).optional(),
+});
+
+export type VoiceRunBody = z.infer<typeof VoiceRunBodySchema>;
+
+/**
+ * `prior` on a refinement carries a whole rule-set, so the instruction itself
+ * only ever needs to be a sentence.
+ */
+export const MAX_REFINE_INSTRUCTION_CHARS = 2_000;
+
+/** Ceiling on the serialised transcript, which is what actually reaches the model. */
+export const MAX_TRANSCRIPT_CHARS = 120_000;
+
+export type VoiceServiceResult<T> =
+  | ({ ok: true } & T)
+  | { ok: false; error: string };
+
+/**
+ * Campaign context and persona for the prompts. Each part is optional and
+ * independently absent-able: a user with no profile, no campaign, or a
+ * campaign with no enriched contacts still gets drafts, because being unable
+ * to write anything is a worse failure than writing something generic.
+ *
+ * RLS scopes campaigns to the signed-in user, so an id belonging to someone
+ * else resolves to nothing rather than to their data.
+ */
+async function loadPromptContext(
+  supabase: SupabaseClient,
+  campaignId: string | null,
+  opts: { withRecipient: boolean; recipientPersonId?: string | null },
+) {
+  const [campaignRes, profile, resolved] = await Promise.all([
+    campaignId
+      ? supabase
+          .from("campaigns")
+          .select("name, icp, offering, positioning")
+          .eq("id", campaignId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    // Same resolution the chat route uses, so a campaign with its own linked
+    // profile writes as that persona rather than as the most recent one.
+    getProfileForPrompt(campaignId ?? undefined),
+    opts.withRecipient
+      ? resolveRecipient(supabase, campaignId, opts.recipientPersonId ?? null)
+      : Promise.resolve(null),
+  ]);
+
+  const campaign = (campaignRes.data as SwipeCampaign | null) ?? null;
+  const persona: SwipePersona = {
+    sender: profile
+      ? {
+          name: profile.name,
+          roleTitle: profile.role_title,
+          companyName: profile.company_name,
+          offeringSummary: profile.offering_summary,
+        }
+      : null,
+    recipient: resolved?.recipient ?? null,
+  };
+  const recipient = resolved
+    ? { personId: resolved.personId, label: recipientLabel(resolved.recipient) }
+    : null;
+
+  return { campaign, persona, recipient };
+}
+
+export async function generateVoiceBatch(
+  supabase: SupabaseClient,
+  input: {
+    campaignId: string | null;
+    transcript: SwipeTranscript;
+    recipientPersonId: string | null;
+    count: number;
+  },
+): Promise<
+  VoiceServiceResult<{
+    drafts: Draft[];
+    recipient: { personId: string; label: string | null } | null;
+  }>
+> {
+  if (JSON.stringify(input.transcript).length > MAX_TRANSCRIPT_CHARS) {
+    return { ok: false, error: "Transcript too large" };
+  }
+
+  const { campaign, persona, recipient } = await loadPromptContext(
+    supabase,
+    input.campaignId,
+    { withRecipient: true, recipientPersonId: input.recipientPersonId },
+  );
+
+  try {
+    const { object } = await generateObject({
+      abortSignal: llmTimeout(),
+      model: anthropic(MODELS.EMAIL),
+      schema: BatchSchema,
+      system: buildBatchSystem(campaign, persona),
+      prompt: buildBatchPrompt(input.transcript, input.count),
+      providerOptions: {
+        anthropic: {
+          // Only the transcript changes between batches, so the rules and
+          // campaign context read from cache after the first call.
+          cacheControl: { type: "ephemeral" },
+          effort: "medium",
+        },
+      },
+      // generateWithRetry owns retrying elsewhere; leaving the SDK default of
+      // 2 would stack upstream requests under a 429 storm.
+      maxRetries: 0,
+      // Opus 5 thinks by default and maxOutputTokens caps thinking plus
+      // visible output together, so a budget sized for the text alone
+      // truncates and fails generateObject outright.
+      maxOutputTokens: 9_000,
+    });
+    return { ok: true, drafts: object.drafts, recipient };
+  } catch (err) {
+    const salvaged = salvageObject(err, BatchSchema);
+    if (salvaged) return { ok: true, drafts: salvaged.drafts, recipient };
+    return {
+      ok: false,
+      error:
+        err instanceof Error ? err.message : "Could not write the next drafts",
+    };
+  }
+}
+
+/**
+ * Turns a transcript into the saved rule-set. Shared by "finish the run" and
+ * "refine the saved voice": both write the same row from the same prompt, and
+ * differ only in where the transcript comes from.
+ */
+async function writeSkill(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    campaignId: string | null;
+    transcript: SwipeTranscript;
+  },
+): Promise<VoiceServiceResult<{ instructions: string; summary: string }>> {
+  const { campaign, persona } = await loadPromptContext(
+    supabase,
+    input.campaignId,
+    // A skill write draws no new drafts, so it needs no prospect to write
+    // them about, and the lookup is two queries deep.
+    { withRecipient: false },
+  );
+
+  let skill: { instructions: string; summary: string };
+  try {
+    const { object } = await generateObject({
+      abortSignal: llmTimeout(),
+      model: anthropic(MODELS.EMAIL),
+      schema: SkillSchema,
+      system: buildSkillSystem(campaign, persona),
+      prompt: buildSkillPrompt(input.transcript),
+      providerOptions: { anthropic: { effort: "medium" } },
+      maxRetries: 0,
+      maxOutputTokens: 5_000,
+    });
+    skill = object;
+  } catch (err) {
+    const salvaged = salvageObject(err, SkillSchema);
+    if (!salvaged) {
+      return {
+        ok: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : "Could not write the voice rules",
+      };
+    }
+    skill = salvaged;
+  }
+
+  const instructions = normaliseInstructions(skill.instructions);
+  if (!instructions) {
+    // Saving an empty rule-set would overwrite a good profile with nothing and
+    // leave the composer reporting a voice that does not exist.
+    return {
+      ok: false,
+      error: "No usable rules came back. Nothing was saved. Try again.",
+    };
+  }
+
+  // Same conflict target the interview used: campaign_key is a generated
+  // column collapsing a NULL campaign onto a sentinel uuid, so one unique
+  // constraint covers both scopes and rebuilding overwrites rather than adding.
+  const { error } = await supabase.from("email_voice_profiles").upsert(
+    {
+      user_id: input.userId,
+      campaign_id: input.campaignId,
+      instructions,
+      summary: skill.summary,
+      source_transcript: input.transcript,
+    },
+    { onConflict: "user_id,campaign_key" },
+  );
+  if (error) {
+    // The caller treats a returned skill as saved; returning one after a
+    // failed write would claim a profile exists when it does not.
+    return { ok: false, error: error.message };
+  }
+
+  return { ok: true, instructions, summary: skill.summary };
+}
+
+export async function completeVoiceRun(
+  supabase: SupabaseClient,
+  input: {
+    userId: string;
+    campaignId: string | null;
+    transcript: SwipeTranscript;
+  },
+): Promise<VoiceServiceResult<{ instructions: string; summary: string }>> {
+  if (JSON.stringify(input.transcript).length > MAX_TRANSCRIPT_CHARS) {
+    return { ok: false, error: "Transcript too large" };
+  }
+  return writeSkill(supabase, input);
+}
+
+/**
+ * "What should be different?" for a voice that already exists, without swiping
+ * again. The saved rules and the run behind them are replayed server-side, so
+ * a sentence narrows the voice rather than replacing it with whatever one
+ * sentence implies. The client never supplies `prior`, or a request could
+ * claim any rules it liked had already been accepted.
+ */
+export async function refineVoiceProfile(
+  supabase: SupabaseClient,
+  input: { userId: string; campaignId: string | null; instruction: string },
+): Promise<VoiceServiceResult<{ instructions: string; summary: string }>> {
+  const saved = supabase
+    .from("email_voice_profiles")
+    .select("instructions, summary, source_transcript");
+  // RLS scopes the table to the signed-in user, so scope is the only filter
+  // needed. `.is` rather than `.eq`, because the default voice's campaign_id
+  // is NULL and `eq(null)` matches nothing.
+  const { data } = await (
+    input.campaignId
+      ? saved.eq("campaign_id", input.campaignId)
+      : saved.is("campaign_id", null)
+  ).maybeSingle();
+
+  const existing = data as SavedVoice | null;
+  if (!existing?.instructions?.trim()) {
+    return {
+      ok: false,
+      error: "There is no saved voice in this scope to refine.",
+    };
+  }
+
+  let transcript = buildRefinementTranscript(
+    existing,
+    input.instruction.slice(0, MAX_REFINE_INSTRUCTION_CHARS),
+  );
+  if (JSON.stringify(transcript).length > MAX_TRANSCRIPT_CHARS) {
+    // The replayed drafts are history and the change request is the point, so
+    // an over-long run drops its drafts rather than refusing a refinement the
+    // user has no way to make smaller.
+    transcript = { ...transcript, judged: [] };
+  }
+
+  return writeSkill(supabase, {
+    userId: input.userId,
+    campaignId: input.campaignId,
+    transcript,
+  });
+}

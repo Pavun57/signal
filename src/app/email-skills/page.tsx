@@ -2,21 +2,17 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Check, Loader2, Mic } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { AlertTriangle, Check, Loader2, Layers } from "lucide-react";
 
 import { SafeLink } from "@/components/safe-link";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { VoiceProfileView } from "@/components/email-skills/voice-profile-view";
-import {
-  VoiceWizard,
-  buildRefinementTranscript,
-  clearSavedInterview,
-  readSavedInterview,
-} from "@/components/email-skills/voice-wizard";
+import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
+import { useCampaign } from "@/lib/campaign-context";
+import { useVoiceRun } from "@/lib/voice-run-context";
 import { createClient } from "@/lib/supabase/client";
-import type { InterviewTurn, VoiceProfile } from "@/lib/types/email-voice";
+import type { VoiceProfile } from "@/lib/types/email-voice";
 
 interface CampaignRow {
   id: string;
@@ -26,35 +22,39 @@ interface CampaignRow {
 /**
  * The list view's shape. `source_transcript` is deliberately absent: it holds
  * cold emails the user pasted, which are third-party correspondence, and
- * nothing on this page renders it. A refinement fetches the one row it needs.
+ * nothing on this page renders it.
  */
 type VoiceSummary = Omit<VoiceProfile, "source_transcript">;
 
 /**
  * Voice is per campaign, because which signal to open on and which credibility
- * framing lands differ by audience — a voice interviewed against a dev-tools
+ * framing lands differ by audience — a voice built against a dev-tools
  * campaign tells the composer to reference release cadence, which is nonsense
  * for a beauty brand. A user-level default covers campaigns without their own.
  *
  * `?campaign=<id>` selects the scope. Without it the page shows the default plus
  * a row per campaign so the state of each is visible in one place.
+ *
+ * Building a voice happens on the swipe deck: the agent writes drafts, the
+ * user keeps or passes them, and the agent panel beside the deck carries the
+ * conversation. Refining an existing voice goes through the agent too.
  */
 function EmailVoiceScope() {
-  const { userId, isLoaded } = useAuth();
   const searchParams = useSearchParams();
   const campaignId = searchParams.get("campaign");
+  const { openAgentWith } = useCampaign();
+  const { run, savedTick, discardRun } = useVoiceRun();
 
   const [profiles, setProfiles] = useState<VoiceSummary[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** Non-null means the interview is on screen; the value seeds the wizard. */
-  const [interview, setInterview] = useState<InterviewTurn[] | null>(null);
+  /** The deck is on screen, judging drafts for this scope. */
+  const [running, setRunning] = useState(false);
+  /** A refinement was handed to the agent; cleared when a save lands. */
+  const [refineSent, setRefineSent] = useState(false);
 
   const mountedRef = useRef(true);
-  /** Which scope has already been restored — not a boolean, or a soft
-   * navigation into a campaign never looks for that campaign's transcript. */
-  const restoredScopeRef = useRef<string | null | undefined>(undefined);
 
   const fetchAll = useCallback(async () => {
     const supabase = createClient();
@@ -85,82 +85,40 @@ function EmailVoiceScope() {
     };
   }, [fetchAll]);
 
+  // A save landed (run finished, or a refinement applied): the rules on this
+  // page are stale the moment that happens.
+  const lastTickRef = useRef(savedTick);
   useEffect(() => {
-    // Restore an interview interrupted by a reload. Keyed per user and scope,
-    // so there is nothing to look up until Clerk tells us who this is — and a
-    // campaign's interview must not resurrect on the default's page.
-    if (!userId || restoredScopeRef.current === campaignId) return;
-    restoredScopeRef.current = campaignId;
-    const saved = readSavedInterview(userId, campaignId);
-    setInterview(saved ?? null);
-  }, [userId, campaignId]);
+    if (savedTick === lastTickRef.current) return;
+    lastTickRef.current = savedTick;
+    setRefineSent(false);
+    void fetchAll();
+  }, [savedTick, fetchAll]);
 
-  /**
-   * Both accepting and exiting have to refetch. The interview route saves the
-   * profile the moment it returns a `complete` move, so the row already exists
-   * by the time the review screen appears — without a refetch, closing it drops
-   * back to stale state that reads as lost work.
-   */
-  const startRefinement = async (
-    profile: VoiceSummary,
-    instruction: string,
-  ) => {
-    const { data } = await createClient()
-      .from("email_voice_profiles")
-      .select("source_transcript")
-      .eq("id", profile.id)
-      .maybeSingle();
-
-    setInterview(
-      buildRefinementTranscript(
-        {
-          ...profile,
-          source_transcript:
-            (data as Pick<VoiceProfile, "source_transcript"> | null)
-              ?.source_transcript ?? null,
-        },
-        instruction,
-      ),
-    );
-  };
-
-  const closeInterview = () => {
-    setInterview(null);
-    setLoading(true);
-    fetchAll();
-  };
+  // A run for this scope survived a reload mid-swipe: put the deck back on
+  // screen rather than showing an empty state over a half-finished run.
+  useEffect(() => {
+    if (
+      run &&
+      !run.finished &&
+      (run.campaignId ?? null) === (campaignId ?? null)
+    ) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRunning(true);
+    }
+  }, [run, campaignId]);
 
   const scoped = profiles.find((p) => (p.campaign_id ?? null) === campaignId);
   const campaign = campaigns.find((c) => c.id === campaignId);
   const scopeLabel = campaignId ? (campaign?.name ?? "this campaign") : null;
 
-  if (loading || !isLoaded) {
+  if (loading) {
     return (
       <PageShell scopeLabel={scopeLabel}>
         <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           Loading...
         </p>
-      </PageShell>
-    );
-  }
-
-  if (interview && userId) {
-    return (
-      <PageShell scopeLabel={scopeLabel}>
-        <VoiceWizard
-          // Keyed on scope so switching campaigns (a soft navigation, which
-          // re-renders rather than remounting) rebuilds the wizard instead of
-          // carrying one campaign's transcript into another scope and saving it
-          // there. The transcript survives in sessionStorage under its own key,
-          // so the remount resumes the correct interview rather than losing work.
-          key={campaignId ?? "user"}
-          userId={userId}
-          campaignId={campaignId}
-          initialTranscript={interview}
-          onExit={closeInterview}
-          onAccepted={closeInterview}
-        />
       </PageShell>
     );
   }
@@ -194,27 +152,61 @@ function EmailVoiceScope() {
     );
   }
 
+  if (running) {
+    return (
+      <PageShell scopeLabel={scopeLabel} wide>
+        <VoiceSwipe
+          campaignId={campaignId}
+          onDone={() => {
+            setRunning(false);
+            setLoading(true);
+            void fetchAll();
+          }}
+        />
+      </PageShell>
+    );
+  }
+
   return (
     <PageShell scopeLabel={scopeLabel}>
       {scoped ? (
         <VoiceProfileView
+          // Remounted when the rules change, which closes the refine box and
+          // clears the instruction that has now been applied.
+          key={scoped.updated_at}
           profile={scoped}
+          busy={refineSent}
+          copy={{
+            refineNote: refineSent
+              ? "Sent. The agent is rewriting the rules; they update here when it finishes."
+              : "The agent rewrites the rules from this and everything it already knows. No swiping.",
+            rebuildDescription:
+              "This starts a new swipe run from nothing. The current rules are replaced as soon as the new voice is written, and cannot be recovered. To make a smaller change, use Refine instead.",
+            rebuildConfirmLabel: "Start a new run",
+          }}
           onRefine={(instruction) => {
-            void startRefinement(scoped, instruction);
+            setRefineSent(true);
+            openAgentWith(
+              campaignId
+                ? `Refine my email voice for campaign ${campaignId}: ${instruction}`
+                : `Refine my default email voice: ${instruction}`,
+            );
           }}
           onRebuild={() => {
-            // Start from an empty transcript: rebuild means the agent asks
-            // again from scratch rather than replaying the old answers.
-            if (userId) clearSavedInterview(userId, campaignId);
-            setInterview([]);
+            // From nothing: a finished run left in storage would resurrect
+            // its result screen instead of starting the deck fresh.
+            discardRun(campaignId);
+            setRunning(true);
           }}
         />
       ) : (
         <BuildPrompt
           scopeLabel={scopeLabel}
-          disabled={!userId}
           hasDefault={profiles.some((p) => !p.campaign_id)}
-          onStart={() => setInterview([])}
+          onStart={() => {
+            discardRun(campaignId);
+            setRunning(true);
+          }}
         />
       )}
 
@@ -229,31 +221,29 @@ function EmailVoiceScope() {
 
 function BuildPrompt({
   scopeLabel,
-  disabled,
   hasDefault,
   onStart,
 }: {
   scopeLabel: string | null;
-  disabled: boolean;
   hasDefault: boolean;
   onStart: () => void;
 }) {
   return (
     <div className="border-border bg-card overflow-hidden rounded-xl border">
       <EmptyState
-        icon={Mic}
+        icon={Layers}
         title={
           scopeLabel ? `No voice for ${scopeLabel} yet` : "No default voice yet"
         }
         description={
           scopeLabel
             ? hasDefault
-              ? "This campaign will use your default voice, which was interviewed against a different audience, so it may reach for the wrong kind of signal."
+              ? "This campaign will use your default voice, which was built against a different audience, so it may reach for the wrong kind of signal."
               : "Until you build one, the agent writes to generic best-practice rules: correct, and identical to everybody else's."
             : "The fallback for any campaign without its own voice. Until you build one, those campaigns write to generic best-practice rules."
         }
         action={
-          <Button size="lg" disabled={disabled} onClick={onStart}>
+          <Button size="lg" onClick={onStart}>
             {scopeLabel
               ? `Build the voice for ${scopeLabel}`
               : "Build my default voice"}
@@ -268,39 +258,41 @@ function BuildPrompt({
         <ol className="text-muted-foreground marker:text-muted-foreground mt-3 list-decimal space-y-2 pl-5 text-sm">
           <li>
             <span className="text-foreground font-medium">
-              The agent interviews you.
+              Paste something you have sent, if you have it.
             </span>{" "}
-            Short questions about how you actually write, not a form to fill in.
+            Your own writing beats any amount of reacting to ours. Skipping is
+            fine too.
           </li>
           <li>
             <span className="text-foreground font-medium">
-              You react to real emails.
+              You judge real drafts.
             </span>{" "}
-            It drafts pairs{" "}
+            The agent writes emails{" "}
             {scopeLabel
               ? `about ${scopeLabel}'s offer`
-              : "against a live campaign"}{" "}
-            that differ in exactly one thing, and you pick the one that sounds
-            like you. What people choose is a better signal than what they say
-            about their style.
+              : "against a live campaign"}
+            , deliberately different from each other, and you keep the ones that
+            sound like you. What people choose is a better signal than what they
+            say about their style.
           </li>
           <li>
             <span className="text-foreground font-medium">
-              You review the result.
+              It converges on your voice.
             </span>{" "}
-            The agent writes the rules; you read them and accept, or say what
-            should change.
+            Once you&apos;re keeping four of every five, the agent writes the
+            rules from what you kept and saves them. Every future cold email
+            goes through them.
           </li>
         </ol>
         <p className="text-muted-foreground mt-3 text-xs">
-          Usually 8 to 14 questions, and a reload does not lose your place.
+          Usually a couple of minutes, and a reload does not lose your place.
         </p>
       </div>
     </div>
   );
 }
 
-/** Which campaigns have their own voice, and a way into each one's interview. */
+/** Which campaigns have their own voice, and a way into each one's deck. */
 function CampaignVoiceList({
   campaigns,
   profiles,
@@ -317,8 +309,8 @@ function CampaignVoiceList({
       <div className="border-border border-b px-5 py-4 md:px-6">
         <h2 className="type-large text-foreground">Per-campaign voices</h2>
         <p className="text-muted-foreground text-sm">
-          Each campaign can have its own, interviewed against that audience.
-          Campaigns without one fall back to your default.
+          Each campaign can have its own, built against that audience. Campaigns
+          without one fall back to your default.
         </p>
       </div>
       <ul>
@@ -359,27 +351,32 @@ function CampaignVoiceList({
   );
 }
 
-/**
- * Wider than /settings on purpose: the two comparison emails have to sit side
- * by side at a measure you can actually read.
- */
 function PageShell({
   scopeLabel,
+  wide = false,
   children,
 }: {
   scopeLabel: string | null;
+  /** The deck wants room for a full email card; the list views do not. */
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
+      <div
+        className={
+          wide
+            ? "mx-auto max-w-5xl space-y-6 p-4 md:p-6"
+            : "mx-auto max-w-4xl space-y-6 p-4 md:p-6"
+        }
+      >
         <div>
           <h1 className="type-title">
             {scopeLabel ? `Email voice: ${scopeLabel}` : "Email voice"}
           </h1>
           <p className="text-muted-foreground text-sm">
             {scopeLabel
-              ? "How this campaign's cold emails sound. Written by the agent after it interviews you about this audience."
+              ? "How this campaign's cold emails sound. The agent writes drafts about this audience; you keep the ones that sound like you."
               : "How your cold emails sound. Each campaign can have its own voice; this default covers the rest."}
           </p>
           {scopeLabel && (
