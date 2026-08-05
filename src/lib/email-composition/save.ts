@@ -110,3 +110,25 @@ export async function saveDraft(
     subject: draft.subject,
   };
 }
+
+/**
+ * Flip a signal-drafted email straight to approved, skipping the review
+ * queue. ONLY callable from the signal outreach path, and only when the
+ * tracking config opted in (auto_send) AND the intent verdict was
+ * high-confidence. Guarded on pending so it can never resurrect a
+ * rejected draft. Every other writer of 'approved' is a human click in
+ * /outreach/review — keep it that way.
+ */
+export async function autoApproveDraft(
+  supabase: SupabaseClient,
+  draftId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("email_drafts")
+    .update({ review_status: "approved" })
+    .eq("id", draftId)
+    .eq("review_status", "pending")
+    .select("id")
+    .maybeSingle();
+  return !error && !!data;
+}

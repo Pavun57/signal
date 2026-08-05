@@ -12,6 +12,8 @@ export interface TrackingConfig {
   signal_id: string;
   schedule: Schedule;
   intent: string;
+  /** Opt-in: high-confidence fires skip the review queue and send. */
+  auto_send: boolean;
   status: TrackingStatus;
   last_run_at: string | null;
   next_run_at: string | null;

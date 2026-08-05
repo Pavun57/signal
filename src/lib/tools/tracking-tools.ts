@@ -55,6 +55,12 @@ export const createTracking = tool({
       .describe(
         "Plain-English description of what changes should flag the company/person as ready to contact. Each run, an LLM compares fresh diffs against this intent to decide whether to fire outreach. Example: 'Flag as ready when they post 2+ senior engineering or DevOps roles, or announce a Series B or later.'",
       ),
+    autoSend: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
   }),
   execute: async (input) => {
     if (!input.organizationId && !input.personId) {
@@ -75,6 +81,7 @@ export const createTracking = tool({
         signal_id: input.signalId,
         schedule: input.schedule,
         intent: input.intent,
+        auto_send: input.autoSend,
         status: "active",
         next_run_at: new Date(Date.now() + interval).toISOString(),
       })
@@ -134,6 +141,12 @@ export const bulkCreateTracking = tool({
       .describe(
         "Plain-English description of what changes should flag a company as ready to contact. Applied to every tracked organization.",
       ),
+    autoSend: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
     status: z
       .enum(["qualified", "discovered", "all"])
       .default("qualified")
@@ -189,6 +202,7 @@ export const bulkCreateTracking = tool({
         signal_id: input.signalId,
         schedule: input.schedule,
         intent: input.intent,
+        auto_send: input.autoSend,
         status: "active",
         next_run_at: nextRun,
       }));
@@ -364,6 +378,12 @@ export const updateTracking = tool({
       .describe(
         "New plain-English intent describing what changes should fire outreach",
       ),
+    autoSend: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
     status: z
       .enum(["active", "paused", "completed"])
       .optional()
@@ -388,6 +408,9 @@ export const updateTracking = tool({
         );
       }
       updates.intent = input.intent;
+    }
+    if (input.autoSend !== undefined) {
+      updates.auto_send = input.autoSend;
     }
     if (input.status) {
       updates.status = input.status;

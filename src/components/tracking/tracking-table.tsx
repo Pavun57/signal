@@ -25,6 +25,7 @@ export interface TrackingRow {
   schedule: string;
   status: string;
   intent: string | null;
+  autoSend: boolean;
   lastRunAt: string | null;
   nextRunAt: string | null;
   readinessTag: ReadinessTag | null;
@@ -123,7 +124,17 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
         <td className="px-3 py-2.5 text-sm font-medium">
           {row.organizationName}
         </td>
-        <td className="px-3 py-2.5 text-sm">{row.signalName}</td>
+        <td className="px-3 py-2.5 text-sm">
+          {row.signalName}
+          {row.autoSend && (
+            <span
+              className="text-muted-foreground ml-1.5 rounded border px-1 py-0.5 text-[10px]"
+              title="High-confidence fires send without review"
+            >
+              auto-send
+            </span>
+          )}
+        </td>
         <td className="text-muted-foreground px-3 py-2.5 text-sm capitalize">
           {row.schedule}
           {localStatus === "paused" ? " (paused)" : ""}

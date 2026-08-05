@@ -308,6 +308,12 @@ export async function runTrackingConfig(trackingConfigId: string) {
         .eq("campaign_id", config.campaign_id)
         .eq(entityField, entityId);
 
+      // Auto-send only when the config explicitly opted in AND the intent
+      // verdict is high-confidence — both required, everything else stays
+      // in the human review queue.
+      const autoSend =
+        Boolean(typedConfig.auto_send) && verdict.confidence === "high";
+
       // Enqueue the outreach job; /api/jobs/* auth guards the outbox path.
       // Fire-and-forget: don't block the tracking run on the dispatch.
       void enqueueJob({
@@ -319,6 +325,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
           organizationId: config.organization_id ?? undefined,
           reason: verdict.reason,
           confidence: verdict.confidence,
+          autoSend,
         },
         // Queue fairness: attribute the outreach job to the campaign owner
         // instead of the shared '<system>' partition.
