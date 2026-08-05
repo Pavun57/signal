@@ -1,7 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Pause, Play } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Pause,
+  Play,
+  RefreshCw,
+} from "lucide-react";
 import { toast } from "sonner";
 import { ReadinessBadge } from "./readiness-badge";
 import { TrackingTimeline } from "./tracking-timeline";
@@ -49,6 +55,7 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
   const [changes, setChanges] = useState<TrackingChange[]>([]);
   const [loadingChanges, setLoadingChanges] = useState(false);
   const [localStatus, setLocalStatus] = useState(row.status);
+  const [running, setRunning] = useState(false);
 
   const toggleExpand = async () => {
     if (!expanded && changes.length === 0) {
@@ -82,6 +89,21 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
       toast.success(
         newStatus === "paused" ? "Tracking paused" : "Tracking resumed",
       );
+    }
+  };
+
+  const runNow = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRunning(true);
+    const res = await fetch(`/api/tracking/${row.id}/run`, { method: "POST" });
+    setRunning(false);
+    if (res.ok) {
+      toast.success("Check queued: results land within a minute or two");
+    } else {
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      toast.error(body?.error ?? "Failed to queue check");
     }
   };
 
@@ -126,20 +148,33 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
           <ReadinessBadge tag={row.readinessTag} />
         </td>
         <td className="px-3 py-2.5">
-          <button
-            type="button"
-            onClick={togglePause}
-            className="text-muted-foreground hover:text-foreground p-1 transition-colors"
-            title={
-              localStatus === "active" ? "Pause tracking" : "Resume tracking"
-            }
-          >
-            {localStatus === "active" ? (
-              <Pause className="size-3.5" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-          </button>
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={runNow}
+              disabled={running || localStatus !== "active"}
+              className="text-muted-foreground hover:text-foreground p-1 transition-colors disabled:opacity-40"
+              title="Run this check now"
+            >
+              <RefreshCw
+                className={`size-3.5 ${running ? "animate-spin" : ""}`}
+              />
+            </button>
+            <button
+              type="button"
+              onClick={togglePause}
+              className="text-muted-foreground hover:text-foreground p-1 transition-colors"
+              title={
+                localStatus === "active" ? "Pause tracking" : "Resume tracking"
+              }
+            >
+              {localStatus === "active" ? (
+                <Pause className="size-3.5" />
+              ) : (
+                <Play className="size-3.5" />
+              )}
+            </button>
+          </div>
         </td>
       </tr>
       {expanded && (
@@ -345,7 +380,7 @@ export function TrackingTable({
             <th className="px-3 py-2 text-xs font-medium">Last Check</th>
             <th className="px-3 py-2 text-xs font-medium">Changes</th>
             <th className="px-3 py-2 text-xs font-medium">Status</th>
-            <th className="w-10 px-3 py-2" />
+            <th className="w-16 px-3 py-2" />
           </tr>
         </thead>
         <tbody>
