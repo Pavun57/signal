@@ -14,7 +14,6 @@ const baseInput = {
     name: "Jay",
     title: "Founder",
     company: "Signal",
-    signature: null,
     offeringSummary: "AI sales agent",
     notes: "prefers plain speech",
   },
@@ -34,6 +33,28 @@ describe("buildEmailSystemPrompt with a fact bank", () => {
   it("is byte-identical to today when there is no bank", () => {
     expect(buildEmailSystemPrompt(null, null)).toBe(
       buildEmailSystemPrompt(null),
+    );
+  });
+
+  it("holds the identity with a voice profile present too", () => {
+    const voice = {
+      id: "v1",
+      user_id: "u1",
+      campaign_id: null,
+      instructions: "Open on the signal, no greeting line.",
+      summary: null,
+      source_transcript: null,
+      created_at: "",
+      updated_at: "",
+    };
+    expect(buildEmailSystemPrompt(voice, null)).toBe(
+      buildEmailSystemPrompt(voice),
+    );
+    const withBank = buildEmailSystemPrompt(voice, bank);
+    expect(withBank).toContain("Open on the signal");
+    // The bank lands after the voice block, never inside or before it.
+    expect(withBank.indexOf("SENDER FACT BANK")).toBeGreaterThan(
+      withBank.indexOf("Open on the signal"),
     );
   });
 });

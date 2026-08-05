@@ -55,6 +55,11 @@ const JudgedSchema = z.object({
   body: z.string().max(4_000),
   axes: AxesSchema,
   kept: z.boolean(),
+  // Which invented persona the draft addressed. Without this the wire schema
+  // strips the label the deck stamped on, the transcript loses its "(to ...)"
+  // attribution, and the batch prompt's never-reuse-a-persona rule has nothing
+  // to check against. Bounded like every other client-controlled string here.
+  personaLabel: z.string().max(200).optional(),
   notes: z
     .array(
       z.object({ phrase: z.string().max(400), note: z.string().max(1_000) }),
@@ -203,7 +208,9 @@ export async function generateVoiceBatch(
       // Opus 5 thinks by default and maxOutputTokens caps thinking plus
       // visible output together, so a budget sized for the text alone
       // truncates and fails generateObject outright.
-      maxOutputTokens: 9_000,
+      // Sized for 8 drafts plus the invented persona object, with thinking
+      // headroom on top (Opus 5 thinks by default and this cap covers both).
+      maxOutputTokens: 10_000,
     });
     return {
       ok: true,

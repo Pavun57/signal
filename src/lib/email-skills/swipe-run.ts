@@ -42,8 +42,6 @@ export interface VoiceRun {
   /** Typed instructions, in order. Appended before generating, so a failed
    * generation still records what was asked. */
   instructions: string[];
-  /** The current batch's invented persona, updated on every ingest. */
-  personaLabel: string | null;
   finished: boolean;
   /** The rules the model wrote, once saving succeeded. */
   skill: { instructions: string; summary: string } | null;
@@ -56,7 +54,6 @@ export function newRun(campaignId: string | null, samples: string[]): VoiceRun {
     queue: [],
     judged: [],
     instructions: [],
-    personaLabel: null,
     finished: false,
     skill: null,
   };

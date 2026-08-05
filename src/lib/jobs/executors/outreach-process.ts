@@ -403,7 +403,6 @@ async function pickAndDraft(
           name: (senderProfile?.name as string) ?? null,
           title: (senderProfile?.role_title as string) ?? null,
           company: (senderProfile?.company_name as string) ?? null,
-          signature: null,
           offeringSummary: (senderProfile?.offering_summary as string) ?? null,
           notes: (senderProfile?.notes as string) ?? null,
         },

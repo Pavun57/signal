@@ -145,32 +145,39 @@ export async function researchSender(
   const sources: string[] = [];
   const failures: string[] = [];
 
-  for (const url of urls) {
-    const host = hostOf(url);
-    if (!host) {
-      failures.push(`${url}: not a valid URL`);
-      continue;
-    }
-    try {
-      // Anchor the query to the exact URL and restrict results to its domain.
-      // A bare name search pulls strangers who share the name — the namesake
-      // lesson from prospect enrichment.
-      const result = await exa.search(url, {
-        includeText: true,
-        numResults: 3,
-        includeDomains: [host],
-      });
-      const text = result.results
-        .map((r) => `${r.title}\n${r.text ?? ""}`.trim())
-        .filter(Boolean)
-        .join("\n---\n")
-        .slice(0, MAX_CHARS_PER_SOURCE);
-      if (text) sources.push(`Source (${url}):\n${text}`);
-    } catch (err) {
-      failures.push(
-        `${url}: ${err instanceof Error ? err.message : "search failed"}`,
-      );
-    }
+  // The URLs are independent, so they fetch concurrently; ExaService's own
+  // semaphore bounds the actual parallelism. Results keep URL order so the
+  // extraction prompt is stable for identical profiles.
+  const fetched = await Promise.all(
+    urls.map(async (url) => {
+      const host = hostOf(url);
+      if (!host) return { url, error: "not a valid URL" };
+      try {
+        // Anchor the query to the exact URL and restrict results to its
+        // domain. A bare name search pulls strangers who share the name — the
+        // namesake lesson from prospect enrichment.
+        const result = await exa.search(url, {
+          includeText: true,
+          numResults: 3,
+          includeDomains: [host],
+        });
+        const text = result.results
+          .map((r) => `${r.title}\n${r.text ?? ""}`.trim())
+          .filter(Boolean)
+          .join("\n---\n")
+          .slice(0, MAX_CHARS_PER_SOURCE);
+        return { url, text };
+      } catch (err) {
+        return {
+          url,
+          error: err instanceof Error ? err.message : "search failed",
+        };
+      }
+    }),
+  );
+  for (const f of fetched) {
+    if ("text" in f && f.text) sources.push(`Source (${f.url}):\n${f.text}`);
+    else if ("error" in f) failures.push(`${f.url}: ${f.error}`);
   }
 
   if (sources.length === 0) {

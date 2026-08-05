@@ -60,17 +60,32 @@ exist. Never invent a sender fact that is not listed here.
 ${wrapUntrusted(body)}`;
 }
 
-/** All facts for a profile, canonical category order then insertion order. */
+/**
+ * All facts for a profile, newest first. The bank is append-forever and the
+ * prompt takes at most MAX_FACTS_IN_PROMPT, so the ordering decides which
+ * facts fall off once the bank outgrows the cap: the fact the user added
+ * yesterday ("we just crossed 200 customers") must never lose its prompt slot
+ * to one researched months ago.
+ *
+ * Errors degrade to an empty bank so a facts outage never blocks drafting,
+ * but they are logged: this repo has been bitten before by RLS failures that
+ * silently returned nothing.
+ */
 export async function loadSenderFacts(
   supabase: SupabaseClient,
   profileId: string | null | undefined,
 ): Promise<SenderFact[]> {
   if (!profileId) return [];
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("sender_facts")
     .select("id, category, fact, source")
     .eq("profile_id", profileId)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(MAX_FACTS_IN_PROMPT);
+  if (error) {
+    console.warn(
+      `[sender-facts] load failed for profile ${profileId}: ${error.message}`,
+    );
+  }
   return (data ?? []) as SenderFact[];
 }

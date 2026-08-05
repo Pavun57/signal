@@ -260,7 +260,6 @@ export function VoiceRunProvider({ children }: { children: ReactNode }) {
           ...current,
           queue:
             data.mode === "append" ? [...current.queue, ...withIds] : withIds,
-          personaLabel: label ?? current.personaLabel,
         });
         setPendingBoth(null);
         setError(null);

@@ -147,7 +147,6 @@ describe("toTranscript", () => {
           personaLabel: "Riya Shah · VP Sales",
         },
       ],
-      personaLabel: "Riya Shah · VP Sales",
     });
 
     expect(toTranscript(run)).toEqual({

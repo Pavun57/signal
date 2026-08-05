@@ -491,7 +491,6 @@ export const draftEmailsForSequence = tool({
           name: profile?.name ?? null,
           title: profile?.role_title ?? null,
           company: profile?.company_name ?? null,
-          signature: profile?.notes ?? null,
           offeringSummary: profile?.offering_summary ?? null,
           notes: profile?.notes ?? null,
         },

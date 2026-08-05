@@ -17,12 +17,16 @@ create table sender_facts (
   -- Clerk sub, same tenant key as email_voice_profiles.
   user_id text not null,
   profile_id uuid not null references user_profile(id) on delete cascade,
-  -- background | proof_point | story | pov | credibility | personal
-  category text not null,
+  -- Constrained in the schema, not just app code: a direct PostgREST insert
+  -- with a bogus category would otherwise vanish from both the prompt (the
+  -- renderer drops unknown categories) and the UI (grouped by known ones).
+  category text not null check (
+    category in ('background', 'proof_point', 'story', 'pov', 'credibility', 'personal')
+  ),
   -- One plain sentence. Bounded so a runaway insert can't stuff the prompt.
   fact text not null check (char_length(fact) <= 500),
-  -- research | user | agent — who wrote it, shown in the UI.
-  source text not null,
+  -- Who wrote it, shown in the UI.
+  source text not null check (source in ('research', 'user', 'agent')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -43,10 +47,14 @@ create policy "sender_facts_insert" on sender_facts
     user_id = requesting_user_id()
     and profile_id in (select id from user_profile where user_id = requesting_user_id())
   );
+-- The WITH CHECK repeats the user_id condition on purpose: an explicit WITH
+-- CHECK *replaces* the USING-as-check default, so checking only profile_id
+-- would let an update re-key a row's user_id to another tenant's Clerk sub.
 create policy "sender_facts_update" on sender_facts
   for update to authenticated using (user_id = requesting_user_id())
   with check (
-    profile_id in (select id from user_profile where user_id = requesting_user_id())
+    user_id = requesting_user_id()
+    and profile_id in (select id from user_profile where user_id = requesting_user_id())
   );
 create policy "sender_facts_delete" on sender_facts
   for delete to authenticated using (user_id = requesting_user_id());

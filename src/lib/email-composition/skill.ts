@@ -158,7 +158,6 @@ export function buildComposeUserPrompt(input: {
     name: string | null;
     title: string | null;
     company: string | null;
-    signature: string | null;
     offeringSummary?: string | null;
     notes?: string | null;
   };

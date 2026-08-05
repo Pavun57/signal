@@ -598,6 +598,7 @@ function FactBankSection({
                     {editingId === f.id ? (
                       <Input
                         autoFocus
+                        maxLength={500}
                         value={editingText}
                         onChange={(e) => setEditingText(e.target.value)}
                         onBlur={() => void saveEdit(f.id)}
@@ -650,6 +651,7 @@ function FactBankSection({
           ))}
         </select>
         <Input
+          maxLength={500}
           value={newFact}
           onChange={(e) => setNewFact(e.target.value)}
           onKeyDown={(e) => {
