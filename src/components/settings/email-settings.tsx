@@ -40,6 +40,11 @@ const HOUR_ITEMS = [
   })),
 ];
 
+const WINDOW_SCOPE_ITEMS = [
+  { value: "sender", label: "My timezone" },
+  { value: "recipient", label: "Each recipient's timezone" },
+];
+
 const TIMEZONE_ITEMS = Intl.supportedValuesOf("timeZone").map((tz) => ({
   value: tz,
   label: tz,
@@ -69,6 +74,7 @@ export function EmailSettings() {
   const [windowTimezone, setWindowTimezone] = useState(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone,
   );
+  const [windowScope, setWindowScope] = useState("sender");
   const [windowSaving, setWindowSaving] = useState(false);
 
   const [testTo, setTestTo] = useState("");
@@ -121,6 +127,11 @@ export function EmailSettings() {
       if (data.settings.send_timezone) {
         setWindowTimezone(data.settings.send_timezone);
       }
+      setWindowScope(
+        data.settings.send_window_scope === "recipient"
+          ? "recipient"
+          : "sender",
+      );
 
       const testRes = await apiFetch("/api/settings/email/test");
       if (!testRes.ok || !mountedRef.current) return;
@@ -348,6 +359,7 @@ export function EmailSettings() {
           start,
           end,
           timezone: windowTimezone,
+          scope: windowScope,
         }),
       });
       const data = await res.json();
@@ -678,6 +690,25 @@ export function EmailSettings() {
                 items={TIMEZONE_ITEMS}
               />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="send-window-scope" className="text-xs font-medium">
+              Window applies in
+            </label>
+            <Select
+              id="send-window-scope"
+              aria-label="Send window scope"
+              value={windowScope}
+              onValueChange={setWindowScope}
+              items={WINDOW_SCOPE_ITEMS}
+            />
+            {windowScope === "recipient" && (
+              <p className="text-muted-foreground text-xs">
+                Best effort: each contact&apos;s timezone is inferred from their
+                location data. Contacts whose timezone can&apos;t be determined
+                use your timezone above.
+              </p>
+            )}
           </div>
           {(windowStart === "") !== (windowEnd === "") && (
             <p className="text-warn text-xs">

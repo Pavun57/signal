@@ -47,6 +47,7 @@ describe("resolveSenderConfig", () => {
       sendWindowStart: null,
       sendWindowEnd: null,
       sendTimezone: null,
+      sendWindowScope: "sender" as const,
     });
   });
 

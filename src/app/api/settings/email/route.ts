@@ -20,7 +20,7 @@ export async function GET() {
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone",
+      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope",
     )
     .eq("user_id", user.id)
     .maybeSingle();
@@ -38,6 +38,7 @@ export async function GET() {
       send_window_start: null,
       send_window_end: null,
       send_timezone: null,
+      send_window_scope: "sender",
     },
     is_configured: !!settings?.gmail_address,
     effective_daily_limit: getEffectiveDailyLimit(
@@ -169,12 +170,16 @@ export async function POST(request: Request) {
       }
       timezone = body.timezone;
     }
+    // Whose clock the window reads. Optional for backwards compatibility;
+    // anything but the explicit opt-in falls back to sender.
+    const scope = body.scope === "recipient" ? "recipient" : "sender";
     const { error } = await supabase.from("user_settings").upsert(
       {
         user_id: user.id,
         send_window_start: body.start,
         send_window_end: body.end,
         send_timezone: timezone,
+        send_window_scope: scope,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id" },
@@ -186,6 +191,7 @@ export async function POST(request: Request) {
       send_window_start: body.start,
       send_window_end: body.end,
       send_timezone: timezone,
+      send_window_scope: scope,
     });
   }
 

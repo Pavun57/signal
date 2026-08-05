@@ -16,6 +16,7 @@ import {
   SEND_GATE_COLUMNS,
   type SendCandidate,
 } from "@/lib/services/affiliation";
+import { resolveTimezoneFromLocation } from "@/lib/services/recipient-timezone";
 import { verifyAddressForSend } from "@/lib/services/send-verification";
 
 export interface EnrollmentForSend {
@@ -132,18 +133,55 @@ export async function claimAndSendDraft(
   // an explicit human "send" beats a schedule preference.
   if (
     !opts?.bypassSendWindow &&
-    !isWithinSendWindow(
-      sender.sendWindowStart,
-      sender.sendWindowEnd,
-      sender.sendTimezone,
-    )
+    sender.sendWindowStart !== null &&
+    sender.sendWindowEnd !== null
   ) {
-    return refuse(
-      supabase,
-      draft.id,
-      "deferred",
-      `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${sender.sendTimezone ?? "UTC"}); will send during the next window.`,
-    );
+    let windowTimezone = sender.sendTimezone;
+    let timezoneLabel = sender.sendTimezone ?? "UTC";
+
+    // Recipient scope reads the contact's clock instead of the sender's,
+    // resolved best-effort from location strings. Unresolvable falls back
+    // to the sender's zone: a send must never be deferred forever because
+    // a contact's location is unknown.
+    if (sender.sendWindowScope === "recipient" && draft.person_id) {
+      const { data: located } = await supabase
+        .from("people")
+        .select("enrichment_data, organization:organizations(location)")
+        .eq("id", draft.person_id)
+        .maybeSingle();
+      const enrichment = (located?.enrichment_data ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const org = Array.isArray(located?.organization)
+        ? located?.organization[0]
+        : located?.organization;
+      const recipientTimezone = resolveTimezoneFromLocation(
+        enrichment.location as string | undefined,
+        enrichment.city as string | undefined,
+        enrichment.country as string | undefined,
+        (org as { location?: string | null } | null)?.location,
+      );
+      if (recipientTimezone) {
+        windowTimezone = recipientTimezone;
+        timezoneLabel = `${recipientTimezone} (recipient's timezone)`;
+      }
+    }
+
+    if (
+      !isWithinSendWindow(
+        sender.sendWindowStart,
+        sender.sendWindowEnd,
+        windowTimezone,
+      )
+    ) {
+      return refuse(
+        supabase,
+        draft.id,
+        "deferred",
+        `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${timezoneLabel}); will send during the next window.`,
+      );
+    }
   }
 
   // Data-quality gate, before the claim so a blocked draft stays sendable once

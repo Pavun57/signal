@@ -200,6 +200,7 @@ describe("send_confirmed", () => {
         sendWindowStart: null,
         sendWindowEnd: null,
         sendTimezone: null,
+        sendWindowScope: "sender" as const,
       },
     );
 

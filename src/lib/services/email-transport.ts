@@ -16,6 +16,11 @@ export interface SenderConfig {
   sendWindowStart: number | null;
   sendWindowEnd: number | null;
   sendTimezone: string | null;
+  /**
+   * Whose clock the window reads: "recipient" resolves each contact's
+   * timezone from location data, falling back to sendTimezone when unknown.
+   */
+  sendWindowScope: "sender" | "recipient";
 }
 
 const DEFAULT_DAILY_LIMIT = 30;
@@ -34,7 +39,7 @@ export async function resolveSenderConfig(
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_app_password_enc, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone",
+      "gmail_address, gmail_app_password_enc, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope",
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -67,5 +72,7 @@ export async function resolveSenderConfig(
     sendWindowStart: settings.send_window_start ?? null,
     sendWindowEnd: settings.send_window_end ?? null,
     sendTimezone: settings.send_timezone ?? null,
+    sendWindowScope:
+      settings.send_window_scope === "recipient" ? "recipient" : "sender",
   };
 }
