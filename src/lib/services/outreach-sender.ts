@@ -528,6 +528,33 @@ export async function advanceEnrollmentForDraft(
 }
 
 /**
+ * Send a draft and advance its enrollment — the composed operation the
+ * agent's sendEmail/sendBulkEmails tools need. Exists so the
+ * "send succeeded ⇒ enrollment advanced" invariant lives in one place
+ * instead of being re-implemented at every tool call site.
+ */
+export async function sendDraftAndAdvance(
+  supabase: SupabaseClient,
+  draft: DraftForSend & { enrollment_id?: string | null },
+  sender: SenderConfig,
+  trackMetadata?: Record<string, unknown>,
+  opts?: { bypassSendWindow?: boolean },
+): Promise<SendResult> {
+  const result = await claimAndSendDraft(
+    supabase,
+    draft,
+    sender,
+    trackMetadata,
+    opts,
+  );
+  if (result.ok) {
+    // Without this the enrollment stays pinned to the step just sent.
+    await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
+  }
+  return result;
+}
+
+/**
  * Is this draft the step its enrollment is actually waiting on?
  *
  * Drafts are pre-created for every step at enrollment time, so "approved and

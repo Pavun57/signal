@@ -6,8 +6,7 @@ import { callerHoldsPerson, toolSession } from "@/lib/tools/ownership";
 import { ExaService } from "@/lib/services/exa-service";
 import { trackUsage } from "@/lib/services/cost-tracker";
 import {
-  claimAndSendDraft,
-  advanceEnrollmentForDraft,
+  sendDraftAndAdvance,
   draftIsCurrentStep,
   type DraftForSend,
 } from "@/lib/services/outreach-sender";
@@ -946,9 +945,9 @@ export const sendEmail = tool({
       return { error: sender.error };
     }
 
-    const result = await claimAndSendDraft(
+    const result = await sendDraftAndAdvance(
       supabase,
-      draft as DraftForSend,
+      draft as DraftForSend & { enrollment_id?: string | null },
       sender,
       undefined,
       // The user just confirmed this send in chat — an explicit human "send"
@@ -959,9 +958,6 @@ export const sendEmail = tool({
     if (!result.ok) {
       return { error: `Failed to send email: ${result.reason}` };
     }
-
-    // Without this the enrollment stays pinned to the step just sent.
-    await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
 
     return {
       emailId: result.messageId,
@@ -1121,16 +1117,15 @@ export const sendBulkEmails = tool({
         continue;
       }
 
-      const result = await claimAndSendDraft(
+      const result = await sendDraftAndAdvance(
         supabase,
-        draft as DraftForSend,
+        draft as DraftForSend & { enrollment_id?: string | null },
         sender,
         undefined,
         // The user just confirmed this bulk send in chat — bypass the window.
         { bypassSendWindow: true },
       );
       if (result.ok) {
-        await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
         results.push({ draftId: draft.id, status: "sent" });
       } else if (result.reason.includes("claimed")) {
         results.push({
