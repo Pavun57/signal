@@ -330,3 +330,35 @@ export function getEffectiveDailyLimit(
   else rampCap = configuredLimit;
   return Math.min(rampCap, configuredLimit);
 }
+
+/**
+ * Whether `now` falls inside the user's configured send window.
+ * Hours are 0-23 in `timeZone`; end is exclusive; start > end wraps
+ * midnight (e.g. 16 → 9 covers evening + early morning). Null bounds or
+ * an unparseable timezone mean "no window" — this is a deliverability
+ * nicety, and a bad setting must never silently halt all sending.
+ */
+export function isWithinSendWindow(
+  startHour: number | null,
+  endHour: number | null,
+  timeZone: string | null,
+  now: Date = new Date(),
+): boolean {
+  if (startHour === null || endHour === null || startHour === endHour)
+    return true;
+  let hour: number;
+  try {
+    hour = Number(
+      new Intl.DateTimeFormat("en-US", {
+        hour: "numeric",
+        hourCycle: "h23",
+        timeZone: timeZone ?? "UTC",
+      }).format(now),
+    );
+  } catch {
+    return true;
+  }
+  return startHour < endHour
+    ? hour >= startHour && hour < endHour
+    : hour >= startHour || hour < endHour;
+}

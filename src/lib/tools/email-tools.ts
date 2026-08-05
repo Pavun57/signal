@@ -950,6 +950,10 @@ export const sendEmail = tool({
       supabase,
       draft as DraftForSend,
       sender,
+      undefined,
+      // The user just confirmed this send in chat — an explicit human "send"
+      // beats the schedule preference, so the send window is bypassed.
+      { bypassSendWindow: true },
     );
 
     if (!result.ok) {
@@ -1121,6 +1125,9 @@ export const sendBulkEmails = tool({
         supabase,
         draft as DraftForSend,
         sender,
+        undefined,
+        // The user just confirmed this bulk send in chat — bypass the window.
+        { bypassSendWindow: true },
       );
       if (result.ok) {
         await advanceEnrollmentForDraft(supabase, draft.enrollment_id);

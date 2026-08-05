@@ -68,11 +68,12 @@ export const OUTREACH_STATUS = {
     description: "Approved, waiting for its send time",
     tone: "muted",
   },
-  // Deliberately muted, not danger. Hitting the daily cap is routine, and the
-  // draft goes out tomorrow on its own.
+  // Deliberately muted, not danger. Deferrals (daily cap reached, sending
+  // paused, outside the send window) are routine and resolve on their own;
+  // each draft's specific reason is in its last_error.
   deferred: {
     label: "Deferred",
-    description: "Daily send limit reached; will go tomorrow",
+    description: "Will retry automatically; see each draft for the reason",
     tone: "muted",
   },
   failed: {

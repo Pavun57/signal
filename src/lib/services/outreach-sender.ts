@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   getEffectiveDailyLimit,
+  isWithinSendWindow,
   sendGmailMessage,
 } from "@/lib/services/gmail-service";
 import {
@@ -109,6 +110,7 @@ export async function claimAndSendDraft(
   draft: DraftForSend,
   sender: SenderConfig,
   trackMetadata?: Record<string, unknown>,
+  opts?: { bypassSendWindow?: boolean },
 ): Promise<SendResult> {
   const now = new Date().toISOString();
 
@@ -122,6 +124,25 @@ export async function claimAndSendDraft(
       draft.id,
       "deferred",
       "Sending is paused in Settings > Email. Unpause to resume.",
+    );
+  }
+
+  // Send window: cron-driven paths wait for the window; interactive paths
+  // (send-now click, agent send confirmed in chat) pass bypassSendWindow —
+  // an explicit human "send" beats a schedule preference.
+  if (
+    !opts?.bypassSendWindow &&
+    !isWithinSendWindow(
+      sender.sendWindowStart,
+      sender.sendWindowEnd,
+      sender.sendTimezone,
+    )
+  ) {
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${sender.sendTimezone ?? "UTC"}); will send during the next window.`,
     );
   }
 
@@ -559,6 +580,7 @@ export async function draftIsCurrentStep(
 export async function sendApprovedDraft(
   supabase: SupabaseClient,
   enrollment: EnrollmentForSend,
+  opts?: { bypassSendWindow?: boolean },
 ): Promise<SendResult> {
   const { data: step } = await supabase
     .from("sequence_steps")
@@ -595,6 +617,7 @@ export async function sendApprovedDraft(
     },
     sender,
     { sequenceId: enrollment.sequence_id },
+    opts,
   );
 
   if (!sent.ok) return sent;

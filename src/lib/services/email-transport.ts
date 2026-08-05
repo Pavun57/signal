@@ -12,6 +12,10 @@ export interface SenderConfig {
   connectedAt: string | null;
   /** Kill switch from Settings > Email: claimAndSendDraft refuses while true. */
   sendingPaused: boolean;
+  /** Send window in sender-local hours; null start/end = send any time. */
+  sendWindowStart: number | null;
+  sendWindowEnd: number | null;
+  sendTimezone: string | null;
 }
 
 const DEFAULT_DAILY_LIMIT = 30;
@@ -30,7 +34,7 @@ export async function resolveSenderConfig(
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_app_password_enc, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused",
+      "gmail_address, gmail_app_password_enc, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone",
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -60,5 +64,8 @@ export async function resolveSenderConfig(
     dailyLimit: settings.daily_send_limit ?? DEFAULT_DAILY_LIMIT,
     connectedAt: settings.gmail_connected_at ?? null,
     sendingPaused: settings.sending_paused ?? false,
+    sendWindowStart: settings.send_window_start ?? null,
+    sendWindowEnd: settings.send_window_end ?? null,
+    sendTimezone: settings.send_timezone ?? null,
   };
 }
