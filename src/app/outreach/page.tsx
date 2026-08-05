@@ -20,6 +20,8 @@ export interface SequenceRow {
   status: string;
   campaign_id: string;
   campaign_name: string;
+  /** Per-sequence send-window override; null inherits the user setting. */
+  send_window_scope: "sender" | "recipient" | null;
   enrolled: number;
   waiting: number;
   sent: number;
@@ -64,7 +66,9 @@ export default function OutreachPage() {
     ] = await Promise.all([
       supabase
         .from("sequences")
-        .select("id, name, status, campaign_id, campaigns(name)")
+        .select(
+          "id, name, status, campaign_id, send_window_scope, campaigns(name)",
+        )
         .order("created_at", { ascending: false }),
       supabase.from("sequence_enrollments").select("sequence_id, status"),
       supabase
@@ -161,6 +165,11 @@ export default function OutreachPage() {
         status: s.status,
         campaign_id: s.campaign_id,
         campaign_name: campaign?.name ?? "Unknown",
+        send_window_scope:
+          s.send_window_scope === "recipient" ||
+          s.send_window_scope === "sender"
+            ? s.send_window_scope
+            : null,
         ...counts,
       };
     });

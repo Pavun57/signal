@@ -38,6 +38,11 @@ export interface DraftForSend {
   subject: string;
   body_html: string;
   body_text: string | null;
+  /**
+   * Present on every real row (all loaders select *); the send-window gate
+   * uses it to look up a per-sequence scope override.
+   */
+  sequence_id?: string | null;
 }
 
 export type SendResult =
@@ -139,32 +144,61 @@ export async function claimAndSendDraft(
     let windowTimezone = sender.sendTimezone;
     let timezoneLabel = sender.sendTimezone ?? "UTC";
 
-    // Recipient scope reads the contact's clock instead of the sender's,
-    // resolved best-effort from location strings. Unresolvable falls back
-    // to the sender's zone: a send must never be deferred forever because
-    // a contact's location is unknown.
-    if (sender.sendWindowScope === "recipient" && draft.person_id) {
+    // The sequence can override whose clock the window reads; null inherits
+    // the user's global setting.
+    let windowScope: "sender" | "recipient" = sender.sendWindowScope;
+    if (draft.sequence_id) {
+      const { data: seq } = await supabase
+        .from("sequences")
+        .select("send_window_scope")
+        .eq("id", draft.sequence_id)
+        .maybeSingle();
+      if (seq?.send_window_scope === "recipient") windowScope = "recipient";
+      else if (seq?.send_window_scope === "sender") windowScope = "sender";
+    }
+
+    // Recipient scope reads the contact's clock instead of the sender's:
+    // cached people.timezone first, then resolved best-effort from location
+    // strings. Unresolvable falls back to the sender's zone: a send must
+    // never be deferred forever because a contact's location is unknown.
+    if (windowScope === "recipient" && draft.person_id) {
       const { data: located } = await supabase
         .from("people")
-        .select("enrichment_data, organization:organizations(location)")
+        .select(
+          "timezone, location, enrichment_data, organization:organizations(location)",
+        )
         .eq("id", draft.person_id)
         .maybeSingle();
       const enrichment = (located?.enrichment_data ?? {}) as Record<
         string,
         unknown
       >;
+      const github = (enrichment.github ?? {}) as Record<string, unknown>;
       const org = Array.isArray(located?.organization)
         ? located?.organization[0]
         : located?.organization;
-      const recipientTimezone = resolveTimezoneFromLocation(
-        enrichment.location as string | undefined,
-        enrichment.city as string | undefined,
-        enrichment.country as string | undefined,
-        (org as { location?: string | null } | null)?.location,
-      );
+      const recipientTimezone =
+        (located?.timezone as string | null) ??
+        resolveTimezoneFromLocation(
+          located?.location as string | undefined,
+          enrichment.location as string | undefined,
+          enrichment.city as string | undefined,
+          enrichment.country as string | undefined,
+          github.location as string | undefined,
+          (org as { location?: string | null } | null)?.location,
+        );
       if (recipientTimezone) {
         windowTimezone = recipientTimezone;
         timezoneLabel = `${recipientTimezone} (recipient's timezone)`;
+        // Cache the resolution so each contact resolves at most once; a
+        // location edit clears the cache (people PATCH nulls timezone).
+        if (!located?.timezone) {
+          await supabase
+            .from("people")
+            .update({ timezone: recipientTimezone })
+            .eq("id", draft.person_id)
+            .is("timezone", null);
+        }
       }
     }
 

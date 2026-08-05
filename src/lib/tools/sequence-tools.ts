@@ -47,8 +47,21 @@ export const createSequence = tool({
       .describe(
         "Specific campaign_people IDs to enroll. If omitted, enrolls all contacts in the campaign (emails are still reviewed before send).",
       ),
+    sendWindowScope: z
+      .enum(["sender", "recipient"])
+      .optional()
+      .describe(
+        "Whose clock the send window reads for this sequence: 'recipient' sends in each contact's local timezone (best effort from their location, falling back to the sender's), 'sender' uses the user's timezone. Omit to inherit the user's global setting.",
+      ),
   }),
-  execute: async ({ name, campaignId, triggerSignalId, steps, contactIds }) => {
+  execute: async ({
+    name,
+    campaignId,
+    triggerSignalId,
+    steps,
+    contactIds,
+    sendWindowScope,
+  }) => {
     const ctx = await getSupabaseAndUser();
     if (!ctx) {
       return {
@@ -84,6 +97,7 @@ export const createSequence = tool({
         trigger_signal_id: triggerSignalId ?? null,
         status: "draft",
         user_id: userId,
+        send_window_scope: sendWindowScope ?? null,
       })
       .select("id")
       .single();
