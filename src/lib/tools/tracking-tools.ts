@@ -6,11 +6,16 @@ import { SCHEDULE_INTERVALS } from "@/lib/types/tracking";
 import type { Schedule } from "@/lib/types/tracking";
 
 /** Enqueue an immediate tracking.run job for a config's baseline snapshot. */
-async function dispatchImmediateRun(trackingConfigId: string): Promise<void> {
+async function dispatchImmediateRun(
+  trackingConfigId: string,
+  userId: string | null,
+): Promise<void> {
   try {
     await enqueueJob({
       type: "tracking.run",
       payload: { trackingConfigId },
+      // Partition the queue by the campaign owner for per-user fairness.
+      userId,
       maxAttempts: 2,
     });
   } catch (err) {
@@ -89,8 +94,14 @@ export const createTracking = tool({
         .eq("person_id", input.personId);
     }
 
-    // Enqueue immediate baseline run
-    await dispatchImmediateRun(config.id);
+    // Enqueue immediate baseline run, attributed to the campaign owner
+    // (readable via the RLS client — the campaign is the user's own row).
+    const { data: campaign } = await supabase
+      .from("campaigns")
+      .select("user_id")
+      .eq("id", input.campaignId)
+      .maybeSingle();
+    await dispatchImmediateRun(config.id, campaign?.user_id ?? null);
 
     return {
       trackingConfig: config,
@@ -199,6 +210,15 @@ export const bulkCreateTracking = tool({
       .eq("campaign_id", input.campaignId)
       .in("organization_id", orgIds);
 
+    // Fetch the campaign owner once so every baseline job lands on the
+    // owner's queue partition (readable via the RLS client — their row).
+    const { data: campaign } = await supabase
+      .from("campaigns")
+      .select("user_id")
+      .eq("id", input.campaignId)
+      .maybeSingle();
+    const ownerUserId: string | null = campaign?.user_id ?? null;
+
     // Dispatch baseline runs (max 5 concurrent to avoid overwhelming)
     const configIds = (created ?? []).map(
       (c: Record<string, unknown>) => c.id as string,
@@ -206,7 +226,9 @@ export const bulkCreateTracking = tool({
     const batchSize = 5;
     for (let i = 0; i < configIds.length; i += batchSize) {
       const batch = configIds.slice(i, i + batchSize);
-      await Promise.allSettled(batch.map(dispatchImmediateRun));
+      await Promise.allSettled(
+        batch.map((id) => dispatchImmediateRun(id, ownerUserId)),
+      );
     }
 
     return {

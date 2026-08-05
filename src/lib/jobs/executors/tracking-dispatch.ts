@@ -12,7 +12,7 @@ import type { Schedule } from "@/lib/types/tracking";
 export async function dispatchDueTracking(): Promise<{ dispatched: number }> {
   const { data: configs, error } = await getAdminClient()
     .from("tracking_configs")
-    .select("id, schedule")
+    .select("id, schedule, campaign:campaigns(user_id)")
     .eq("status", "active")
     .lte("next_run_at", new Date().toISOString());
   if (error) {
@@ -21,9 +21,18 @@ export async function dispatchDueTracking(): Promise<{ dispatched: number }> {
 
   let dispatched = 0;
   for (const config of configs ?? []) {
+    // The untyped admin client may surface the joined campaign as an object
+    // or a one-element array depending on client typings — handle both so
+    // the owner's user_id always lands on the job's queue partition.
+    const campaign = Array.isArray(config.campaign)
+      ? (config.campaign[0] as { user_id?: string | null } | undefined)
+      : (config.campaign as { user_id?: string | null } | null);
     await enqueueJob({
       type: "tracking.run",
       payload: { trackingConfigId: config.id },
+      // Partition the queue by the campaign owner so one user's tracking
+      // load can't starve everyone else via the shared '<system>' bucket.
+      userId: campaign?.user_id ?? null,
       // Signal executions hit Exa/LLMs; two shots is plenty before giving
       // up until the next scheduled cadence.
       maxAttempts: 2,

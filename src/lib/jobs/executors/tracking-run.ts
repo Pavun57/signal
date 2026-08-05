@@ -31,7 +31,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
   const { data: config, error: configErr } = await getAdminClient()
     .from("tracking_configs")
     .select(
-      "*, organization:organizations(*), signal:signals(*), campaign:campaigns(icp, offering)",
+      "*, organization:organizations(*), signal:signals(*), campaign:campaigns(icp, offering, user_id)",
     )
     .eq("id", trackingConfigId)
     .single();
@@ -46,6 +46,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
     campaign: {
       icp: Record<string, unknown>;
       offering: Record<string, unknown>;
+      user_id: string | null;
     };
   };
 
@@ -319,6 +320,9 @@ export async function runTrackingConfig(trackingConfigId: string) {
           reason: verdict.reason,
           confidence: verdict.confidence,
         },
+        // Queue fairness: attribute the outreach job to the campaign owner
+        // instead of the shared '<system>' partition.
+        userId: typedConfig.campaign.user_id ?? null,
       }).catch((err) => {
         console.error("[tracking] Failed to enqueue outreach:", err);
       });
