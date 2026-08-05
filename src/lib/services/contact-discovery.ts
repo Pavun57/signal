@@ -484,6 +484,12 @@ export async function findContactsForOrganization(
         linkedin_url: candidate.linkedinUrl,
         organization_id: attachTo,
         source: "exa",
+        // The judge reads this off the person's own headline or page text and
+        // returns null otherwise. The team-page phase above passes none: a
+        // staff listing carries no person-level location, and org HQ is
+        // already the send-time fallback, so copying it here would only dress
+        // it up as person data.
+        location: judged.location ?? null,
       });
 
       const write = await recordAffiliation(supabase, {

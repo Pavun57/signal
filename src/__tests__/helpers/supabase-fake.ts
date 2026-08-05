@@ -40,7 +40,7 @@ export interface FakeRelation {
   foreignKey?: string;
 }
 
-export type QueryKind = "select" | "update" | "delete";
+export type QueryKind = "select" | "update" | "delete" | "insert";
 
 export interface ObservedQuery {
   table: string;
@@ -48,7 +48,7 @@ export interface ObservedQuery {
   /** The raw string handed to `select()`, or null for a bare update. */
   select: string | null;
   filters: readonly Filter[];
-  /** The payload handed to `update()`, or null for a read. */
+  /** The payload handed to `update()` or `insert()`, or null for a read. */
   payload: FakeRow | null;
 }
 
@@ -71,6 +71,12 @@ export interface SupabaseFakeOptions {
    * have to read the error.
    */
   updateError?: () => { message: string } | null;
+  /**
+   * What the next INSERT should fail with, if anything. Unique indexes make a
+   * rejected insert an ordinary runtime outcome (`code: "23505"`), and the
+   * dedup helpers branch on that code, so a test has to be able to inject it.
+   */
+  insertError?: () => { message: string; code?: string } | null;
   /** Called as each query resolves. Lets a test assert on what was asked for. */
   onQuery?: (query: ObservedQuery) => void;
 }
@@ -359,7 +365,27 @@ export function createSupabaseFake(
       return { data: removed, error: null };
     };
 
-    const runMutation = () => (kind === "delete" ? runDelete() : runUpdate());
+    /**
+     * Appends the payload to the array the table getter returned, mutating in
+     * place for the same reason runDelete does: the getter owns the fixture,
+     * and a test reading it after the call has to see the new row. Returns the
+     * row so `.select().single()` can hand it back the way PostgREST does.
+     */
+    const runInsert = () => {
+      notify();
+      const error = options.insertError?.() ?? null;
+      if (error) return { data: null, error };
+      const row: FakeRow = { ...(updates ?? {}) };
+      rowsOf(table).push(row);
+      return { data: row, error: null };
+    };
+
+    const runMutation = () =>
+      kind === "delete"
+        ? runDelete()
+        : kind === "insert"
+          ? runInsert()
+          : runUpdate();
 
     const resolve = () => {
       if (kind !== "select") return runMutation();
@@ -379,6 +405,11 @@ export function createSupabaseFake(
       },
       delete: () => {
         kind = "delete";
+        return c;
+      },
+      insert: (payload: FakeRow) => {
+        kind = "insert";
+        updates = payload;
         return c;
       },
       eq: (column: string, value: unknown) => {
@@ -403,6 +434,18 @@ export function createSupabaseFake(
         return c;
       },
       single: async () => {
+        // insert().select().single() returns the created row, projected the
+        // same way a read would be.
+        if (kind === "insert") {
+          const result = runInsert();
+          if (result.error || !result.data) {
+            return { data: null, error: result.error };
+          }
+          return {
+            data: spec ? project(table, result.data, spec) : result.data,
+            error: null,
+          };
+        }
         if (kind !== "select") return runMutation();
         notify();
         const found = rows();

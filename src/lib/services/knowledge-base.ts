@@ -174,6 +174,8 @@ export async function findOrCreatePerson(data: {
   personal_email?: string | null;
   twitter_url?: string | null;
   title?: string | null;
+  /** The person's own location, free text. Never the employer's HQ. */
+  location?: string | null;
   organization_id?: string | null;
   source?: string | null;
 }): Promise<Person> {
@@ -200,6 +202,7 @@ export async function findOrCreatePerson(data: {
         updates.personal_email = data.personal_email;
       if (data.twitter_url && !existing.twitter_url)
         updates.twitter_url = data.twitter_url;
+      if (data.location && !existing.location) updates.location = data.location;
 
       // Deliberately does NOT set organization_id on an existing person.
       //
@@ -244,6 +247,7 @@ export async function findOrCreatePerson(data: {
           updates.personal_email = data.personal_email;
         if (data.twitter_url && !match.twitter_url)
           updates.twitter_url = data.twitter_url;
+        if (data.location && !match.location) updates.location = data.location;
 
         if (Object.keys(updates).length > 0) {
           await supabase.from("people").update(updates).eq("id", match.id);
@@ -264,6 +268,7 @@ export async function findOrCreatePerson(data: {
       personal_email: data.personal_email || null,
       twitter_url: data.twitter_url || null,
       title: data.title || null,
+      location: data.location || null,
       organization_id: data.organization_id || null,
       source: data.source || null,
     })

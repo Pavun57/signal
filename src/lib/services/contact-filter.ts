@@ -72,6 +72,12 @@ export interface VerifiedContact {
   employerSeen?: string | null;
   /** The date range the evidence gave for that employer, when it gave one. */
   datesSeen?: string | null;
+  /**
+   * The person's own location, when the headline or page text states one.
+   * Never inferred from the company HQ: org location is already the send-time
+   * fallback, so a copy of it here would only masquerade as person-level data.
+   */
+  location?: string | null;
 }
 
 /**
@@ -422,6 +428,12 @@ export async function filterContactsByCompany(
               .describe(
                 "The date range the evidence gives for that employer, e.g. 'May 2024 - Present'",
               ),
+            location: z
+              .string()
+              .nullable()
+              .describe(
+                "The person's own location exactly as the headline or page text states it, e.g. 'San Francisco Bay Area'. Null when no source states where THIS person is. NEVER fill it from the target company's location or guess it from context.",
+              ),
           }),
         ),
       }),
@@ -455,7 +467,8 @@ Do not guess in order to avoid "uncertain". An honest "uncertain" is more useful
 
 Also report which employer you actually saw and what dates, so a human can audit the call, and clean up the display fields:
 - names: remove LinkedIn suffixes, emoji, excessive credentials
-- titles: extract just the role ("Branch Manager", not "Branch Manager at Dixons")`,
+- titles: extract just the role ("Branch Manager", not "Branch Manager at Dixons")
+- location: only what a source states for the person themselves, e.g. "San Francisco Bay Area". Where the company sits says nothing about where this person is, so never copy the target company's location, and return null rather than guessing.`,
     });
 
     trackUsage({
@@ -495,6 +508,7 @@ Also report which employer you actually saw and what dates, so a human can audit
         evidence: v.evidence,
         employerSeen: v.employerSeen ?? null,
         datesSeen: v.datesSeen ?? null,
+        location: v.location ?? null,
       });
     }
 
