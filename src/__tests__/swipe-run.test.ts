@@ -45,6 +45,26 @@ describe("storage round-trip", () => {
     );
     expect(readRun(USER, null)).toBeNull();
   });
+
+  it("still loads a run stored before personas existed", () => {
+    // Older builds stored the pinned real contact's id and label on the run
+    // and knew nothing of personaLabel (stand-in keys below). Extra fields
+    // are harmless and missing ones read as null: a mid-run deploy must not
+    // cost the user their swipes.
+    window.sessionStorage.setItem(
+      `signal:voice-run:${USER}:user`,
+      JSON.stringify({
+        ...newRun(null, []),
+        personaLabel: undefined,
+        pinnedContactId: "p1",
+        pinnedContactLabel: "Someone · CEO",
+        instructions: ["shorter"],
+      }),
+    );
+    const run = readRun(USER, null);
+    expect(run).not.toBeNull();
+    expect(run?.instructions).toEqual(["shorter"]);
+  });
 });
 
 describe("scope keying", () => {
@@ -124,10 +144,9 @@ describe("toTranscript", () => {
             greeting: "dear",
             signoff: "best",
           },
+          personaLabel: "Riya Shah · VP Sales",
         },
       ],
-      recipientPersonId: "someone",
-      recipientLabel: "Someone · CEO",
     });
 
     expect(toTranscript(run)).toEqual({

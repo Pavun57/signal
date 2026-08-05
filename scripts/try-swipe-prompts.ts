@@ -26,10 +26,12 @@ import {
   buildSkillPrompt,
   buildSkillSystem,
   normaliseInstructions,
+  personaLabel,
   type Draft,
   type JudgedDraft,
+  type Persona,
   type SwipeCampaign,
-  type SwipePersona,
+  type SwipeSenderContext,
   type SwipeTranscript,
 } from "../src/lib/email-skills/swipe-prompts";
 
@@ -125,20 +127,17 @@ async function loadCampaign(id?: string): Promise<SwipeCampaign | null> {
 }
 
 /**
- * Always supplied, campaign or not. Names are the first thing you notice are
- * wrong in a draft, so they must not depend on a table lookup succeeding.
+ * Always supplied, campaign or not. The sender's name is the first thing you
+ * notice is wrong in a draft, so it must not depend on a table lookup
+ * succeeding. The recipient is deliberately absent: the model invents a
+ * fictional persona per batch, which is part of what this script exercises.
  */
-const PERSONA: SwipePersona = {
+const SENDER_CONTEXT: SwipeSenderContext = {
   sender: {
     name: "Jay",
     roleTitle: "Founder",
     companyName: "Arbor",
     offeringSummary: "usage metering to invoice for API companies",
-  },
-  recipient: {
-    name: "Dana Whitfield",
-    title: "VP Engineering",
-    company: "Fernpath",
   },
 };
 
@@ -151,13 +150,14 @@ async function run() {
 
   // ── Batch 1: cold start, maximum spread expected ──────────────────────────
   const t0 = Date.now();
-  const first = await generate<{ drafts: Draft[] }>(
+  const first = await generate<{ persona: Persona; drafts: Draft[] }>(
     BatchSchema,
-    buildBatchSystem(campaign, PERSONA),
+    buildBatchSystem(campaign, SENDER_CONTEXT),
     buildBatchPrompt(transcript, 6),
     8_000,
   );
   console.log(`\n(batch 1 took ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  console.log(`Invented persona: ${personaLabel(first.persona)}`);
   report(first.drafts, "BATCH 1: cold start");
 
   // ── Simulate a picky user: keeps blunt/signal, passes the rest ────────────
@@ -166,6 +166,7 @@ async function run() {
     body: d.body,
     axes: d.axes,
     kept: d.axes.opener === "signal" || d.axes.tone === "blunt",
+    personaLabel: personaLabel(first.persona),
   }));
   transcript.judged.push(...judged);
   transcript.instructions.push(
@@ -191,13 +192,17 @@ async function run() {
 
   // ── Batch 2: must narrow AND obey the instructions ────────────────────────
   const t1 = Date.now();
-  const second = await generate<{ drafts: Draft[] }>(
+  const second = await generate<{ persona: Persona; drafts: Draft[] }>(
     BatchSchema,
-    buildBatchSystem(campaign, PERSONA),
+    buildBatchSystem(campaign, SENDER_CONTEXT),
     buildBatchPrompt(transcript, 4),
     6_000,
   );
   console.log(`\n(batch 2 took ${((Date.now() - t1) / 1000).toFixed(1)}s)`);
+  console.log(`Invented persona: ${personaLabel(second.persona)}`);
+  if (personaLabel(second.persona) === personaLabel(first.persona)) {
+    console.log("  ← PERSONA REUSED (the prompt forbids this)");
+  }
   report(second.drafts, "BATCH 2: after keeps + instructions");
 
   // This measures whether the model obeyed the no-em-dash rule, so it is the
@@ -225,13 +230,14 @@ async function run() {
       body: d.body,
       axes: d.axes,
       kept: d.axes.tone === "blunt",
+      personaLabel: personaLabel(second.persona),
     })),
   );
 
   const t2 = Date.now();
   const skill = await generate<{ instructions: string; summary: string }>(
     SkillSchema,
-    buildSkillSystem(campaign, PERSONA),
+    buildSkillSystem(campaign, SENDER_CONTEXT),
     buildSkillPrompt(transcript),
     4_000,
   );

@@ -51,13 +51,14 @@ const NO_RUN_ERROR =
   "they answer the paste-your-writing step and the run begins.";
 
 /** What the deck needs to render a batch; mirrored by the ingest logic in
- * voice-run-context. `mode` says what to do with the queue. */
+ * voice-run-context. `mode` says what to do with the queue. `persona` is the
+ * fictional person this batch is written to, stamped onto each card. */
 function emitDrafts(
   writer: VoiceToolCtx["writer"],
   data: {
     mode: "opening" | "append" | "replace";
     drafts: unknown[];
-    recipient: { personId: string; label: string | null } | null;
+    persona: { label: string } | null;
   },
 ) {
   writer?.write({ type: "data-voice-drafts", data, transient: true });
@@ -88,7 +89,6 @@ export const startVoiceRun = tool({
     const result = await generateVoiceBatch(auth.supabase, {
       campaignId: ctx.voiceRun.campaignId ?? null,
       transcript: asTranscript(ctx.voiceRun.transcript),
-      recipientPersonId: ctx.voiceRun.recipientPersonId ?? null,
       count: input.count ?? 6,
     });
     if (!result.ok) return { error: result.error };
@@ -96,12 +96,14 @@ export const startVoiceRun = tool({
     emitDrafts(ctx.writer, {
       mode: "opening",
       drafts: result.drafts,
-      recipient: result.recipient,
+      persona: result.persona,
     });
     return {
       ok: true,
       draftCount: result.drafts.length,
-      writtenAbout: result.recipient?.label ?? null,
+      writtenTo: result.persona?.label ?? null,
+      personaNote:
+        "The recipient is a fictional persona invented from the campaign ICP; a fresh one appears each batch.",
       samplesUsed: (ctx.voiceRun.transcript.samples ?? []).filter((s) =>
         s.trim(),
       ).length,
@@ -176,7 +178,6 @@ export const rewriteVoiceDrafts = tool({
             }
           : ctx.voiceRun.transcript,
       ),
-      recipientPersonId: ctx.voiceRun.recipientPersonId ?? null,
       count,
     });
     if (!result.ok) return { error: result.error };
@@ -184,7 +185,7 @@ export const rewriteVoiceDrafts = tool({
     emitDrafts(ctx.writer, {
       mode: instruction ? "replace" : "append",
       drafts: result.drafts,
-      recipient: result.recipient,
+      persona: result.persona,
     });
     return {
       ok: true,

@@ -51,12 +51,46 @@ export const DraftSchema = z.object({
   axes: DraftAxesSchema,
 });
 
+/**
+ * The fictional person a batch is written to. Invented by the model from the
+ * campaign ICP inside the same call that writes the drafts, so the drafts and
+ * the person they address can never drift apart. A fresh persona per batch is
+ * the point: judging the same voice against different plausible buyers is what
+ * separates "this is how I write" from "this is what I'd say to Dana".
+ */
+export const PersonaSchema = z.object({
+  name: z.string().max(80),
+  title: z.string().max(120),
+  company: z.string().max(120),
+  situation: z
+    .string()
+    .max(300)
+    .describe("One line: what is going on for them right now."),
+  signals: z
+    .array(z.string().max(200))
+    .min(1)
+    .max(2)
+    .describe("Invented but plausible specifics the drafts may reference."),
+});
+export type Persona = z.infer<typeof PersonaSchema>;
+
 export const BatchSchema = z.object({
+  persona: PersonaSchema,
   drafts: z.array(DraftSchema).min(2).max(8),
 });
 
 export type Draft = z.infer<typeof DraftSchema>;
 export type DraftAxes = z.infer<typeof DraftAxesSchema>;
+
+/** How the deck (and the transcript) label the persona on a card. Shared so
+ * the UI and the prompt cannot disagree about who a batch addressed. */
+export function personaLabel(p: Persona): string {
+  const where = [p.title, p.company]
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .join(", ");
+  return where ? `${p.name} · ${where}` : p.name;
+}
 
 export const SkillSchema = z.object({
   instructions: z
@@ -73,6 +107,9 @@ export interface JudgedDraft {
   body: string;
   axes: DraftAxes;
   kept: boolean;
+  /** The fictional persona this draft addressed, as the deck labelled it.
+   * Optional: runs recorded before personas existed have none. */
+  personaLabel?: string;
   /** Phrases the user highlighted on this draft, with what they said. */
   notes?: { phrase: string; note: string }[];
 }
@@ -154,8 +191,11 @@ function renderTranscript(t: SwipeTranscript): string {
   if (judged.length) {
     lines.push("DRAFTS ALREADY JUDGED:");
     for (const d of judged) {
+      // Which persona each judgement was against, so the model can avoid
+      // reusing personas and never mistakes a persona detail for a voice rule.
+      const to = d.personaLabel ? ` (to ${d.personaLabel})` : "";
       lines.push(
-        `- [${d.kept ? "KEPT" : "PASSED"}] ${JSON.stringify(d.axes)} subject: ${d.subject}`,
+        `- [${d.kept ? "KEPT" : "PASSED"}]${to} ${JSON.stringify(d.axes)} subject: ${d.subject}`,
       );
       lines.push(`  ${d.body.replace(/\n+/g, " ⏎ ")}`);
       for (const n of d.notes ?? []) {
@@ -235,50 +275,22 @@ export interface SwipeSender {
   roleTitle?: string | null;
   companyName?: string | null;
   offeringSummary?: string | null;
+  /** The rendered SENDER FACT BANK block, already fenced by renderFactBank.
+   * Null when the user has no facts, which renders nothing. */
+  factBank?: string | null;
 }
 
 /**
- * A real contact from the campaign, not a stand-in. `enrichmentData` is the
- * `people.enrichment_data` blob as stored.
+ * Who the emails are from. Deliberately separate from the campaign: the
+ * signed-in user is always known, while campaign context often isn't. Folding
+ * the sender into SwipeCampaign meant a missing campaign row silently dropped
+ * the name too, and the model invented its own. The recipient is deliberately
+ * absent: the model invents a fictional persona per batch (see the batch
+ * system prompt), so there is no recipient to resolve.
  */
-export interface SwipeRecipient {
-  name?: string | null;
-  title?: string | null;
-  company?: string | null;
-  enrichmentData?: unknown;
-}
-
-/**
- * Who the email is from and to. Deliberately separate from the campaign: the
- * signed-in user and the contact they picked are always known, while campaign
- * context often isn't. Folding these into SwipeCampaign meant a missing
- * campaign row silently dropped the names too, and the model invented its own.
- */
-export interface SwipePersona {
+export interface SwipeSenderContext {
   sender?: SwipeSender | null;
-  recipient?: SwipeRecipient | null;
 }
-
-/**
- * Enrichment blobs run to tens of kilobytes and every batch resends them. The
- * composer caps its own at 8k; this one is smaller because six drafts have to
- * fit alongside it in a single response budget.
- */
-export const MAX_ENRICHMENT_CHARS = 6_000;
-
-/**
- * The same rule the composer's system prompt carries, verbatim in intent.
- *
- * Only emitted once a *real* person is named. Without it the batch prompt's
- * variation rule actively pushes the model into fabrication: it is told to
- * spread drafts across a "data" opener and a "signal" opener, and if the
- * enrichment holds no number and no announcement it will write a plausible one
- * about somebody who exists. The last clause is what stops that, and it has to
- * be explicit — the variation rule is stated as "the whole job" above.
- */
-const NO_FABRICATION = `NEVER INVENT DATA. This is a real person at a real company. Every name, number, quote, event and claim about them must already appear in the context above. If a signal isn't there, you don't have it: don't infer it, don't approximate it, don't write something plausible in its place. A weaker email built on true details always beats a stronger one carrying a fabricated detail.
-
-This outranks the variation rule. Vary how you open, never what you claim: if the context supports no number, do not write a data-led draft, and vary on another axis instead.`;
 
 function field(label: string, value?: string | null): string | null {
   const v = value?.trim();
@@ -295,57 +307,29 @@ function renderSender(sender: SwipeSender | null | undefined): string {
       ].filter(Boolean) as string[])
     : [];
 
-  if (!rows.length) {
-    return "WHO THESE ARE FROM: not known. Never invent a sender name, company or role.";
-  }
-  return `WHO THESE ARE FROM: sign off as this person, and never invent another name, company or offer:\n${wrapUntrusted(rows.join("\n"))}`;
+  const profile = rows.length
+    ? `WHO THESE ARE FROM: sign off as this person, and never invent another name, company or offer:\n${wrapUntrusted(rows.join("\n"))}`
+    : "WHO THESE ARE FROM: not known. Never invent a sender name, company or role.";
+
+  // Already fenced by renderFactBank; wrapping it again would escape its own
+  // fence and turn the facts into trusted prompt text.
+  const factBank = sender?.factBank?.trim();
+  return factBank ? `${profile}\n\n${factBank}` : profile;
 }
 
-function renderRecipient(recipient: SwipeRecipient | null | undefined): string {
-  const rows = recipient
-    ? ([
-        field("Name", recipient.name),
-        field("Title", recipient.title),
-        field("Company", recipient.company),
-      ].filter(Boolean) as string[])
-    : [];
+/**
+ * The recipient side of the batch prompt. Static text rather than resolved
+ * data: the person is invented by the model, per batch, from the campaign ICP.
+ * A fictional recipient means an invented signal is exercise material rather
+ * than a lie, which is what lets the variation rule spread across data-led and
+ * signal-led openers without fabricating claims about somebody who exists.
+ */
+const INVENT_RECIPIENT = `WHO THESE ARE TO: INVENT THE RECIPIENT. Before writing the drafts, invent one fictional but plausible person squarely inside the campaign's ICP (or a plausible generic B2B buyer when no campaign context is given): name, title, company, situation, and 1-2 invented specifics. Every draft in this batch is written to that same person, and you return the persona with the drafts. Recipient details are yours to invent: the person is fictional, so a made-up signal is not a lie, it is the exercise. Never reuse a persona that already appears in the judged drafts below.
 
-  if (!rows.length) {
-    return "WHO THESE ARE TO: nobody specific. Use neutral placeholders sparingly and never invent a named person.";
-  }
+THE SENDER IS REAL. Never invent facts about the sender: everything the drafts claim about who is writing (their offer, their numbers, their story) must come from the sender context above.`;
 
-  if (recipient?.enrichmentData) {
-    rows.push(
-      `Enrichment (LinkedIn, Twitter, news, background):\n${JSON.stringify(
-        recipient.enrichmentData,
-      ).slice(0, MAX_ENRICHMENT_CHARS)}`,
-    );
-  }
-
-  return `WHO THESE ARE TO: a real prospect. Address this person, and nobody else:\n${wrapUntrusted(
-    rows.join("\n"),
-  )}\n\n${NO_FABRICATION}`;
-}
-
-/** How the deck labels the recipient on the card. Shared so the UI and the
- * prompt cannot disagree about who the run is about. */
-export function recipientLabel(
-  recipient: SwipeRecipient | null | undefined,
-): string | null {
-  if (!recipient) return null;
-  const name = recipient.name?.trim();
-  if (!name) return null;
-  const where = [recipient.title?.trim(), recipient.company?.trim()]
-    .filter(Boolean)
-    .join(", ");
-  return where ? `${name} · ${where}` : name;
-}
-
-function renderContext(
-  campaign: SwipeCampaign | null,
-  persona: SwipePersona,
-): string {
-  const campaignBlock = campaign
+function campaignBlock(campaign: SwipeCampaign | null): string {
+  return campaign
     ? `THE CAMPAIGN THESE ARE FOR:\n${wrapUntrusted(
         [
           `Name: ${campaign.name}`,
@@ -354,11 +338,7 @@ function renderContext(
           `Positioning: ${JSON.stringify(campaign.positioning ?? {})}`,
         ].join("\n"),
       )}`
-    : "No campaign context is available. Write plausible but generic B2B cold emails, and do not invent specific claims about the recipient's company.";
-
-  return `${renderSender(persona.sender)}\n\n${renderRecipient(
-    persona.recipient,
-  )}\n\n${campaignBlock}`;
+    : "No campaign context is available. Write plausible but generic B2B cold emails.";
 }
 
 // ── Prompt 1: generate a batch ──────────────────────────────────────────────
@@ -396,17 +376,19 @@ A highlighted phrase with a note is the strongest signal available: they pointed
 ## Writing the emails themselves
 
 - 30-90 words. These are cold emails; the user is judging voice, not admiring length.
-- Reference the campaign's real offering and audience. Never invent facts about the recipient's company beyond what the campaign context supports.
+- Reference the campaign's real offering and audience, and ground each draft in the invented persona's situation and signals.
 - Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name]. Write it as it would send.
 - No emojis.
 
-Return only the drafts.`;
+Return the persona and the drafts, nothing else.`;
 
 export function buildBatchSystem(
   campaign: SwipeCampaign | null,
-  persona: SwipePersona = {},
+  context: SwipeSenderContext = {},
 ): string {
-  return `${BATCH_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderContext(campaign, persona)}`;
+  return `${BATCH_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderSender(
+    context.sender,
+  )}\n\n${INVENT_RECIPIENT}\n\n${campaignBlock(campaign)}`;
 }
 
 export function buildBatchPrompt(
@@ -433,6 +415,8 @@ You have four kinds, and they are not equally reliable:
 3. **What they kept**: strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
 4. **What they passed**: the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
 
+The recipients in the judged drafts were fictional personas invented for practice. Write rules about the user's voice only; never a rule about any persona, their company, or their situation.
+
 That ranking is about evidence, not about intent. What they pasted is the truest picture of how they write today; what they typed is the truest picture of what they want changed. So where a typed instruction contradicts everything else, follow the instruction: they are correcting themselves, not describing themselves. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
 
 ## When they already have rules
@@ -451,9 +435,11 @@ If a block of rules they are already writing with appears, this is a change and 
 
 export function buildSkillSystem(
   campaign: SwipeCampaign | null,
-  persona: SwipePersona = {},
+  context: SwipeSenderContext = {},
 ): string {
-  return `${SKILL_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderContext(campaign, persona)}`;
+  return `${SKILL_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderSender(
+    context.sender,
+  )}\n\n${campaignBlock(campaign)}`;
 }
 
 /**

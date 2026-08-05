@@ -4,6 +4,7 @@ import { createClient, getSupabaseAndUser } from "@/lib/supabase/server";
 import { composeEmail, mapConcurrent } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { saveDraft } from "@/lib/email-composition/save";
+import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
 
 export const createSequence = tool({
   description:
@@ -330,10 +331,15 @@ export const draftEmailsForSequence = tool({
     const { data: profile } = campaign.profile_id
       ? await supabase
           .from("user_profile")
-          .select("name, role_title, company_name, notes")
+          .select("id, name, role_title, company_name, offering_summary, notes")
           .eq("id", campaign.profile_id)
           .single()
       : { data: null };
+
+    // Sender fact bank, loaded once for the whole fan-out (never per contact).
+    const factBank = renderFactBank(
+      await loadSenderFacts(supabase, campaign.profile_id ?? null),
+    );
 
     const { data: steps } = await supabase
       .from("sequence_steps")
@@ -485,8 +491,10 @@ export const draftEmailsForSequence = tool({
           name: profile?.name ?? null,
           title: profile?.role_title ?? null,
           company: profile?.company_name ?? null,
-          signature: profile?.notes ?? null,
+          offeringSummary: profile?.offering_summary ?? null,
+          notes: profile?.notes ?? null,
         },
+        factBank,
       });
 
       if (!composed.ok) {

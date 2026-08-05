@@ -35,6 +35,11 @@ import {
   listProfiles,
 } from "./profile-tools";
 import {
+  researchSenderProfile,
+  addSenderFacts,
+  listSenderFacts,
+} from "./sender-fact-tools";
+import {
   getSignalAuthoringGuide,
   testSignalRecipe,
   getSignals,
@@ -100,6 +105,9 @@ const rawTools = {
   getUserProfile,
   updateUserProfile,
   listProfiles,
+  researchSenderProfile,
+  addSenderFacts,
+  listSenderFacts,
   enrichCompany,
   enrichCompanies,
   enrichContacts,

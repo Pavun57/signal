@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  MAX_ENRICHMENT_CHARS,
+  BatchSchema,
   MAX_SAMPLE_CHARS,
   buildBatchPrompt,
   buildBatchSystem,
@@ -9,7 +9,7 @@ import {
   buildSkillPrompt,
   buildSkillSystem,
   normaliseInstructions,
-  recipientLabel,
+  personaLabel,
   type JudgedDraft,
 } from "@/lib/email-skills/swipe-prompts";
 
@@ -56,19 +56,13 @@ describe("normaliseInstructions", () => {
 });
 
 describe("buildBatchSystem", () => {
-  it("carries sender and recipient even with no campaign", () => {
+  it("carries the sender even with no campaign", () => {
     const sys = buildBatchSystem(null, {
       sender: { name: "Jay", roleTitle: "Founder", companyName: "Arbor" },
-      recipient: {
-        name: "Dana Whitfield",
-        title: "VP Engineering",
-        company: "Fernpath",
-      },
     });
-    // The bug this guards: names lived on the campaign object, so a missing
-    // campaign row silently dropped them and the model invented its own.
+    // The bug this guards: the sender lived on the campaign object, so a
+    // missing campaign row silently dropped it and the model invented its own.
     expect(sys).toContain("Jay");
-    expect(sys).toContain("Dana Whitfield");
     expect(sys).toContain("No campaign context is available");
   });
 
@@ -95,45 +89,25 @@ describe("buildBatchSystem", () => {
     expect(sys).toContain("Arbor");
   });
 
-  it("says nothing is known when neither side was resolved", () => {
+  it("says the sender is unknown rather than letting the model invent one", () => {
     const sys = buildBatchSystem(null, {});
     expect(sys).toContain("WHO THESE ARE FROM: not known");
-    expect(sys).toContain("WHO THESE ARE TO: nobody specific");
-    // Degrading to a generic run is the point; it must not start demanding
-    // facts it was never given.
-    expect(sys).not.toContain("NEVER INVENT DATA");
   });
 
-  it("adds the no-fabrication rule as soon as a real person is named", () => {
-    // Not gated on enrichment: a real name and a real company are enough for
-    // an invented funding round to be a lie about someone who exists.
+  it("appends the sender fact bank after the profile rows, without re-fencing it", () => {
     const sys = buildBatchSystem(null, {
-      recipient: { name: "Dana Whitfield", company: "Fernpath" },
+      sender: {
+        name: "Jay",
+        factBank:
+          "SENDER FACT BANK: true facts about the sender.\n<untrusted>\nproof_point:\n- Grew Signal to 200 customers\n</untrusted>",
+      },
     });
-    expect(sys).toContain("NEVER INVENT DATA");
-    expect(sys).toContain("This outranks the variation rule");
-  });
-
-  it("renders enrichment inside the untrusted fence and truncates it", () => {
-    const enrichmentData = { bio: "x".repeat(MAX_ENRICHMENT_CHARS * 2) };
-    const sys = buildBatchSystem(null, {
-      recipient: { name: "Dana Whitfield", enrichmentData },
-    });
-    expect(sys).toContain("Enrichment (LinkedIn, Twitter, news, background)");
-    expect(sys).not.toContain("x".repeat(MAX_ENRICHMENT_CHARS + 1));
-    // The blob comes from scraped pages and third-party APIs, so it is the
-    // most likely place in this prompt for injected instructions to arrive.
-    expect(sys.indexOf("<untrusted>")).toBeLessThan(
-      sys.indexOf("Enrichment ("),
-    );
-  });
-
-  it("omits the enrichment block when the contact has none", () => {
-    const sys = buildBatchSystem(null, {
-      recipient: { name: "Dana Whitfield", enrichmentData: null },
-    });
-    expect(sys).toContain("Dana Whitfield");
-    expect(sys).not.toContain("Enrichment (");
+    expect(sys).toContain("SENDER FACT BANK");
+    expect(sys).toContain("Grew Signal to 200 customers");
+    expect(sys.indexOf("Jay")).toBeLessThan(sys.indexOf("SENDER FACT BANK"));
+    // renderFactBank already fenced it; wrapping it again would escape the
+    // inner fence and expose the facts as trusted prompt.
+    expect(sys).not.toContain("&lt;untrusted");
   });
 });
 
@@ -311,37 +285,92 @@ describe("buildSkillSystem", () => {
     expect(sys).toContain("follow the instruction");
   });
 
-  it("gets the same persona context as the batch prompt", () => {
+  it("gets the same sender context as the batch prompt", () => {
     const sys = buildSkillSystem(null, {
       sender: { name: "Jay" },
-      recipient: { name: "Dana Whitfield" },
     });
     expect(sys).toContain("Jay");
-    expect(sys).toContain("Dana Whitfield");
+  });
+
+  it("tells the rule-writer the judged recipients were fictional practice personas", () => {
+    const sys = buildSkillSystem(null, {});
+    expect(sys).toContain("fictional personas");
+    // Rules must be about the user's voice, never about the invented person a
+    // batch happened to address.
+    expect(sys).toMatch(/never a rule about any persona/i);
   });
 });
 
-describe("recipientLabel", () => {
-  it("reads as a To line", () => {
+describe("fictional personas", () => {
+  const validDraft = {
+    subject: "Saw the release notes",
+    body: "Worth 15 minutes?",
+    axes: {
+      opener: "signal",
+      tone: "blunt",
+      close: "question",
+      greeting: "firstname",
+      signoff: "name",
+    },
+  };
+  const persona = {
+    name: "Riya Shah",
+    title: "VP Sales",
+    company: "Northbeam Labs",
+    situation: "Scaling outbound after a Series B",
+    signals: ["Hiring 4 SDRs this quarter"],
+  };
+
+  it("batch schema requires a persona alongside the drafts", () => {
+    expect(() =>
+      BatchSchema.parse({ drafts: [validDraft, validDraft] }),
+    ).toThrow();
     expect(
-      recipientLabel({
-        name: "Dana Whitfield",
-        title: "VP Engineering",
-        company: "Fernpath",
-      }),
-    ).toBe("Dana Whitfield · VP Engineering, Fernpath");
+      BatchSchema.parse({ persona, drafts: [validDraft, validDraft] }).persona
+        .name,
+    ).toBe("Riya Shah");
   });
 
-  it("drops the parts that are missing", () => {
-    expect(
-      recipientLabel({ name: "Dana Whitfield", company: "Fernpath" }),
-    ).toBe("Dana Whitfield · Fernpath");
-    expect(recipientLabel({ name: "Dana Whitfield" })).toBe("Dana Whitfield");
+  it("the batch system prompt tells the model to invent the recipient and keep the sender true", () => {
+    const sys = buildBatchSystem(
+      { name: "Arbor", icp: {}, offering: {}, positioning: {} },
+      { sender: { name: "Jay", companyName: "Arbor" } },
+    );
+    expect(sys).toMatch(/invent/i);
+    expect(sys).toMatch(/fiction/i);
+    expect(sys).toMatch(/never invent .*sender/i);
+    expect(sys).not.toContain("NEVER INVENT DATA. This is a real person");
   });
 
-  it("is null without a name, so the card never says 'To ,'", () => {
-    expect(recipientLabel(null)).toBeNull();
-    expect(recipientLabel({ title: "VP Engineering" })).toBeNull();
-    expect(recipientLabel({ name: "   " })).toBeNull();
+  it("never reuses a persona already judged, and the persona rides with the drafts", () => {
+    const sys = buildBatchSystem(null, {});
+    expect(sys).toMatch(/never reuse a persona/i);
+    expect(sys).toMatch(/return the persona with the drafts/i);
+  });
+
+  it("personaLabel reads as a To line and drops missing parts", () => {
+    expect(personaLabel(persona)).toBe("Riya Shah · VP Sales, Northbeam Labs");
+    expect(
+      personaLabel({ ...persona, title: "", company: "Northbeam Labs" }),
+    ).toBe("Riya Shah · Northbeam Labs");
+    expect(personaLabel({ ...persona, title: "", company: "" })).toBe(
+      "Riya Shah",
+    );
+  });
+
+  it("judged drafts carry which persona they addressed into the transcript", () => {
+    const prompt = buildBatchPrompt(
+      {
+        judged: [
+          {
+            ...judged("Release notes", true),
+            personaLabel: "Riya Shah · VP Sales",
+          },
+        ],
+        instructions: [],
+      },
+      4,
+    );
+    expect(prompt).toContain("Riya Shah");
   });
 });

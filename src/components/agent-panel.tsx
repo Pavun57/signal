@@ -243,7 +243,6 @@ function AgentPanelInner({
       body.voiceRun = {
         campaignId: run.campaignId,
         transcript: toTranscript(run),
-        recipientPersonId: run.recipientPersonId,
         queued: Math.min(run.queue.length, 24),
       };
     }

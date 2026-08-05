@@ -110,6 +110,11 @@ export function VoiceSwipe({
   }, [campaignId, resumeRun]);
 
   const queue = (run?.queue ?? []).map(toEmail);
+  // Per draft, not per run: the invented persona rotates each batch, and a
+  // queue holding two batches labels each card with its own batch's persona.
+  const personaById = new Map(
+    (run?.queue ?? []).map((d) => [d.id, d.personaLabel ?? null]),
+  );
   const judgedEmails: SwipeEmail[] = (run?.judged ?? []).map((d, i) => ({
     id: `j${i}`,
     subject: d.subject,
@@ -196,6 +201,9 @@ export function VoiceSwipe({
             body: card.body,
             axes: card.axes,
             kept: liked,
+            // Which invented persona this judgement was against, so the next
+            // batch never reuses it and no persona detail reads as a rule.
+            personaLabel: card.personaLabel ?? undefined,
           },
         ],
         queue: r.queue.filter((d) => d.id !== card.id),
@@ -342,7 +350,7 @@ export function VoiceSwipe({
               {tallest && (
                 <Card
                   email={tallest}
-                  to={run.recipientLabel}
+                  to={personaById.get(tallest.id) ?? null}
                   className="invisible"
                   aria-hidden
                 />
@@ -354,7 +362,7 @@ export function VoiceSwipe({
                   <Card
                     key={e.id}
                     email={e}
-                    to={run.recipientLabel}
+                    to={personaById.get(e.id) ?? null}
                     aria-hidden
                     className={
                       behind.length - i === 1
@@ -370,7 +378,7 @@ export function VoiceSwipe({
                 // That is what made the swipe feel wrong.
                 key={card.id}
                 email={card}
-                to={run.recipientLabel}
+                to={personaById.get(card.id) ?? null}
                 className={cn(
                   // transition-all, not transition-transform: the opacity in
                   // the leaving classes was never animated, so the card
@@ -660,7 +668,8 @@ function Card({
   ...rest
 }: {
   email: SwipeEmail;
-  /** The run's real prospect. Null when there was nobody to write about. */
+  /** This batch's invented persona. Never a real contact: the marker beside
+   * it is what keeps the card honest about that. */
   to?: string | null;
 } & React.HTMLAttributes<HTMLElement>) {
   return (
@@ -674,7 +683,12 @@ function Card({
       )}
     >
       <span className="text-muted-foreground mb-3.5 text-[0.8125rem]">
-        To {to ?? "a prospect in this campaign"}
+        To {to ?? "an invented prospect"}
+        {to && (
+          <span className="text-muted-foreground/70 ml-1.5 text-[0.6875rem]">
+            · ✨ invented
+          </span>
+        )}
       </span>
       <h3 className="mb-3.5 text-[1.1875rem] leading-[1.35] font-medium tracking-tight text-balance">
         {email.subject}

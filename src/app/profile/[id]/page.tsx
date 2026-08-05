@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { Loader2, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,8 @@ import {
   PageHeaderSkeleton,
 } from "@/components/ui/skeleton-presets";
 import { Textarea } from "@/components/ui/textarea";
+import { FACT_CATEGORIES } from "@/lib/sender-facts";
+import type { FactCategory, SenderFact } from "@/lib/sender-facts";
 import { createClient } from "@/lib/supabase/client";
 import { useUser } from "@clerk/nextjs";
 import { profileDisplayName } from "@/lib/types/profile";
@@ -380,7 +383,287 @@ export default function ProfileDetailPage() {
             {saving ? "Saving..." : profile ? "Save Profile" : "Create Profile"}
           </Button>
         </div>
+
+        {profile && (
+          <>
+            <Separator />
+            <FactBankSection profileId={profile.id} userId={clerkUser?.id} />
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+const CATEGORY_LABELS: Record<FactCategory, string> = {
+  background: "Background",
+  proof_point: "Proof point",
+  story: "Story",
+  pov: "Point of view",
+  credibility: "Credibility",
+  personal: "Personal",
+};
+
+/** All facts for a profile, insertion order. RLS scopes to the current user. */
+async function fetchFacts(profileId: string): Promise<SenderFact[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from("sender_facts")
+    .select("id, category, fact, source")
+    .eq("profile_id", profileId)
+    .order("created_at", { ascending: true });
+  return (data as SenderFact[]) ?? [];
+}
+
+/**
+ * The sender fact bank for one profile: the pool of true facts the email
+ * drafter picks at most 1-2 from per recipient. All reads and writes go
+ * through the browser Supabase client like the rest of the page -- RLS
+ * scopes every query to the signed-in user.
+ */
+function FactBankSection({
+  profileId,
+  userId,
+}: {
+  profileId: string;
+  userId: string | undefined;
+}) {
+  const [facts, setFacts] = useState<SenderFact[]>([]);
+  const [factsLoading, setFactsLoading] = useState(true);
+
+  const [newCategory, setNewCategory] = useState<FactCategory>("background");
+  const [newFact, setNewFact] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
+
+  const [researching, setResearching] = useState(false);
+  const [researchNote, setResearchNote] = useState<string | null>(null);
+  const [researchError, setResearchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      setFacts(await fetchFacts(profileId));
+      setFactsLoading(false);
+    };
+    void load();
+  }, [profileId]);
+
+  const handleAdd = async () => {
+    const fact = newFact.trim();
+    if (!fact) return;
+    if (!userId) {
+      toast.error("Still signing in, try again in a moment");
+      return;
+    }
+    setAdding(true);
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("sender_facts")
+      .insert({
+        user_id: userId,
+        profile_id: profileId,
+        category: newCategory,
+        fact,
+        source: "user",
+      })
+      .select("id, category, fact, source")
+      .single();
+
+    if (error) {
+      toast.error(`Failed to add fact: ${error.message}`);
+    } else {
+      setFacts((prev) => [...prev, data as SenderFact]);
+      setNewFact("");
+    }
+    setAdding(false);
+  };
+
+  const startEdit = (f: SenderFact) => {
+    setEditingId(f.id);
+    setEditingText(f.fact);
+  };
+
+  const saveEdit = async (id: string) => {
+    const text = editingText.trim();
+    setEditingId(null);
+    const current = facts.find((f) => f.id === id);
+    if (!current || !text || text === current.fact) return;
+
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("sender_facts")
+      .update({ fact: text })
+      .eq("id", id);
+
+    if (error) {
+      toast.error(`Failed to update fact: ${error.message}`);
+    } else {
+      setFacts((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, fact: text } : f)),
+      );
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    const supabase = createClient();
+    const { error } = await supabase.from("sender_facts").delete().eq("id", id);
+    if (error) {
+      toast.error(`Failed to delete fact: ${error.message}`);
+    } else {
+      setFacts((prev) => prev.filter((f) => f.id !== id));
+    }
+  };
+
+  const handleResearch = async () => {
+    setResearching(true);
+    setResearchNote(null);
+    setResearchError(null);
+    try {
+      const res = await fetch("/api/profile/research-facts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profileId }),
+      });
+      const json = (await res.json()) as { added?: number; error?: string };
+      if (!res.ok) {
+        setResearchError(json.error ?? "Research failed");
+      } else {
+        setFacts(await fetchFacts(profileId));
+        setResearchNote(
+          json.added
+            ? `+${json.added} fact${json.added === 1 ? "" : "s"} added`
+            : "No new facts found -- everything was already in the bank",
+        );
+      }
+    } catch {
+      setResearchError("Research failed. Try again in a moment.");
+    } finally {
+      setResearching(false);
+    }
+  };
+
+  return (
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="type-header">Fact Bank</h2>
+          <p className="text-muted-foreground text-sm">
+            True facts about you that email drafts can draw on -- at most one or
+            two per recipient.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleResearch}
+          disabled={researching}
+        >
+          {researching ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="h-3.5 w-3.5" />
+          )}
+          {researching ? "Researching..." : "Research my profile"}
+        </Button>
+      </div>
+
+      {researchError && (
+        <p className="text-destructive text-sm">{researchError}</p>
+      )}
+      {researchNote && (
+        <p className="text-muted-foreground text-sm">{researchNote}</p>
+      )}
+
+      {factsLoading ? (
+        <ListRowsSkeleton count={3} />
+      ) : facts.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          No facts yet. Add one below, or research your profile to fill the bank
+          from your links.
+        </p>
+      ) : (
+        FACT_CATEGORIES.map((category) => {
+          const group = facts.filter((f) => f.category === category);
+          if (group.length === 0) return null;
+          return (
+            <div key={category} className="space-y-2">
+              <h3 className="text-sm font-medium leading-none">
+                {CATEGORY_LABELS[category]}
+              </h3>
+              <ul className="space-y-1">
+                {group.map((f) => (
+                  <li key={f.id} className="flex items-center gap-2">
+                    {editingId === f.id ? (
+                      <Input
+                        autoFocus
+                        maxLength={500}
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onBlur={() => void saveEdit(f.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void saveEdit(f.id);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        className="flex-1"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startEdit(f)}
+                        title="Click to edit"
+                        className="hover:bg-muted flex-1 rounded-md px-2 py-1 text-left text-sm"
+                      >
+                        {f.fact}
+                      </button>
+                    )}
+                    <span className="border-border text-muted-foreground rounded border px-1.5 py-0.5 text-[10px]">
+                      {f.source}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => void handleDelete(f.id)}
+                      aria-label="Delete fact"
+                    >
+                      <X />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <select
+          value={newCategory}
+          onChange={(e) => setNewCategory(e.target.value as FactCategory)}
+          className="border-input bg-background ring-offset-background focus:ring-ring h-9 rounded-md border px-2 text-sm focus:ring-2 focus:ring-offset-2 focus:outline-none"
+          aria-label="Fact category"
+        >
+          {FACT_CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {CATEGORY_LABELS[c]}
+            </option>
+          ))}
+        </select>
+        <Input
+          maxLength={500}
+          value={newFact}
+          onChange={(e) => setNewFact(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void handleAdd();
+          }}
+          placeholder="e.g. Grew Acme from 0 to 200 customers in 18 months"
+          className="flex-1"
+        />
+        <Button onClick={handleAdd} disabled={adding || !newFact.trim()}>
+          {adding ? "Adding..." : "Add"}
+        </Button>
+      </div>
+    </section>
   );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { composeEmail } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
+import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
@@ -83,11 +84,16 @@ export async function POST(request: Request) {
   if (campaign?.profile_id) {
     const { data: profile } = await supabase
       .from("user_profile")
-      .select("name, role_title, company_name, offering_summary")
+      .select("id, name, role_title, company_name, offering_summary, notes")
       .eq("id", campaign.profile_id)
       .single();
     senderProfile = (profile as Record<string, unknown>) ?? null;
   }
+
+  // Sender fact bank for this profile (single draft, single load).
+  const factBank = renderFactBank(
+    await loadSenderFacts(supabase, campaign?.profile_id ?? null),
+  );
 
   type OrgRow = {
     name: string | null;
@@ -167,8 +173,10 @@ export async function POST(request: Request) {
       name: (senderProfile?.name as string) ?? null,
       title: (senderProfile?.role_title as string) ?? null,
       company: (senderProfile?.company_name as string) ?? null,
-      signature: null,
+      offeringSummary: (senderProfile?.offering_summary as string) ?? null,
+      notes: (senderProfile?.notes as string) ?? null,
     },
+    factBank,
     triggerReason: (draft.ai_reasoning as string) ?? null,
   });
 
