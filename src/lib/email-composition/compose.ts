@@ -15,6 +15,7 @@ type UserPromptInput = Parameters<typeof buildComposeUserPrompt>[0];
 
 export type ComposeInput = UserPromptInput & {
   voice?: VoiceProfile | null;
+  factBank?: string | null;
 };
 
 export type ComposeResult =
@@ -24,8 +25,9 @@ export type ComposeResult =
 /**
  * Single-email composition via generateObject. One focused Claude call per
  * contact × step. The system prompt is stable for a given (user, profile,
- * campaign, voice) so parallel fan-out hits prompt cache on all but the
- * first call.
+ * campaign, voice, fact bank) so parallel fan-out hits prompt cache on all
+ * but the first call — the sender facts are part of the stable prompt, not
+ * the per-contact one.
  *
  * Model: Opus — chosen for its ability to balance the base cold-email rules
  * against the user's voice profile, whose rules layer over and can conflict
@@ -36,7 +38,9 @@ export type ComposeResult =
 export async function composeEmail(
   input: ComposeInput,
 ): Promise<ComposeResult> {
-  const { voice, ...userPromptInput } = input;
+  // factBank is destructured out so it cannot leak into the per-contact user
+  // prompt; it belongs only in the cached system prompt.
+  const { voice, factBank, ...userPromptInput } = input;
 
   // claude-opus-5 honours the structured-output schema only ~65-80% of the time
   // on this prompt, sometimes wrapping the payload and sometimes emitting
@@ -48,7 +52,7 @@ export async function composeEmail(
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: ComposedEmailSchema,
-      system: buildEmailSystemPrompt(voice ?? null),
+      system: buildEmailSystemPrompt(voice ?? null, factBank ?? null),
       prompt: buildComposeUserPrompt(userPromptInput),
       providerOptions: {
         anthropic: {
