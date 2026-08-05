@@ -14,6 +14,8 @@ export interface TrackingConfig {
   intent: string;
   /** Opt-in: high-confidence fires skip the review queue and send. */
   auto_send: boolean;
+  /** How many contacts to draft for per signal fire (1-5, default 1). */
+  max_contacts_per_fire: number;
   status: TrackingStatus;
   last_run_at: string | null;
   next_run_at: string | null;

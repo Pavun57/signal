@@ -34,6 +34,8 @@ interface SignalPayload {
   confidence?: string;
   /** Set by tracking-run: auto_send config AND high-confidence verdict. */
   autoSend?: boolean;
+  /** Contacts to draft for on this fire (from max_contacts_per_fire, 1-5). */
+  maxContacts?: number;
 }
 
 interface FollowupPayload {
@@ -263,7 +265,7 @@ async function pickAndDraft(
     signalName: (signal?.name as string) ?? "Unknown signal",
     signalCategory: (signal?.category as string) ?? "custom",
     candidates,
-    maxPicks: 1,
+    maxPicks: Math.min(Math.max(payload.maxContacts ?? 1, 1), 5),
   });
 
   if (picks.length === 0) return 0;

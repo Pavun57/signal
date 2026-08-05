@@ -61,6 +61,15 @@ export const createTracking = tool({
       .describe(
         "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
       ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .default(1)
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (default 1). A funding round might justify 2-3; each still counts against the daily send cap.",
+      ),
   }),
   execute: async (input) => {
     if (!input.organizationId && !input.personId) {
@@ -82,6 +91,7 @@ export const createTracking = tool({
         schedule: input.schedule,
         intent: input.intent,
         auto_send: input.autoSend,
+        max_contacts_per_fire: input.maxContactsPerFire,
         status: "active",
         next_run_at: new Date(Date.now() + interval).toISOString(),
       })
@@ -147,6 +157,15 @@ export const bulkCreateTracking = tool({
       .describe(
         "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
       ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .default(1)
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (default 1). A funding round might justify 2-3; each still counts against the daily send cap.",
+      ),
     status: z
       .enum(["qualified", "discovered", "all"])
       .default("qualified")
@@ -203,6 +222,7 @@ export const bulkCreateTracking = tool({
         schedule: input.schedule,
         intent: input.intent,
         auto_send: input.autoSend,
+        max_contacts_per_fire: input.maxContactsPerFire,
         status: "active",
         next_run_at: nextRun,
       }));
@@ -384,6 +404,15 @@ export const updateTracking = tool({
       .describe(
         "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
       ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .optional()
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (1-5). A funding round might justify 2-3; each still counts against the daily send cap.",
+      ),
     status: z
       .enum(["active", "paused", "completed"])
       .optional()
@@ -411,6 +440,9 @@ export const updateTracking = tool({
     }
     if (input.autoSend !== undefined) {
       updates.auto_send = input.autoSend;
+    }
+    if (input.maxContactsPerFire !== undefined) {
+      updates.max_contacts_per_fire = input.maxContactsPerFire;
     }
     if (input.status) {
       updates.status = input.status;

@@ -326,6 +326,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
           reason: verdict.reason,
           confidence: verdict.confidence,
           autoSend,
+          maxContacts: typedConfig.max_contacts_per_fire ?? 1,
         },
         // Queue fairness: attribute the outreach job to the campaign owner
         // instead of the shared '<system>' partition.
