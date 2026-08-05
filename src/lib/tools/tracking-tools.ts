@@ -77,6 +77,21 @@ export const createTracking = tool({
     }
 
     const supabase = await createClient();
+
+    // Agent-instructions signals are executed by a live agent conversation,
+    // not by the scheduler -- a tracking config pointing at one would never
+    // produce a snapshot.
+    const { data: signalRow } = await supabase
+      .from("signals")
+      .select("execution_type, name")
+      .eq("id", input.signalId)
+      .single();
+    if (signalRow?.execution_type === "agent_instructions") {
+      throw new Error(
+        `"${signalRow.name}" is an agent-instructions signal and cannot run on a schedule: it needs a live agent conversation. Pick an exa_search, tool_call, or browser_script signal for tracking.`,
+      );
+    }
+
     const interval =
       SCHEDULE_INTERVALS[input.schedule as Schedule] ??
       SCHEDULE_INTERVALS.weekly;
@@ -175,6 +190,20 @@ export const bulkCreateTracking = tool({
   }),
   execute: async (input) => {
     const supabase = await createClient();
+
+    // One signal covers the whole batch, so check it once up front:
+    // agent-instructions signals run in a live agent conversation and can
+    // never execute on the tracking scheduler.
+    const { data: signalRow } = await supabase
+      .from("signals")
+      .select("execution_type, name")
+      .eq("id", input.signalId)
+      .single();
+    if (signalRow?.execution_type === "agent_instructions") {
+      throw new Error(
+        `"${signalRow.name}" is an agent-instructions signal and cannot run on a schedule: it needs a live agent conversation. Pick an exa_search, tool_call, or browser_script signal for tracking.`,
+      );
+    }
 
     // Get organizations in this campaign
     let query = supabase

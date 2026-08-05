@@ -816,7 +816,7 @@ export const findEmails = tool({
 
 export const writeEmail = tool({
   description:
-    "Compose an email draft and save it to the database. This does NOT send the email -- it creates a draft for the user to review. The user must confirm before you call sendEmail.",
+    "Compose an email draft and save it to the database. This does NOT send the email -- the draft starts pending and the user must approve it in the outreach review queue (/outreach/review) before sendEmail can send it.",
   inputSchema: z.object({
     campaignId: z.string().uuid().describe("Campaign ID."),
     personId: z.string().uuid().describe("Person ID (from campaign contacts)."),
@@ -875,7 +875,7 @@ export const writeEmail = tool({
       subject: result.subject,
       status: "draft",
       message:
-        "Draft saved. Show it to the user and wait for confirmation before calling sendEmail.",
+        "Draft saved as pending. Show it to the user and point them to /outreach/review to approve it -- sendEmail will refuse the draft until it is approved there.",
     };
   },
 });
@@ -884,7 +884,7 @@ export const writeEmail = tool({
 
 export const sendEmail = tool({
   description:
-    "Send a previously written email draft via the user's connected Gmail. Only approved drafts can be sent: ad-hoc drafts from writeEmail are approved at creation, but sequence drafts must be approved by the user in the outreach review queue first. Rejected drafts can never be sent.",
+    "Send a previously written email draft via the user's connected Gmail. Only approved drafts can be sent: ALL drafts (including ad-hoc writeEmail drafts) start pending and must be approved by the user in the outreach review queue first. Rejected drafts can never be sent.",
   inputSchema: z.object({
     draftId: z.string().uuid().describe("Draft ID to send."),
   }),
@@ -1033,7 +1033,7 @@ export const discardDraft = tool({
 
 export const sendBulkEmails = tool({
   description:
-    "Send multiple email drafts at once. Only APPROVED drafts are sent; sequence drafts awaiting review or rejected in the review queue are excluded and reported back. If no draftIds provided, sends all approved unsent drafts for the campaign. Only call after user confirms sending.",
+    "Send multiple email drafts at once. Only APPROVED drafts are sent; drafts awaiting review or rejected in the review queue are excluded and reported back. If no draftIds provided, sends all approved unsent drafts for the campaign. Only call after user confirms sending.",
   inputSchema: z.object({
     campaignId: z.string().uuid().describe("Campaign ID."),
     draftIds: z
