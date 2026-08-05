@@ -14,6 +14,7 @@ import {
   sendGmailMessage,
 } from "@/lib/services/gmail-service";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 // The IMAP socket timeout is 60s, so the settings route's 30 is not enough
 // for a check that has to connect, fetch and log out.
@@ -60,7 +61,11 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { supabase, user } = ctx;
 
-  const { data } = await supabase
+  // Admin client: SELECT names gmail_app_password_enc, which the
+  // `authenticated` role may not read, and PostgREST refuses the whole
+  // statement rather than the one column. The row is still pinned by the
+  // user_id getSupabaseAndUser established.
+  const { data } = await getAdminClient()
     .from("user_settings")
     .select(SELECT)
     .eq("user_id", user.id)
@@ -91,7 +96,8 @@ export async function POST(request: Request) {
   const { supabase, user } = ctx;
   const body = await request.json();
 
-  const { data } = await supabase
+  // Admin client, same reason as the GET above.
+  const { data } = await getAdminClient()
     .from("user_settings")
     .select(SELECT)
     .eq("user_id", user.id)
