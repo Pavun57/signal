@@ -18,6 +18,7 @@ export interface TrackingRow {
   signalCategory: string;
   schedule: string;
   status: string;
+  intent: string | null;
   lastRunAt: string | null;
   nextRunAt: string | null;
   readinessTag: ReadinessTag | null;
@@ -104,6 +105,14 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
         <td className="text-muted-foreground px-3 py-2.5 text-sm capitalize">
           {row.schedule}
           {localStatus === "paused" ? " (paused)" : ""}
+          {!row.intent?.trim() && (
+            <span
+              className="text-muted-foreground ml-1.5 rounded border px-1 py-0.5 text-[10px]"
+              title="No intent configured: this config records changes but will never fire outreach. Update it in Chat."
+            >
+              observe only
+            </span>
+          )}
         </td>
         <td className="text-muted-foreground px-3 py-2.5 text-sm">
           {formatDate(row.lastRunAt)}

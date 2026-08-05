@@ -47,6 +47,11 @@ export const createTracking = tool({
       .describe("How often to re-run the signal"),
     intent: z
       .string()
+      .trim()
+      .min(
+        10,
+        "Intent is required: without it tracking observes but never fires outreach.",
+      )
       .describe(
         "Plain-English description of what changes should flag the company/person as ready to contact. Each run, an LLM compares fresh diffs against this intent to decide whether to fire outreach. Example: 'Flag as ready when they post 2+ senior engineering or DevOps roles, or announce a Series B or later.'",
       ),
@@ -121,6 +126,11 @@ export const bulkCreateTracking = tool({
       .default("weekly"),
     intent: z
       .string()
+      .trim()
+      .min(
+        10,
+        "Intent is required: without it tracking observes but never fires outreach.",
+      )
       .describe(
         "Plain-English description of what changes should flag a company as ready to contact. Applied to every tracked organization.",
       ),
@@ -372,6 +382,11 @@ export const updateTracking = tool({
       updates.next_run_at = new Date(Date.now() + interval).toISOString();
     }
     if (input.intent !== undefined) {
+      if (input.intent.trim().length < 10) {
+        throw new Error(
+          "Intent can't be blank: tracking with no intent observes changes but never fires outreach. Describe what should flag this company as ready to contact.",
+        );
+      }
       updates.intent = input.intent;
     }
     if (input.status) {

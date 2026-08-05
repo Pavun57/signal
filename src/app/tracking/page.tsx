@@ -67,7 +67,7 @@ function TrackingPageContent() {
     const { data: configs } = await supabase
       .from("tracking_configs")
       .select(
-        "id, organization_id, schedule, status, last_run_at, next_run_at, organization:organizations(name, domain), signal:signals(name, category)",
+        "id, organization_id, schedule, status, intent, last_run_at, next_run_at, organization:organizations(name, domain), signal:signals(name, category)",
       )
       .eq("campaign_id", campaignId)
       .order("created_at", { ascending: false });
@@ -153,6 +153,7 @@ function TrackingPageContent() {
           signalCategory: (signal?.category as string) || "",
           schedule: c.schedule as string,
           status: c.status as string,
+          intent: (c.intent as string | null) ?? null,
           lastRunAt: c.last_run_at as string | null,
           nextRunAt: c.next_run_at as string | null,
           readinessTag: (tag as TrackingRow["readinessTag"]) || null,
