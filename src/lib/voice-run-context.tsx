@@ -89,8 +89,9 @@ const VoiceRunContext = createContext<VoiceRunContextValue>({
 
 interface DraftsPart {
   mode: "opening" | "append" | "replace";
-  drafts: Omit<RunDraft, "id">[];
-  recipient: { personId: string; label: string | null } | null;
+  drafts: Omit<RunDraft, "id" | "personaLabel">[];
+  /** The fictional persona the batch is written to. Rotates per batch. */
+  persona: { label: string } | null;
 }
 
 interface SkillPart {
@@ -246,23 +247,20 @@ export function VoiceRunProvider({ children }: { children: ReactNode }) {
       if (part.type === "data-voice-drafts") {
         const data = part.data as DraftsPart | undefined;
         if (!current || !data?.drafts?.length) return;
+        // Stamped per draft, not per run: the persona rotates every batch,
+        // and a queue holding two batches must label each card with the
+        // persona its drafts were actually written to.
+        const label = data.persona?.label ?? null;
         const withIds: RunDraft[] = data.drafts.map((d) => ({
           ...d,
           id: crypto.randomUUID(),
+          personaLabel: label,
         }));
         persist({
           ...current,
           queue:
             data.mode === "append" ? [...current.queue, ...withIds] : withIds,
-          // Pinned once and never overwritten: a later batch echoing a
-          // different person means the campaign changed under us, not that
-          // this run should switch prospects.
-          recipientPersonId:
-            current.recipientPersonId ?? data.recipient?.personId ?? null,
-          recipientLabel:
-            current.recipientPersonId === null && data.recipient
-              ? data.recipient.label
-              : current.recipientLabel,
+          personaLabel: label ?? current.personaLabel,
         });
         setPendingBoth(null);
         setError(null);

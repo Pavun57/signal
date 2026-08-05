@@ -17,15 +17,15 @@ import {
   buildSkillPrompt,
   buildSkillSystem,
   normaliseInstructions,
-  recipientLabel,
+  personaLabel,
   type Draft,
   type SavedVoice,
   type SwipeCampaign,
-  type SwipePersona,
+  type SwipeSenderContext,
   type SwipeTranscript,
 } from "@/lib/email-skills/swipe-prompts";
-import { resolveRecipient } from "@/lib/email-skills/swipe-recipient";
 import { getProfileForPrompt } from "@/lib/profile";
+import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
 import { llmTimeout } from "@/lib/utils/timeout";
 
 /**
@@ -90,11 +90,6 @@ export const TranscriptSchema = z.object({
 export const VoiceRunBodySchema = z.object({
   campaignId: z.string().uuid().nullish(),
   transcript: TranscriptSchema,
-  // The person the run is written about, pinned by the client after the
-  // opening batch resolved them. An id, never the contact's details: the
-  // client may say *which* of its own contacts, and the server re-reads the
-  // facts. See resolveRecipient.
-  recipientPersonId: z.string().uuid().nullish(),
   // How many drafts are still waiting on the deck, so a rewrite can replace
   // exactly that many. A count, deliberately not the drafts themselves.
   queued: z.number().int().min(0).max(24).optional(),
@@ -116,10 +111,11 @@ export type VoiceServiceResult<T> =
   | { ok: false; error: string };
 
 /**
- * Campaign context and persona for the prompts. Each part is optional and
- * independently absent-able: a user with no profile, no campaign, or a
- * campaign with no enriched contacts still gets drafts, because being unable
- * to write anything is a worse failure than writing something generic.
+ * Campaign context and sender context for the prompts. Each part is optional
+ * and independently absent-able: a user with no profile or no campaign still
+ * gets drafts, because being unable to write anything is a worse failure than
+ * writing something generic. The recipient is not loaded at all: the batch
+ * model invents a fictional persona from the campaign ICP.
  *
  * RLS scopes campaigns to the signed-in user, so an id belonging to someone
  * else resolves to nothing rather than to their data.
@@ -127,9 +123,8 @@ export type VoiceServiceResult<T> =
 async function loadPromptContext(
   supabase: SupabaseClient,
   campaignId: string | null,
-  opts: { withRecipient: boolean; recipientPersonId?: string | null },
 ) {
-  const [campaignRes, profile, resolved] = await Promise.all([
+  const [campaignRes, profile] = await Promise.all([
     campaignId
       ? supabase
           .from("campaigns")
@@ -138,30 +133,30 @@ async function loadPromptContext(
           .maybeSingle()
       : Promise.resolve({ data: null }),
     // Same resolution the chat route uses, so a campaign with its own linked
-    // profile writes as that persona rather than as the most recent one.
+    // profile writes as that sender rather than as the most recent one.
     getProfileForPrompt(campaignId ?? undefined),
-    opts.withRecipient
-      ? resolveRecipient(supabase, campaignId, opts.recipientPersonId ?? null)
-      : Promise.resolve(null),
   ]);
 
+  // Facts are truth-bound sender context: the persona is invented, and the
+  // fact bank is what the drafts are allowed to claim about who is writing.
+  const factBank = renderFactBank(
+    await loadSenderFacts(supabase, profile?.id ?? null),
+  );
+
   const campaign = (campaignRes.data as SwipeCampaign | null) ?? null;
-  const persona: SwipePersona = {
+  const senderContext: SwipeSenderContext = {
     sender: profile
       ? {
           name: profile.name,
           roleTitle: profile.role_title,
           companyName: profile.company_name,
           offeringSummary: profile.offering_summary,
+          factBank,
         }
       : null,
-    recipient: resolved?.recipient ?? null,
   };
-  const recipient = resolved
-    ? { personId: resolved.personId, label: recipientLabel(resolved.recipient) }
-    : null;
 
-  return { campaign, persona, recipient };
+  return { campaign, senderContext };
 }
 
 export async function generateVoiceBatch(
@@ -169,23 +164,22 @@ export async function generateVoiceBatch(
   input: {
     campaignId: string | null;
     transcript: SwipeTranscript;
-    recipientPersonId: string | null;
     count: number;
   },
 ): Promise<
   VoiceServiceResult<{
     drafts: Draft[];
-    recipient: { personId: string; label: string | null } | null;
+    /** The fictional persona this batch is written to, as a card label. */
+    persona: { label: string } | null;
   }>
 > {
   if (JSON.stringify(input.transcript).length > MAX_TRANSCRIPT_CHARS) {
     return { ok: false, error: "Transcript too large" };
   }
 
-  const { campaign, persona, recipient } = await loadPromptContext(
+  const { campaign, senderContext } = await loadPromptContext(
     supabase,
     input.campaignId,
-    { withRecipient: true, recipientPersonId: input.recipientPersonId },
   );
 
   try {
@@ -193,7 +187,7 @@ export async function generateVoiceBatch(
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: BatchSchema,
-      system: buildBatchSystem(campaign, persona),
+      system: buildBatchSystem(campaign, senderContext),
       prompt: buildBatchPrompt(input.transcript, input.count),
       providerOptions: {
         anthropic: {
@@ -211,10 +205,20 @@ export async function generateVoiceBatch(
       // truncates and fails generateObject outright.
       maxOutputTokens: 9_000,
     });
-    return { ok: true, drafts: object.drafts, recipient };
+    return {
+      ok: true,
+      drafts: object.drafts,
+      persona: { label: personaLabel(object.persona) },
+    };
   } catch (err) {
     const salvaged = salvageObject(err, BatchSchema);
-    if (salvaged) return { ok: true, drafts: salvaged.drafts, recipient };
+    if (salvaged) {
+      return {
+        ok: true,
+        drafts: salvaged.drafts,
+        persona: { label: personaLabel(salvaged.persona) },
+      };
+    }
     return {
       ok: false,
       error:
@@ -236,12 +240,9 @@ async function writeSkill(
     transcript: SwipeTranscript;
   },
 ): Promise<VoiceServiceResult<{ instructions: string; summary: string }>> {
-  const { campaign, persona } = await loadPromptContext(
+  const { campaign, senderContext } = await loadPromptContext(
     supabase,
     input.campaignId,
-    // A skill write draws no new drafts, so it needs no prospect to write
-    // them about, and the lookup is two queries deep.
-    { withRecipient: false },
   );
 
   let skill: { instructions: string; summary: string };
@@ -250,7 +251,7 @@ async function writeSkill(
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: SkillSchema,
-      system: buildSkillSystem(campaign, persona),
+      system: buildSkillSystem(campaign, senderContext),
       prompt: buildSkillPrompt(input.transcript),
       providerOptions: { anthropic: { effort: "medium" } },
       maxRetries: 0,

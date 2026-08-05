@@ -27,6 +27,10 @@ export interface RunDraft {
   subject: string;
   body: string;
   axes: DraftAxes;
+  /** The fictional persona this draft addresses, stamped from its batch at
+   * ingest. Per draft, not per run: a queue holding two batches labels each
+   * card with the persona it was actually written to. */
+  personaLabel: string | null;
 }
 
 export interface VoiceRun {
@@ -38,9 +42,8 @@ export interface VoiceRun {
   /** Typed instructions, in order. Appended before generating, so a failed
    * generation still records what was asked. */
   instructions: string[];
-  /** The prospect the whole run is written about, pinned on the first batch. */
-  recipientPersonId: string | null;
-  recipientLabel: string | null;
+  /** The current batch's invented persona, updated on every ingest. */
+  personaLabel: string | null;
   finished: boolean;
   /** The rules the model wrote, once saving succeeded. */
   skill: { instructions: string; summary: string } | null;
@@ -53,8 +56,7 @@ export function newRun(campaignId: string | null, samples: string[]): VoiceRun {
     queue: [],
     judged: [],
     instructions: [],
-    recipientPersonId: null,
-    recipientLabel: null,
+    personaLabel: null,
     finished: false,
     skill: null,
   };
@@ -94,6 +96,10 @@ export function readRun(
     }
     const run = parsed as Partial<VoiceRun>;
     if (!Array.isArray(run.judged) || !Array.isArray(run.queue)) return null;
+    // Shape-checked loosely on purpose: a run stored by an older build may
+    // carry the since-removed pinned-contact fields and lack personaLabel.
+    // Extra fields are harmless and missing ones read as null, so a mid-run
+    // deploy costs nothing judged.
     return run as VoiceRun;
   } catch {
     // A corrupt entry should cost the user a restart, not the whole page.
