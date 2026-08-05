@@ -60,7 +60,7 @@ export function normalizeHiringData(
  * identical data always produces the same hash regardless of insertion
  * order.
  */
-export function hashSnapshot(snapshot: HiringSnapshot): string {
+export function hashSnapshot(snapshot: unknown): string {
   const canonical = JSON.stringify(snapshot, (_key, value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       return Object.keys(value as Record<string, unknown>)
@@ -73,6 +73,44 @@ export function hashSnapshot(snapshot: HiringSnapshot): string {
     return value;
   });
   return createHash("sha256").update(canonical).digest("hex");
+}
+
+// ── Generic snapshots ──────────────────────────────────────────────────
+
+export interface GenericSnapshot {
+  kind: "generic";
+  execution_type: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Project a signal's raw output into a stable, diffable snapshot for
+ * non-hiring signals. Volatile fields (result counts, text excerpts,
+ * publish dates) are stripped so the hash only changes when the
+ * underlying facts change — otherwise every exa run would look like a
+ * change and spam the intent evaluator.
+ */
+export function buildGenericSnapshot(
+  executionType: string,
+  rawOutput: Record<string, unknown>,
+): GenericSnapshot {
+  if (executionType === "exa_search") {
+    const results = Array.isArray(rawOutput.results)
+      ? (rawOutput.results as Array<Record<string, unknown>>)
+      : [];
+    const stable = results
+      .map((r) => ({
+        title: (r.title as string) ?? "",
+        url: (r.url as string) ?? "",
+      }))
+      .sort((a, b) => a.url.localeCompare(b.url));
+    return {
+      kind: "generic",
+      execution_type: executionType,
+      data: { results: stable },
+    };
+  }
+  return { kind: "generic", execution_type: executionType, data: rawOutput };
 }
 
 // ── Diff ───────────────────────────────────────────────────────────────
