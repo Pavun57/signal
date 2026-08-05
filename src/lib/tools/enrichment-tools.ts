@@ -534,7 +534,7 @@ async function enrichContactById(
       // The !organization_id hint is load-bearing: people has a second FK to
       // organizations (affiliation_detached_from), so an unhinted embed is
       // ambiguous and PostgREST rejects the whole query.
-      "name, title, linkedin_url, twitter_url, organization:organizations!organization_id(name)",
+      "name, title, location, linkedin_url, twitter_url, organization:organizations!organization_id(name)",
     )
     .eq("id", personId)
     .single();
@@ -758,10 +758,20 @@ async function enrichContactById(
       // (an archived snapshot saying "Present" beat a live headline). Keep the
       // prose, which now says the sources disagree, and leave the stored title
       // alone rather than trading a stale title for a different stale title.
-      const update: { bio_summary?: string; title?: string } = {};
+      const update: {
+        bio_summary?: string;
+        title?: string;
+        location?: string;
+      } = {};
       if (summarized?.summary) update.bio_summary = summarized.summary;
       if (summarized?.currentTitle && !summarized.sourcesConflict)
         update.title = summarized.currentTitle;
+      // Location only ever fills a blank. Unlike the title, enrichment is not
+      // the correcting step here: the stored value may be the user's own
+      // correction, and a re-run must not trade it for whatever the sources
+      // happened to say this time.
+      if (summarized?.location && !person?.location)
+        update.location = summarized.location;
 
       if (Object.keys(update).length > 0) {
         await supabase.from("people").update(update).eq("id", personId);

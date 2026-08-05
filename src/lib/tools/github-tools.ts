@@ -91,8 +91,22 @@ async function findOrCreateGitHubPerson(profile: {
     ...(profile.raw ?? {}),
   };
 
+  const rawLocation =
+    profile.raw?.location != null
+      ? String(profile.raw.location).slice(0, 120)
+      : null;
+
   if (existing) {
     await mergeEnrichmentData("people", existing.id, { github: githubData });
+    // Fill-if-null only: a location from discovery or a manual edit wins
+    // over the GitHub profile string.
+    if (rawLocation) {
+      await supabase
+        .from("people")
+        .update({ location: rawLocation })
+        .eq("id", existing.id)
+        .is("location", null);
+    }
     return existing.id;
   }
 
@@ -113,6 +127,7 @@ async function findOrCreateGitHubPerson(profile: {
       personal_email: profile.email ?? null,
       twitter_url: twitterUrl,
       title: bio?.slice(0, 200) ?? null,
+      location: rawLocation,
       source: profile.source,
       enrichment_data: { github: githubData },
       enrichment_status: hasFullProfile ? "enriched" : "pending",

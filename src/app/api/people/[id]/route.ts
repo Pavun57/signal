@@ -12,6 +12,7 @@ const PatchSchema = z.object({
     .nullable()
     .optional(),
   role_summary: z.string().max(400).nullable().optional(),
+  location: z.string().min(1).max(120).nullable().optional(),
 });
 
 export async function PATCH(
@@ -58,19 +59,24 @@ export async function PATCH(
     );
   }
 
-  const updates = parsed.data;
+  const updates: Record<string, unknown> = { ...parsed.data };
   if (Object.keys(updates).length === 0) {
     return Response.json(
       { error: "No updatable fields provided" },
       { status: 400 },
     );
   }
+  // A location edit invalidates the cached timezone so the send gate
+  // re-resolves from the new value.
+  if ("location" in updates) {
+    updates.timezone = null;
+  }
 
   const { data, error } = await supabase
     .from("people")
     .update(updates)
     .eq("id", personId)
-    .select("id, department, seniority, role_summary")
+    .select("id, department, seniority, role_summary, location")
     .maybeSingle();
 
   if (error) {

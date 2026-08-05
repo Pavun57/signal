@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { apiFetch } from "@/lib/api-fetch";
@@ -30,6 +31,25 @@ function formatLocalTime(iso: string): string {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
+// "" is the "no window" sentinel in the hour selects.
+const HOUR_ITEMS = [
+  { value: "", label: "No window" },
+  ...Array.from({ length: 24 }, (_, h) => ({
+    value: String(h),
+    label: `${String(h).padStart(2, "0")}:00`,
+  })),
+];
+
+const WINDOW_SCOPE_ITEMS = [
+  { value: "sender", label: "My timezone" },
+  { value: "recipient", label: "Each recipient's timezone" },
+];
+
+const TIMEZONE_ITEMS = Intl.supportedValuesOf("timeZone").map((tz) => ({
+  value: tz,
+  label: tz,
+}));
+
 export function EmailSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -48,6 +68,14 @@ export function EmailSettings() {
   const [dailyLimit, setDailyLimit] = useState("30");
   const [sendingPaused, setSendingPaused] = useState(false);
   const [pauseToggling, setPauseToggling] = useState(false);
+
+  const [windowStart, setWindowStart] = useState("");
+  const [windowEnd, setWindowEnd] = useState("");
+  const [windowTimezone, setWindowTimezone] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
+  const [windowScope, setWindowScope] = useState("sender");
+  const [windowSaving, setWindowSaving] = useState(false);
 
   const [testTo, setTestTo] = useState("");
   const [testSending, setTestSending] = useState(false);
@@ -86,6 +114,24 @@ export function EmailSettings() {
       setReplyTo(data.settings.reply_to_email ?? "");
       setDailyLimit(String(configured));
       setSendingPaused(data.settings.sending_paused ?? false);
+      setWindowStart(
+        data.settings.send_window_start != null
+          ? String(data.settings.send_window_start)
+          : "",
+      );
+      setWindowEnd(
+        data.settings.send_window_end != null
+          ? String(data.settings.send_window_end)
+          : "",
+      );
+      if (data.settings.send_timezone) {
+        setWindowTimezone(data.settings.send_timezone);
+      }
+      setWindowScope(
+        data.settings.send_window_scope === "recipient"
+          ? "recipient"
+          : "sender",
+      );
 
       const testRes = await apiFetch("/api/settings/email/test");
       if (!testRes.ok || !mountedRef.current) return;
@@ -297,6 +343,40 @@ export function EmailSettings() {
       toast.error("Failed to save settings");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveWindow = async () => {
+    setWindowSaving(true);
+    try {
+      const start = windowStart === "" ? null : Number(windowStart);
+      const end = windowEnd === "" ? null : Number(windowEnd);
+      const res = await apiFetch("/api/settings/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_send_window",
+          start,
+          end,
+          timezone: windowTimezone,
+          scope: windowScope,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "Failed to save send window");
+        return;
+      }
+      toast.success(
+        start === null
+          ? "Send window cleared: emails go out any time"
+          : "Send window saved",
+      );
+      await load();
+    } catch {
+      toast.error("Failed to save send window");
+    } finally {
+      if (mountedRef.current) setWindowSaving(false);
     }
   };
 
@@ -555,6 +635,96 @@ export function EmailSettings() {
             disabled={pauseToggling}
             aria-label="Pause all sending"
           />
+        </div>
+
+        {/* Send window */}
+        <div className="space-y-3 rounded-lg border p-4">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Send window</p>
+            <p className="text-muted-foreground text-xs">
+              Scheduled sends (follow-ups, signal fires) only go out between
+              these hours. A window past midnight is fine (e.g. 16:00 → 09:00).
+              Send now and sends you confirm in chat ignore the window.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="space-y-1.5">
+              <label
+                htmlFor="send-window-start"
+                className="text-xs font-medium"
+              >
+                From
+              </label>
+              <Select
+                id="send-window-start"
+                aria-label="Send window start hour"
+                value={windowStart}
+                onValueChange={setWindowStart}
+                items={HOUR_ITEMS}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="send-window-end" className="text-xs font-medium">
+                Until
+              </label>
+              <Select
+                id="send-window-end"
+                aria-label="Send window end hour"
+                value={windowEnd}
+                onValueChange={setWindowEnd}
+                items={HOUR_ITEMS}
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <label
+                htmlFor="send-window-timezone"
+                className="text-xs font-medium"
+              >
+                Timezone
+              </label>
+              <Select
+                id="send-window-timezone"
+                aria-label="Send window timezone"
+                value={windowTimezone}
+                onValueChange={setWindowTimezone}
+                items={TIMEZONE_ITEMS}
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="send-window-scope" className="text-xs font-medium">
+              Window applies in
+            </label>
+            <Select
+              id="send-window-scope"
+              aria-label="Send window scope"
+              value={windowScope}
+              onValueChange={setWindowScope}
+              items={WINDOW_SCOPE_ITEMS}
+            />
+            {windowScope === "recipient" && (
+              <p className="text-muted-foreground text-xs">
+                Best effort: each contact&apos;s timezone is inferred from their
+                location data. Contacts whose timezone can&apos;t be determined
+                use your timezone above.
+              </p>
+            )}
+          </div>
+          {(windowStart === "") !== (windowEnd === "") && (
+            <p className="text-warn text-xs">
+              Pick both hours, or set both to “No window”.
+            </p>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSaveWindow}
+            disabled={
+              windowSaving || (windowStart === "") !== (windowEnd === "")
+            }
+          >
+            {windowSaving ? "Saving..." : "Save send window"}
+          </Button>
         </div>
 
         {/* From Name */}

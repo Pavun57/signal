@@ -144,11 +144,12 @@ Every contact carries evidence for *why* we believe they work where we say they 
 
 ### Writing & Sending Emails
 - Use \`writeEmail\` to compose an email draft. This saves it to the database -- it does NOT send.
-- After calling writeEmail, present the full draft to the user: To, Subject, and Body
-- Wait for the user to explicitly confirm ("send it", "looks good", "go ahead") before calling \`sendEmail\`
+- ALL drafts (including ad-hoc writeEmail drafts) start pending and must be approved by the user in /outreach/review before they can be sent. \`sendEmail\` refuses drafts that have not been approved there, and rejected drafts can never be sent.
+- After calling writeEmail, present the full draft to the user: To, Subject, and Body -- and point them to /outreach/review to approve it
+- Wait for the user to explicitly confirm ("send it", "looks good", "go ahead") before calling \`sendEmail\`. Chat confirmation is required on top of review approval; it does not replace it.
 - If the user wants changes, call \`writeEmail\` again with the updated content (old draft stays as-is)
-- Use \`sendEmail\` with the draft ID only after the user confirms
-- Use \`sendBulkEmails\` when the user wants to send multiple drafts at once -- always confirm first
+- Use \`sendEmail\` with the draft ID only after the draft is approved and the user confirms
+- Use \`sendBulkEmails\` when the user wants to send multiple drafts at once -- only approved drafts are sent; always confirm first
 - Use \`listDrafts\` to show pending drafts, \`discardDraft\` to remove unwanted ones
 - Email settings must be configured in Settings > Email before **sending** (\`sendEmail\`/\`sendBulkEmails\`). Creating sequences, drafting emails, and saving drafts all work without email setup; only the actual send step is gated on it. If a tool returns an error, read the error message literally and surface it to the user; do NOT guess that "email isn't configured" when the error was about something else (e.g. database constraints, permission denied, missing fields).
 

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   getEffectiveDailyLimit,
+  isWithinSendWindow,
   sendGmailMessage,
 } from "@/lib/services/gmail-service";
 import {
@@ -15,6 +16,7 @@ import {
   SEND_GATE_COLUMNS,
   type SendCandidate,
 } from "@/lib/services/affiliation";
+import { resolveTimezoneFromLocation } from "@/lib/services/recipient-timezone";
 import { verifyAddressForSend } from "@/lib/services/send-verification";
 
 export interface EnrollmentForSend {
@@ -36,6 +38,11 @@ export interface DraftForSend {
   subject: string;
   body_html: string;
   body_text: string | null;
+  /**
+   * Present on every real row (all loaders select *); the send-window gate
+   * uses it to look up a per-sequence scope override.
+   */
+  sequence_id?: string | null;
 }
 
 export type SendResult =
@@ -109,6 +116,7 @@ export async function claimAndSendDraft(
   draft: DraftForSend,
   sender: SenderConfig,
   trackMetadata?: Record<string, unknown>,
+  opts?: { bypassSendWindow?: boolean },
 ): Promise<SendResult> {
   const now = new Date().toISOString();
 
@@ -123,6 +131,91 @@ export async function claimAndSendDraft(
       "deferred",
       "Sending is paused in Settings > Email. Unpause to resume.",
     );
+  }
+
+  // Send window: cron-driven paths wait for the window; interactive paths
+  // (send-now click, agent send confirmed in chat) pass bypassSendWindow —
+  // an explicit human "send" beats a schedule preference.
+  if (
+    !opts?.bypassSendWindow &&
+    sender.sendWindowStart !== null &&
+    sender.sendWindowEnd !== null
+  ) {
+    let windowTimezone = sender.sendTimezone;
+    let timezoneLabel = sender.sendTimezone ?? "UTC";
+
+    // The sequence can override whose clock the window reads; null inherits
+    // the user's global setting.
+    let windowScope: "sender" | "recipient" = sender.sendWindowScope;
+    if (draft.sequence_id) {
+      const { data: seq } = await supabase
+        .from("sequences")
+        .select("send_window_scope")
+        .eq("id", draft.sequence_id)
+        .maybeSingle();
+      if (seq?.send_window_scope === "recipient") windowScope = "recipient";
+      else if (seq?.send_window_scope === "sender") windowScope = "sender";
+    }
+
+    // Recipient scope reads the contact's clock instead of the sender's:
+    // cached people.timezone first, then resolved best-effort from location
+    // strings. Unresolvable falls back to the sender's zone: a send must
+    // never be deferred forever because a contact's location is unknown.
+    if (windowScope === "recipient" && draft.person_id) {
+      const { data: located } = await supabase
+        .from("people")
+        .select(
+          "timezone, location, enrichment_data, organization:organizations(location)",
+        )
+        .eq("id", draft.person_id)
+        .maybeSingle();
+      const enrichment = (located?.enrichment_data ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const github = (enrichment.github ?? {}) as Record<string, unknown>;
+      const org = Array.isArray(located?.organization)
+        ? located?.organization[0]
+        : located?.organization;
+      const recipientTimezone =
+        (located?.timezone as string | null) ??
+        resolveTimezoneFromLocation(
+          located?.location as string | undefined,
+          enrichment.location as string | undefined,
+          enrichment.city as string | undefined,
+          enrichment.country as string | undefined,
+          github.location as string | undefined,
+          (org as { location?: string | null } | null)?.location,
+        );
+      if (recipientTimezone) {
+        windowTimezone = recipientTimezone;
+        timezoneLabel = `${recipientTimezone} (recipient's timezone)`;
+        // Cache the resolution so each contact resolves at most once; a
+        // location edit clears the cache (people PATCH nulls timezone).
+        if (!located?.timezone) {
+          await supabase
+            .from("people")
+            .update({ timezone: recipientTimezone })
+            .eq("id", draft.person_id)
+            .is("timezone", null);
+        }
+      }
+    }
+
+    if (
+      !isWithinSendWindow(
+        sender.sendWindowStart,
+        sender.sendWindowEnd,
+        windowTimezone,
+      )
+    ) {
+      return refuse(
+        supabase,
+        draft.id,
+        "deferred",
+        `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${timezoneLabel}); will send during the next window.`,
+      );
+    }
   }
 
   // Data-quality gate, before the claim so a blocked draft stays sendable once
@@ -507,6 +600,33 @@ export async function advanceEnrollmentForDraft(
 }
 
 /**
+ * Send a draft and advance its enrollment — the composed operation the
+ * agent's sendEmail/sendBulkEmails tools need. Exists so the
+ * "send succeeded ⇒ enrollment advanced" invariant lives in one place
+ * instead of being re-implemented at every tool call site.
+ */
+export async function sendDraftAndAdvance(
+  supabase: SupabaseClient,
+  draft: DraftForSend & { enrollment_id?: string | null },
+  sender: SenderConfig,
+  trackMetadata?: Record<string, unknown>,
+  opts?: { bypassSendWindow?: boolean },
+): Promise<SendResult> {
+  const result = await claimAndSendDraft(
+    supabase,
+    draft,
+    sender,
+    trackMetadata,
+    opts,
+  );
+  if (result.ok) {
+    // Without this the enrollment stays pinned to the step just sent.
+    await advanceEnrollmentForDraft(supabase, draft.enrollment_id);
+  }
+  return result;
+}
+
+/**
  * Is this draft the step its enrollment is actually waiting on?
  *
  * Drafts are pre-created for every step at enrollment time, so "approved and
@@ -559,6 +679,7 @@ export async function draftIsCurrentStep(
 export async function sendApprovedDraft(
   supabase: SupabaseClient,
   enrollment: EnrollmentForSend,
+  opts?: { bypassSendWindow?: boolean },
 ): Promise<SendResult> {
   const { data: step } = await supabase
     .from("sequence_steps")
@@ -595,6 +716,7 @@ export async function sendApprovedDraft(
     },
     sender,
     { sequenceId: enrollment.sequence_id },
+    opts,
   );
 
   if (!sent.ok) return sent;

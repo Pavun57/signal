@@ -5,11 +5,15 @@ import { executeSignal } from "@/lib/signals/executor";
 import type { Signal } from "@/lib/types/signal";
 import {
   normalizeHiringData,
+  buildGenericSnapshot,
   hashSnapshot,
   diffHiringSnapshots,
   classifyNewRoles,
   describeHiringChanges,
 } from "@/lib/services/tracking-differ";
+import type { GenericSnapshot } from "@/lib/services/tracking-differ";
+import { structuralDiff } from "@/lib/signals/diff";
+import type { SignalOutput } from "@/lib/signals/types";
 import { evaluateIntent } from "@/lib/services/intent-evaluator";
 import type { HiringSnapshot, TrackingConfig } from "@/lib/types/tracking";
 
@@ -27,7 +31,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
   const { data: config, error: configErr } = await getAdminClient()
     .from("tracking_configs")
     .select(
-      "*, organization:organizations(*), signal:signals(*), campaign:campaigns(icp, offering)",
+      "*, organization:organizations(*), signal:signals(*), campaign:campaigns(icp, offering, user_id)",
     )
     .eq("id", trackingConfigId)
     .single();
@@ -42,6 +46,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
     campaign: {
       icp: Record<string, unknown>;
       offering: Record<string, unknown>;
+      user_id: string | null;
     };
   };
 
@@ -53,10 +58,11 @@ export async function runTrackingConfig(trackingConfigId: string) {
   return withAction(`Tracking run: ${orgName}`, async () => {
     // ── Execute signal via universal executor ────────────────────────
     const signalRecord = typedConfig.signal as unknown as Signal;
+    let signalOutput: SignalOutput;
     let rawOutput: Record<string, unknown>;
 
     try {
-      const signalOutput = await executeSignal(signalRecord, {
+      signalOutput = await executeSignal(signalRecord, {
         organizationId: config.organization_id,
         domain: orgDomain,
         name: orgName,
@@ -76,15 +82,23 @@ export async function runTrackingConfig(trackingConfigId: string) {
     }
 
     // ── Normalize into snapshot ────────────────────────────────────────
-    const jobs =
-      (rawOutput.jobs as Array<{
-        title: string;
-        department?: string;
-        location?: string;
-        url?: string;
-      }>) || [];
+    // Hiring-shaped output (the hiring-activity scraper) keeps its rich
+    // title-level diffing; everything else gets a stable generic snapshot.
+    // Detection is on output shape, not slug, so any future signal that
+    // emits { jobs: [...] } inherits the hiring pipeline.
+    const isHiring = Array.isArray(rawOutput.jobs);
+    const jobs = isHiring
+      ? (rawOutput.jobs as Array<{
+          title: string;
+          department?: string;
+          location?: string;
+          url?: string;
+        }>)
+      : [];
     const careersUrl = (rawOutput.careersUrl as string) || null;
-    const snapshot = normalizeHiringData(jobs, careersUrl);
+    const snapshot = isHiring
+      ? normalizeHiringData(jobs, careersUrl)
+      : buildGenericSnapshot(signalRecord.execution_type, rawOutput);
     const hash = hashSnapshot(snapshot);
 
     // ── Compare to previous snapshot ───────────────────────────────────
@@ -126,14 +140,12 @@ export async function runTrackingConfig(trackingConfigId: string) {
       return {
         trackingConfigId,
         changed: false,
-        jobCount: snapshot.job_count,
+        jobCount: isHiring ? (snapshot as HiringSnapshot).job_count : undefined,
       };
     }
 
     // ── Compute diff ───────────────────────────────────────────────────
-    const prevData = prevSnapshot
-      ? (prevSnapshot.snapshot_data as HiringSnapshot)
-      : null;
+    const prevData = prevSnapshot ? prevSnapshot.snapshot_data : null;
 
     // If no previous data (first run after baseline), store as baseline
     if (!prevData) {
@@ -141,71 +153,119 @@ export async function runTrackingConfig(trackingConfigId: string) {
         trackingConfigId,
         changed: false,
         baseline: true,
-        jobCount: snapshot.job_count,
+        jobCount: isHiring ? (snapshot as HiringSnapshot).job_count : undefined,
       };
     }
 
-    const diff = diffHiringSnapshots(prevData, snapshot);
+    let changeDescription: string;
+    let rawDiffForIntent: unknown;
+    let diffSummary: Record<string, unknown>;
 
-    // ── Classify new roles via Haiku ───────────────────────────────────
-    if (diff.added_jobs.length > 0) {
-      const icp = typedConfig.campaign.icp || {};
-      const offering = typedConfig.campaign.offering || {};
-      const icpContext = [
-        icp.industry && `Industry: ${icp.industry}`,
-        icp.targetTitles &&
-          `Target titles: ${(icp.targetTitles as string[]).join(", ")}`,
-        icp.painPoints &&
-          `Pain points: ${(icp.painPoints as string[]).join(", ")}`,
-        offering.description && `Offering: ${offering.description}`,
-      ]
-        .filter(Boolean)
-        .join(". ");
+    if (isHiring) {
+      const prevHiring = prevData as HiringSnapshot;
+      const currHiring = snapshot as HiringSnapshot;
+      const diff = diffHiringSnapshots(prevHiring, currHiring);
 
-      const classified = await classifyNewRoles(diff.added_jobs, icpContext);
-      diff.classified_added = classified;
-    }
+      // ── Classify new roles via Haiku ─────────────────────────────────
+      if (diff.added_jobs.length > 0) {
+        const icp = typedConfig.campaign.icp || {};
+        const offering = typedConfig.campaign.offering || {};
+        const icpContext = [
+          icp.industry && `Industry: ${icp.industry}`,
+          icp.targetTitles &&
+            `Target titles: ${(icp.targetTitles as string[]).join(", ")}`,
+          icp.painPoints &&
+            `Pain points: ${(icp.painPoints as string[]).join(", ")}`,
+          offering.description && `Offering: ${offering.description}`,
+        ]
+          .filter(Boolean)
+          .join(". ");
 
-    // ── Store tracking changes ───────────────────────────────────��─────
-    const changeDescription = describeHiringChanges(diff);
+        const classified = await classifyNewRoles(diff.added_jobs, icpContext);
+        diff.classified_added = classified;
+      }
 
-    const changesToInsert: Array<Record<string, unknown>> = [];
+      // ── Store tracking changes ───────────────────────────────────────
+      changeDescription = describeHiringChanges(diff);
 
-    if (diff.added_jobs.length > 0) {
-      changesToInsert.push({
+      const changesToInsert: Array<Record<string, unknown>> = [];
+
+      if (diff.added_jobs.length > 0) {
+        changesToInsert.push({
+          tracking_config_id: trackingConfigId,
+          change_type: "added",
+          field_path: "jobs",
+          previous_value: null,
+          current_value: diff.added_jobs,
+          description: `+${diff.added_jobs.length} role${diff.added_jobs.length > 1 ? "s" : ""}: ${diff.added_jobs.map((j) => j.title).join(", ")}`,
+        });
+      }
+
+      if (diff.removed_jobs.length > 0) {
+        changesToInsert.push({
+          tracking_config_id: trackingConfigId,
+          change_type: "removed",
+          field_path: "jobs",
+          previous_value: diff.removed_jobs,
+          current_value: null,
+          description: `-${diff.removed_jobs.length} role${diff.removed_jobs.length > 1 ? "s" : ""}: ${diff.removed_jobs.map((j) => j.title).join(", ")}`,
+        });
+      }
+
+      if (diff.job_count_delta !== 0 && changesToInsert.length === 0) {
+        changesToInsert.push({
+          tracking_config_id: trackingConfigId,
+          change_type: "count_change",
+          field_path: "job_count",
+          previous_value: prevHiring.job_count,
+          current_value: currHiring.job_count,
+          description: changeDescription,
+        });
+      }
+
+      if (changesToInsert.length > 0) {
+        await getAdminClient().from("tracking_changes").insert(changesToInsert);
+      }
+
+      rawDiffForIntent = diff;
+      diffSummary = {
+        addedCount: diff.added_jobs.length,
+        removedCount: diff.removed_jobs.length,
+        jobCountDelta: diff.job_count_delta,
+        description: changeDescription,
+      };
+    } else {
+      const prevGeneric = prevData as GenericSnapshot;
+      const currGeneric = snapshot as GenericSnapshot;
+      // Prefer the executor's own diff (exa_search and recipes compute one
+      // against signal_results); fall back to a structural diff of snapshots.
+      const executorDiff = signalOutput.diff;
+      const structural = structuralDiff(prevGeneric.data, currGeneric.data);
+      const meaningful = executorDiff?.changed ?? structural.changed;
+      if (!meaningful) {
+        // Hash moved but nothing semantically changed (e.g. result
+        // reordering a projection didn't catch). Don't wake the intent
+        // evaluator.
+        return { trackingConfigId, changed: false };
+      }
+
+      changeDescription =
+        executorDiff?.description ||
+        structural.description ||
+        "Signal output changed";
+      rawDiffForIntent = executorDiff ?? structural;
+
+      // ── Store tracking change ────────────────────────────────────────
+      await getAdminClient().from("tracking_changes").insert({
         tracking_config_id: trackingConfigId,
         change_type: "added",
-        field_path: "jobs",
-        previous_value: null,
-        current_value: diff.added_jobs,
-        description: `+${diff.added_jobs.length} role${diff.added_jobs.length > 1 ? "s" : ""}: ${diff.added_jobs.map((j) => j.title).join(", ")}`,
-      });
-    }
-
-    if (diff.removed_jobs.length > 0) {
-      changesToInsert.push({
-        tracking_config_id: trackingConfigId,
-        change_type: "removed",
-        field_path: "jobs",
-        previous_value: diff.removed_jobs,
-        current_value: null,
-        description: `-${diff.removed_jobs.length} role${diff.removed_jobs.length > 1 ? "s" : ""}: ${diff.removed_jobs.map((j) => j.title).join(", ")}`,
-      });
-    }
-
-    if (diff.job_count_delta !== 0 && changesToInsert.length === 0) {
-      changesToInsert.push({
-        tracking_config_id: trackingConfigId,
-        change_type: "count_change",
-        field_path: "job_count",
-        previous_value: prevData.job_count,
-        current_value: snapshot.job_count,
+        field_path: "data",
+        previous_value: prevGeneric.data,
+        current_value: currGeneric.data,
         description: changeDescription,
       });
-    }
 
-    if (changesToInsert.length > 0) {
-      await getAdminClient().from("tracking_changes").insert(changesToInsert);
+      diffSummary = { description: changeDescription };
     }
 
     // ── Evaluate intent via LLM ────────────────────────────────────────
@@ -218,7 +278,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
       signalName: signal?.name ?? "Unknown signal",
       signalCategory: signal?.category ?? "custom",
       snapshotSummary: changeDescription,
-      rawDiff: diff,
+      rawDiff: rawDiffForIntent,
       isFirstRun: false,
     });
 
@@ -248,6 +308,12 @@ export async function runTrackingConfig(trackingConfigId: string) {
         .eq("campaign_id", config.campaign_id)
         .eq(entityField, entityId);
 
+      // Auto-send only when the config explicitly opted in AND the intent
+      // verdict is high-confidence — both required, everything else stays
+      // in the human review queue.
+      const autoSend =
+        Boolean(typedConfig.auto_send) && verdict.confidence === "high";
+
       // Enqueue the outreach job; /api/jobs/* auth guards the outbox path.
       // Fire-and-forget: don't block the tracking run on the dispatch.
       void enqueueJob({
@@ -259,7 +325,12 @@ export async function runTrackingConfig(trackingConfigId: string) {
           organizationId: config.organization_id ?? undefined,
           reason: verdict.reason,
           confidence: verdict.confidence,
+          autoSend,
+          maxContacts: typedConfig.max_contacts_per_fire ?? 1,
         },
+        // Queue fairness: attribute the outreach job to the campaign owner
+        // instead of the shared '<system>' partition.
+        userId: typedConfig.campaign.user_id ?? null,
       }).catch((err) => {
         console.error("[tracking] Failed to enqueue outreach:", err);
       });
@@ -268,12 +339,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
     return {
       trackingConfigId,
       changed: true,
-      diff: {
-        addedCount: diff.added_jobs.length,
-        removedCount: diff.removed_jobs.length,
-        jobCountDelta: diff.job_count_delta,
-        description: changeDescription,
-      },
+      diff: diffSummary,
       intentFired: verdict.fire,
       reason: verdict.reason,
       confidence: verdict.confidence,

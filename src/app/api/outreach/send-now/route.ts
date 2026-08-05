@@ -131,7 +131,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await sendApprovedDraft(supabase, enrollment);
+  // An explicit send-now click is a human decision — it beats the schedule
+  // preference, so the send window is bypassed.
+  const result = await sendApprovedDraft(supabase, enrollment, {
+    bypassSendWindow: true,
+  });
 
   if (!result.ok) {
     return NextResponse.json(

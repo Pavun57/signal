@@ -6,11 +6,16 @@ import { SCHEDULE_INTERVALS } from "@/lib/types/tracking";
 import type { Schedule } from "@/lib/types/tracking";
 
 /** Enqueue an immediate tracking.run job for a config's baseline snapshot. */
-async function dispatchImmediateRun(trackingConfigId: string): Promise<void> {
+async function dispatchImmediateRun(
+  trackingConfigId: string,
+  userId: string | null,
+): Promise<void> {
   try {
     await enqueueJob({
       type: "tracking.run",
       payload: { trackingConfigId },
+      // Partition the queue by the campaign owner for per-user fairness.
+      userId,
       maxAttempts: 2,
     });
   } catch (err) {
@@ -42,8 +47,28 @@ export const createTracking = tool({
       .describe("How often to re-run the signal"),
     intent: z
       .string()
+      .trim()
+      .min(
+        10,
+        "Intent is required: without it tracking observes but never fires outreach.",
+      )
       .describe(
         "Plain-English description of what changes should flag the company/person as ready to contact. Each run, an LLM compares fresh diffs against this intent to decide whether to fire outreach. Example: 'Flag as ready when they post 2+ senior engineering or DevOps roles, or announce a Series B or later.'",
+      ),
+    autoSend: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .default(1)
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (default 1). A funding round might justify 2-3; each still counts against the daily send cap.",
       ),
   }),
   execute: async (input) => {
@@ -52,6 +77,21 @@ export const createTracking = tool({
     }
 
     const supabase = await createClient();
+
+    // Agent-instructions signals are executed by a live agent conversation,
+    // not by the scheduler -- a tracking config pointing at one would never
+    // produce a snapshot.
+    const { data: signalRow } = await supabase
+      .from("signals")
+      .select("execution_type, name")
+      .eq("id", input.signalId)
+      .single();
+    if (signalRow?.execution_type === "agent_instructions") {
+      throw new Error(
+        `"${signalRow.name}" is an agent-instructions signal and cannot run on a schedule: it needs a live agent conversation. Pick an exa_search, tool_call, or browser_script signal for tracking.`,
+      );
+    }
+
     const interval =
       SCHEDULE_INTERVALS[input.schedule as Schedule] ??
       SCHEDULE_INTERVALS.weekly;
@@ -65,6 +105,8 @@ export const createTracking = tool({
         signal_id: input.signalId,
         schedule: input.schedule,
         intent: input.intent,
+        auto_send: input.autoSend,
+        max_contacts_per_fire: input.maxContactsPerFire,
         status: "active",
         next_run_at: new Date(Date.now() + interval).toISOString(),
       })
@@ -89,8 +131,14 @@ export const createTracking = tool({
         .eq("person_id", input.personId);
     }
 
-    // Enqueue immediate baseline run
-    await dispatchImmediateRun(config.id);
+    // Enqueue immediate baseline run, attributed to the campaign owner
+    // (readable via the RLS client — the campaign is the user's own row).
+    const { data: campaign } = await supabase
+      .from("campaigns")
+      .select("user_id")
+      .eq("id", input.campaignId)
+      .maybeSingle();
+    await dispatchImmediateRun(config.id, campaign?.user_id ?? null);
 
     return {
       trackingConfig: config,
@@ -110,8 +158,28 @@ export const bulkCreateTracking = tool({
       .default("weekly"),
     intent: z
       .string()
+      .trim()
+      .min(
+        10,
+        "Intent is required: without it tracking observes but never fires outreach.",
+      )
       .describe(
         "Plain-English description of what changes should flag a company as ready to contact. Applied to every tracked organization.",
+      ),
+    autoSend: z
+      .boolean()
+      .default(false)
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .default(1)
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (default 1). A funding round might justify 2-3; each still counts against the daily send cap.",
       ),
     status: z
       .enum(["qualified", "discovered", "all"])
@@ -122,6 +190,20 @@ export const bulkCreateTracking = tool({
   }),
   execute: async (input) => {
     const supabase = await createClient();
+
+    // One signal covers the whole batch, so check it once up front:
+    // agent-instructions signals run in a live agent conversation and can
+    // never execute on the tracking scheduler.
+    const { data: signalRow } = await supabase
+      .from("signals")
+      .select("execution_type, name")
+      .eq("id", input.signalId)
+      .single();
+    if (signalRow?.execution_type === "agent_instructions") {
+      throw new Error(
+        `"${signalRow.name}" is an agent-instructions signal and cannot run on a schedule: it needs a live agent conversation. Pick an exa_search, tool_call, or browser_script signal for tracking.`,
+      );
+    }
 
     // Get organizations in this campaign
     let query = supabase
@@ -168,6 +250,8 @@ export const bulkCreateTracking = tool({
         signal_id: input.signalId,
         schedule: input.schedule,
         intent: input.intent,
+        auto_send: input.autoSend,
+        max_contacts_per_fire: input.maxContactsPerFire,
         status: "active",
         next_run_at: nextRun,
       }));
@@ -199,6 +283,15 @@ export const bulkCreateTracking = tool({
       .eq("campaign_id", input.campaignId)
       .in("organization_id", orgIds);
 
+    // Fetch the campaign owner once so every baseline job lands on the
+    // owner's queue partition (readable via the RLS client — their row).
+    const { data: campaign } = await supabase
+      .from("campaigns")
+      .select("user_id")
+      .eq("id", input.campaignId)
+      .maybeSingle();
+    const ownerUserId: string | null = campaign?.user_id ?? null;
+
     // Dispatch baseline runs (max 5 concurrent to avoid overwhelming)
     const configIds = (created ?? []).map(
       (c: Record<string, unknown>) => c.id as string,
@@ -206,7 +299,9 @@ export const bulkCreateTracking = tool({
     const batchSize = 5;
     for (let i = 0; i < configIds.length; i += batchSize) {
       const batch = configIds.slice(i, i + batchSize);
-      await Promise.allSettled(batch.map(dispatchImmediateRun));
+      await Promise.allSettled(
+        batch.map((id) => dispatchImmediateRun(id, ownerUserId)),
+      );
     }
 
     return {
@@ -332,6 +427,21 @@ export const updateTracking = tool({
       .describe(
         "New plain-English intent describing what changes should fire outreach",
       ),
+    autoSend: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true AND a signal fire has high confidence, the drafted email is sent automatically without human review (daily caps, verification, and send window still apply). Only set this when the user explicitly asks for fully automatic sending.",
+      ),
+    maxContactsPerFire: z
+      .number()
+      .int()
+      .min(1)
+      .max(5)
+      .optional()
+      .describe(
+        "How many contacts at the company to draft for when this signal fires (1-5). A funding round might justify 2-3; each still counts against the daily send cap.",
+      ),
     status: z
       .enum(["active", "paused", "completed"])
       .optional()
@@ -350,7 +460,18 @@ export const updateTracking = tool({
       updates.next_run_at = new Date(Date.now() + interval).toISOString();
     }
     if (input.intent !== undefined) {
+      if (input.intent.trim().length < 10) {
+        throw new Error(
+          "Intent can't be blank: tracking with no intent observes changes but never fires outreach. Describe what should flag this company as ready to contact.",
+        );
+      }
       updates.intent = input.intent;
+    }
+    if (input.autoSend !== undefined) {
+      updates.auto_send = input.autoSend;
+    }
+    if (input.maxContactsPerFire !== undefined) {
+      updates.max_contacts_per_fire = input.maxContactsPerFire;
     }
     if (input.status) {
       updates.status = input.status;

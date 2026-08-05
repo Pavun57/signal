@@ -12,7 +12,7 @@ import {
 } from "@/lib/services/contact-selector";
 import { composeEmail } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
-import { saveDraft } from "@/lib/email-composition/save";
+import { autoApproveDraft, saveDraft } from "@/lib/email-composition/save";
 import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
 
 /**
@@ -32,6 +32,10 @@ interface SignalPayload {
   organizationId?: string;
   reason?: string;
   confidence?: string;
+  /** Set by tracking-run: auto_send config AND high-confidence verdict. */
+  autoSend?: boolean;
+  /** Contacts to draft for on this fire (from max_contacts_per_fire, 1-5). */
+  maxContacts?: number;
 }
 
 interface FollowupPayload {
@@ -261,7 +265,7 @@ async function pickAndDraft(
     signalName: (signal?.name as string) ?? "Unknown signal",
     signalCategory: (signal?.category as string) ?? "custom",
     candidates,
-    maxPicks: 1,
+    maxPicks: Math.min(Math.max(payload.maxContacts ?? 1, 1), 5),
   });
 
   if (picks.length === 0) return 0;
@@ -419,6 +423,14 @@ async function pickAndDraft(
         continue;
       }
 
+      // Audit marker: when this draft is about to skip the review queue,
+      // the outreach dashboard must show how the email got out.
+      const baseReasoning =
+        payload.reason ?? composed.email.aiReasoning ?? null;
+      const aiReasoning = payload.autoSend
+        ? `[auto-send: high-confidence signal] ${baseReasoning ?? ""}`.trimEnd()
+        : baseReasoning;
+
       const saveResult = await saveDraft(
         supabase as unknown as Parameters<typeof saveDraft>[0],
         {
@@ -431,12 +443,23 @@ async function pickAndDraft(
           sequenceId: seq.id,
           sequenceStepId: step1.id as string,
           enrollmentId,
-          aiReasoning: payload.reason ?? composed.email.aiReasoning ?? null,
+          aiReasoning,
         },
       );
 
       if (saveResult.ok) {
         drafted++;
+        if (payload.autoSend && saveResult.draftId) {
+          // High-confidence fire on an auto_send config: skip the review
+          // queue. The send loop in handleSignalTrigger picks it up this
+          // same run, and claimAndSendDraft still applies every hard gate
+          // (canSendTo, JIT verification, daily cap, warmup, pause, send
+          // window).
+          await autoApproveDraft(
+            supabase as unknown as Parameters<typeof autoApproveDraft>[0],
+            saveResult.draftId,
+          );
+        }
         getPostHogClient().capture({
           distinctId: seq.user_id,
           event: "outreach_drafted",
@@ -446,6 +469,7 @@ async function pickAndDraft(
             sequence_id: seq.id,
             person_id: pick.personId,
             organization_id: payload.organizationId ?? null,
+            auto_send: Boolean(payload.autoSend),
           },
         });
       } else {

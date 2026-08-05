@@ -20,7 +20,7 @@ export async function GET() {
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused",
+      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope",
     )
     .eq("user_id", user.id)
     .maybeSingle();
@@ -35,6 +35,10 @@ export async function GET() {
       reply_to_email: null,
       daily_send_limit: 30,
       sending_paused: false,
+      send_window_start: null,
+      send_window_end: null,
+      send_timezone: null,
+      send_window_scope: "sender",
     },
     is_configured: !!settings?.gmail_address,
     effective_daily_limit: getEffectiveDailyLimit(
@@ -126,6 +130,69 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     return NextResponse.json({ sending_paused: body.paused });
+  }
+
+  // Send window. Its own action, like the kill switch: the three fields only
+  // make sense together, so they are validated and written atomically.
+  if (body.action === "set_send_window") {
+    const isHourOrNull = (v: unknown) =>
+      v === null ||
+      (Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 23);
+    if (!isHourOrNull(body.start) || !isHourOrNull(body.end)) {
+      return NextResponse.json(
+        { error: "start and end must be integers 0-23 or null" },
+        { status: 400 },
+      );
+    }
+    // Both-or-neither: a half-set window would silently mean "no window" in
+    // isWithinSendWindow while looking configured in the UI.
+    if ((body.start === null) !== (body.end === null)) {
+      return NextResponse.json(
+        { error: "start and end must both be set, or both null" },
+        { status: 400 },
+      );
+    }
+    let timezone: string | null = null;
+    if (body.start !== null) {
+      if (typeof body.timezone !== "string" || !body.timezone) {
+        return NextResponse.json(
+          { error: "timezone is required when a window is set" },
+          { status: 400 },
+        );
+      }
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: body.timezone });
+      } catch {
+        return NextResponse.json(
+          { error: "Unknown timezone" },
+          { status: 400 },
+        );
+      }
+      timezone = body.timezone;
+    }
+    // Whose clock the window reads. Optional for backwards compatibility;
+    // anything but the explicit opt-in falls back to sender.
+    const scope = body.scope === "recipient" ? "recipient" : "sender";
+    const { error } = await supabase.from("user_settings").upsert(
+      {
+        user_id: user.id,
+        send_window_start: body.start,
+        send_window_end: body.end,
+        send_timezone: timezone,
+        send_window_scope: scope,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({
+      send_window_start: body.start,
+      send_window_end: body.end,
+      send_timezone: timezone,
+      send_window_scope: scope,
+    });
   }
 
   if (body.action === "disconnect_gmail") {
