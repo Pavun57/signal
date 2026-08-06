@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { RotateCcw, Wand2 } from "lucide-react";
+import { RotateCcw, Trash2, Wand2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { RelativeTime } from "@/components/ui/relative-time";
@@ -20,6 +20,7 @@ interface VoiceProfileCopy {
   refineNote?: string;
   rebuildDescription?: string;
   rebuildConfirmLabel?: string;
+  deleteDescription?: string;
 }
 
 const DEFAULT_COPY: Required<VoiceProfileCopy> = {
@@ -28,6 +29,8 @@ const DEFAULT_COPY: Required<VoiceProfileCopy> = {
   rebuildDescription:
     "This starts the interview from scratch. The current rules and the interview behind them are replaced as soon as the new voice is generated, and cannot be recovered. To make a smaller change, use Refine instead.",
   rebuildConfirmLabel: "Start a new interview",
+  deleteDescription:
+    "This permanently deletes these rules. Future cold emails fall back to generic best-practice writing. This cannot be undone.",
 };
 
 interface VoiceProfileViewProps {
@@ -36,6 +39,8 @@ interface VoiceProfileViewProps {
   /** A plain-English change; re-enters the interview rather than editing text. */
   onRefine: (instruction: string) => void;
   onRebuild: () => void;
+  /** Deletes the voice outright. Omitted where deletion makes no sense. */
+  onDelete?: () => void;
   /** A refinement is in flight. Every control has to be inert until it lands,
    * or a second click spends another model call and races the first write. */
   busy?: boolean;
@@ -53,6 +58,7 @@ export function VoiceProfileView({
   profile,
   onRefine,
   onRebuild,
+  onDelete,
   busy = false,
   error = null,
   copy,
@@ -60,6 +66,7 @@ export function VoiceProfileView({
   const [refining, setRefining] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [rebuildOpen, setRebuildOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const text = { ...DEFAULT_COPY, ...copy };
 
   const trimmed = instruction.trim();
@@ -95,6 +102,18 @@ export function VoiceProfileView({
             <RotateCcw className="size-3.5" />
             Rebuild
           </Button>
+          {onDelete && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-destructive hover:text-destructive gap-1.5"
+              disabled={busy}
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Trash2 className="size-3.5" />
+              Delete
+            </Button>
+          )}
         </>
       }
     >
@@ -165,6 +184,18 @@ export function VoiceProfileView({
         variant="destructive"
         onConfirm={onRebuild}
       />
+
+      {onDelete && (
+        <ConfirmDialog
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          title="Delete this email voice?"
+          description={text.deleteDescription}
+          confirmLabel="Delete voice"
+          variant="destructive"
+          onConfirm={onDelete}
+        />
+      )}
     </SettingsSection>
   );
 }

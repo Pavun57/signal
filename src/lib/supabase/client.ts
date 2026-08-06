@@ -7,8 +7,28 @@ const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
 interface ClerkWindow {
   Clerk?: {
+    loaded?: boolean;
     session?: { getToken: () => Promise<string | null> };
   };
+}
+
+/**
+ * Waits for the Clerk script to finish initializing, then returns the session
+ * token (null when signed out).
+ *
+ * The wait is load-bearing: pages fetch in mount effects, which on a hard
+ * load race Clerk's async bootstrap. Reading the token too early sends the
+ * request anonymously, RLS matches nothing, and the page renders empty with
+ * no error. Bounded so a broken Clerk script degrades to today's behavior
+ * (anonymous request) instead of hanging every query forever.
+ */
+async function getClerkToken(): Promise<string | null> {
+  const w = window as unknown as ClerkWindow;
+  const deadline = Date.now() + 10_000;
+  while (!w.Clerk?.loaded && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return (await w.Clerk?.session?.getToken()) ?? null;
 }
 
 /**
@@ -25,11 +45,7 @@ export const createClient = () =>
     global: {
       fetch: async (input, init = {}) => {
         const token =
-          typeof window !== "undefined"
-            ? await ((
-                window as unknown as ClerkWindow
-              ).Clerk?.session?.getToken() ?? null)
-            : null;
+          typeof window !== "undefined" ? await getClerkToken() : null;
         const headers = new Headers(init.headers);
         if (token) headers.set("Authorization", `Bearer ${token}`);
         return fetch(input, { ...init, headers });

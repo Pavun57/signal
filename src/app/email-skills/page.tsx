@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, Check, Loader2, Layers } from "lucide-react";
+import { toast } from "sonner";
 
 import { SafeLink } from "@/components/safe-link";
 import { Button } from "@/components/ui/button";
@@ -113,6 +114,26 @@ function EmailVoiceScope() {
   const campaign = campaigns.find((c) => c.id === campaignId);
   const scopeLabel = campaignId ? (campaign?.name ?? "this campaign") : null;
 
+  const deleteVoice = async () => {
+    if (!scoped) return;
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("email_voice_profiles")
+      .delete()
+      .eq("id", scoped.id);
+    if (error) {
+      toast.error(`Failed to delete voice: ${error.message}`);
+      return;
+    }
+    toast.success(
+      scopeLabel
+        ? `Deleted the voice for ${scopeLabel}`
+        : "Default voice deleted",
+    );
+    setLoading(true);
+    void fetchAll();
+  };
+
   if (loading) {
     return (
       <PageShell scopeLabel={scopeLabel}>
@@ -184,6 +205,11 @@ function EmailVoiceScope() {
             rebuildDescription:
               "This starts a new swipe run from nothing. The current rules are replaced as soon as the new voice is written, and cannot be recovered. To make a smaller change, use Refine instead.",
             rebuildConfirmLabel: "Start a new run",
+            deleteDescription: campaignId
+              ? profiles.some((p) => !p.campaign_id)
+                ? `This permanently deletes the voice for ${scopeLabel}. Cold emails for this campaign will fall back to your default voice. This cannot be undone.`
+                : `This permanently deletes the voice for ${scopeLabel}. Cold emails for this campaign will use generic best-practice rules instead. This cannot be undone.`
+              : "This permanently deletes your default voice. Campaigns without their own voice will write to generic best-practice rules. This cannot be undone.",
           }}
           onRefine={(instruction) => {
             setRefineSent(true);
@@ -199,6 +225,7 @@ function EmailVoiceScope() {
             discardRun(campaignId);
             setRunning(true);
           }}
+          onDelete={() => void deleteVoice()}
         />
       ) : (
         <BuildPrompt
