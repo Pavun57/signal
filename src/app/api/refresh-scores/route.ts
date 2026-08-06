@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { getProfileForPrompt } from "@/lib/profile";
 import {
@@ -140,19 +141,25 @@ export async function POST(request: Request) {
 
       const result = await generateObject({
         model: anthropic(MODELS.STRUCTURED),
-        schema: z.object({
-          scores: z.array(
-            z.object({
-              id: z.string().describe("Campaign-people link ID"),
-              score: z.number().min(1).max(10).describe("Priority score 1-10"),
-              reason: z
-                .string()
-                .describe(
-                  "2-3 sentence reason explaining why to reach out to this person, referencing specific signals",
-                ),
-            }),
-          ),
-        }),
+        schema: apiSafeSchema(
+          z.object({
+            scores: z.array(
+              z.object({
+                id: z.string().describe("Campaign-people link ID"),
+                score: z
+                  .number()
+                  .min(1)
+                  .max(10)
+                  .describe("Priority score 1-10"),
+                reason: z
+                  .string()
+                  .describe(
+                    "2-3 sentence reason explaining why to reach out to this person, referencing specific signals",
+                  ),
+              }),
+            ),
+          }),
+        ),
         // Cache the schema + tool bindings generated from `schema`. Cross-call
         // cache hits only kick in when a rescore lands within ~5 min of the
         // previous one, but when batches land together this saves 90% on the

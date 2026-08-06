@@ -1,5 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { generateObject, jsonSchema } from "ai";
+import { generateObject } from "ai";
+import { apiSafeJsonSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { createClient } from "@/lib/supabase/server";
 import { withTimeout } from "@/lib/utils/timeout";
@@ -180,7 +181,7 @@ async function executeStep(
       }
       const { object } = await generateObject({
         model: anthropic(step.model ?? MODELS.LIGHT),
-        schema: jsonSchema(step.schema),
+        schema: apiSafeJsonSchema(step.schema),
         prompt: `${step.prompt}\n\n---\n\n${source.slice(0, 30_000)}`,
       });
       return object;

@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import {
   estimateClaudeCostFromUsage,
@@ -91,7 +92,7 @@ export async function selectContactsForSignal(
   const { object, usage } = await generateObject({
     abortSignal: llmTimeout(),
     model: anthropic(MODELS.LIGHT),
-    schema: verdictSchema,
+    schema: apiSafeSchema(verdictSchema),
     prompt: `You are picking the best contact(s) to email at a company after a buying-signal fired. You have the reason the signal fired (in the buyer's own words, via an upstream LLM) and a list of known contacts at the company.
 
 ${UNTRUSTED_NOTICE}

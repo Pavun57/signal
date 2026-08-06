@@ -3,6 +3,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
@@ -215,25 +216,27 @@ export async function findPeopleOnDomain(
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        people: z.array(
-          z.object({
-            name: z.string().describe("Full name of the person"),
-            title: z
-              .string()
-              .nullable()
-              .describe("Job title or role at the company"),
-            email: z
-              .string()
-              .nullable()
-              .describe("Work email if found on the page"),
-            linkedinUrl: z
-              .string()
-              .nullable()
-              .describe("LinkedIn profile URL if found"),
-          }),
-        ),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          people: z.array(
+            z.object({
+              name: z.string().describe("Full name of the person"),
+              title: z
+                .string()
+                .nullable()
+                .describe("Job title or role at the company"),
+              email: z
+                .string()
+                .nullable()
+                .describe("Work email if found on the page"),
+              linkedinUrl: z
+                .string()
+                .nullable()
+                .describe("LinkedIn profile URL if found"),
+            }),
+          ),
+        }),
+      ),
       prompt: `Extract all staff members / team members from scraped website pages for a specific company.
 
 ${UNTRUSTED_NOTICE}
@@ -396,47 +399,49 @@ export async function filterContactsByCompany(
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        judged: z.array(
-          z.object({
-            index: z
-              .number()
-              .int()
-              .describe("Index of the candidate from the input list"),
-            name: z.string().describe("Cleaned full name"),
-            title: z
-              .string()
-              .nullable()
-              .describe("Cleaned job title without company name"),
-            verdict: z
-              .enum(["verified", "former_employee", "uncertain", "rejected"])
-              .describe(
-                "verified = evidence says they work there now; former_employee = they worked there and the role has an end date; rejected = evidence places them at a different company; uncertain = the evidence does not settle it",
-              ),
-            evidence: z
-              .string()
-              .describe(
-                "One short sentence citing what decided it, e.g. \"headline reads 'Wafer'\" or 'headline names no employer'",
-              ),
-            employerSeen: z
-              .string()
-              .nullable()
-              .describe("The employer the evidence actually names, if any"),
-            datesSeen: z
-              .string()
-              .nullable()
-              .describe(
-                "The date range the evidence gives for that employer, e.g. 'May 2024 - Present'",
-              ),
-            location: z
-              .string()
-              .nullable()
-              .describe(
-                "The person's own location exactly as the headline or page text states it, e.g. 'San Francisco Bay Area'. Null when no source states where THIS person is. NEVER fill it from the target company's location or guess it from context.",
-              ),
-          }),
-        ),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          judged: z.array(
+            z.object({
+              index: z
+                .number()
+                .int()
+                .describe("Index of the candidate from the input list"),
+              name: z.string().describe("Cleaned full name"),
+              title: z
+                .string()
+                .nullable()
+                .describe("Cleaned job title without company name"),
+              verdict: z
+                .enum(["verified", "former_employee", "uncertain", "rejected"])
+                .describe(
+                  "verified = evidence says they work there now; former_employee = they worked there and the role has an end date; rejected = evidence places them at a different company; uncertain = the evidence does not settle it",
+                ),
+              evidence: z
+                .string()
+                .describe(
+                  "One short sentence citing what decided it, e.g. \"headline reads 'Wafer'\" or 'headline names no employer'",
+                ),
+              employerSeen: z
+                .string()
+                .nullable()
+                .describe("The employer the evidence actually names, if any"),
+              datesSeen: z
+                .string()
+                .nullable()
+                .describe(
+                  "The date range the evidence gives for that employer, e.g. 'May 2024 - Present'",
+                ),
+              location: z
+                .string()
+                .nullable()
+                .describe(
+                  "The person's own location exactly as the headline or page text states it, e.g. 'San Francisco Bay Area'. Null when no source states where THIS person is. NEVER fill it from the target company's location or guess it from context.",
+                ),
+            }),
+          ),
+        }),
+      ),
       prompt: `You are judging whether each LinkedIn search result actually works at a specific company.
 
 ${UNTRUSTED_NOTICE}

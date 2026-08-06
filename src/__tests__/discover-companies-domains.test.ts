@@ -15,7 +15,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const generateObject = vi.fn();
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  // apiSafeSchema needs the real asSchema/jsonSchema helpers.
+  ...(await importOriginal<typeof import("ai")>()),
   generateObject: (...args: unknown[]) => generateObject(...args),
   // search-tools wraps every export in tool(); the identity keeps `execute`
   // reachable from the test.

@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { salvageObject } from "@/lib/ai/salvage-object";
 import {
@@ -26,15 +27,17 @@ const MAX_CHARS_PER_SOURCE = 6_000;
 const MAX_CHARS_TOTAL = 20_000;
 const MAX_FACT_LENGTH = 500;
 
+// No count cap: the bank should be rich, and the drafter only ever picks one
+// or two facts per email, so more candidates is strictly better. Per-fact
+// length is enforced in factsFromModel, not here, so one runaway sentence
+// drops that fact instead of failing the whole extraction.
 export const ResearchedFactsSchema = z.object({
-  facts: z
-    .array(
-      z.object({
-        category: z.enum(FACT_CATEGORIES),
-        fact: z.string().max(MAX_FACT_LENGTH),
-      }),
-    )
-    .max(25),
+  facts: z.array(
+    z.object({
+      category: z.enum(FACT_CATEGORIES),
+      fact: z.string(),
+    }),
+  ),
 });
 
 export interface ResearchedFact {
@@ -56,7 +59,13 @@ export function factsFromModel(
 ): ResearchedFact[] {
   return raw.flatMap((f) => {
     const fact = f.fact?.trim();
-    if (!fact || fact.length > MAX_FACT_LENGTH) return [];
+    if (!fact) return [];
+    if (fact.length > MAX_FACT_LENGTH) {
+      console.warn(
+        `[research-sender] dropping over-length fact (${fact.length} chars): ${fact.slice(0, 80)}...`,
+      );
+      return [];
+    }
     if (!(FACT_CATEGORIES as readonly string[]).includes(f.category)) return [];
     return [{ category: f.category as FactCategory, fact }];
   });
@@ -114,7 +123,7 @@ Categories:
 - credibility: press, talks, awards, notable customer logos
 - personal: interests outside work (hobbies, causes, quirks)
 
-One sentence each, written in third person. Skip anything the sources do not clearly state about this specific person or their company.`;
+One sentence each, written in third person. Skip anything the sources do not clearly state about this specific person or their company. Be generous: extract every distinct fact the sources support, since a richer bank gives the email drafter more to choose from.`;
 
 /**
  * Research the sender behind a profile: search each URL on the profile via
@@ -202,7 +211,7 @@ ${wrapUntrusted(body)}`;
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODEL_ID),
-      schema: ResearchedFactsSchema,
+      schema: apiSafeSchema(ResearchedFactsSchema),
       system: EXTRACTION_SYSTEM,
       prompt,
       // Salvage below owns recovery; the SDK default of 2 retries would pay

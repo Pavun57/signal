@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { llmTimeout } from "@/lib/utils/timeout";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import {
   estimateClaudeCostFromUsage,
@@ -69,29 +70,35 @@ export async function extractClaims(
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        claims: z.array(
-          z.object({
-            type: z.enum(CLAIM_TYPES),
-            statement: z
-              .string()
-              .describe("One factual sentence about the company"),
-            sourceIndex: z
-              .number()
-              .int()
-              .describe("Index of the source block the claim comes from"),
-            publishedDate: z
-              .string()
-              .nullable()
-              .describe("Date of the underlying fact if the source states one"),
-            // No .min/.max here: Zod range checks compile to JSON Schema
-            // minimum/maximum, which Anthropic structured outputs reject
-            // with a 400 for number types. Range lives in prose; the value
-            // is clamped after parsing.
-            confidence: z.number().describe("Confidence in the claim, 0 to 1"),
-          }),
-        ),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          claims: z.array(
+            z.object({
+              type: z.enum(CLAIM_TYPES),
+              statement: z
+                .string()
+                .describe("One factual sentence about the company"),
+              sourceIndex: z
+                .number()
+                .int()
+                .describe("Index of the source block the claim comes from"),
+              publishedDate: z
+                .string()
+                .nullable()
+                .describe(
+                  "Date of the underlying fact if the source states one",
+                ),
+              // No .min/.max here: Zod range checks compile to JSON Schema
+              // minimum/maximum, which Anthropic structured outputs reject
+              // with a 400 for number types. Range lives in prose; the value
+              // is clamped after parsing.
+              confidence: z
+                .number()
+                .describe("Confidence in the claim, 0 to 1"),
+            }),
+          ),
+        }),
+      ),
       prompt: `You extract factual claims about a company from research sources.
 
 ${UNTRUSTED_NOTICE}

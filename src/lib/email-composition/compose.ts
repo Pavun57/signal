@@ -7,6 +7,7 @@ import {
   buildEmailSystemPrompt,
   type ComposedEmail,
 } from "./skill";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import type { VoiceProfile } from "@/lib/types/email-voice";
@@ -53,7 +54,7 @@ export async function composeEmail(
     const { object } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
-      schema: ComposedEmailSchema,
+      schema: apiSafeSchema(ComposedEmailSchema),
       system: buildEmailSystemPrompt(
         voice ?? null,
         factBank ?? null,

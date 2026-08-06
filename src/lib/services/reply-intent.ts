@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import { llmTimeout } from "@/lib/utils/timeout";
@@ -156,7 +157,7 @@ ${wrapUntrusted(params.bodyText.slice(0, 8000))}`;
       const { object, usage } = await generateObject({
         abortSignal: llmTimeout(),
         model: anthropic(MODELS.LIGHT),
-        schema: ReplyIntentSchema,
+        schema: apiSafeSchema(ReplyIntentSchema),
         prompt,
       });
       trackUsage({
