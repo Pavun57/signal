@@ -3,11 +3,19 @@
 import { toast } from "sonner";
 
 interface ClerkWindow {
-  Clerk?: { session?: { getToken: () => Promise<string | null> } };
+  Clerk?: {
+    loaded?: boolean;
+    session?: { getToken: () => Promise<string | null> };
+  };
 }
 
 /**
  * A freshly-minted Clerk session token, or null when signed out.
+ *
+ * Waits for the Clerk script to finish initializing first — pages fetch in
+ * mount effects, which on a hard load race Clerk's async bootstrap, and a
+ * token read before it lands sends the request unauthenticated. Bounded so a
+ * broken Clerk script degrades to an anonymous request instead of hanging.
  *
  * `getToken()` returns the cached token and transparently refreshes it when it
  * is close to expiring, so calling this per request is the point — not waste.
@@ -15,11 +23,13 @@ interface ClerkWindow {
 export async function getSessionToken(): Promise<string | null> {
   if (typeof window === "undefined") return null;
 
-  const token = await (
-    window as unknown as ClerkWindow
-  ).Clerk?.session?.getToken();
+  const w = window as unknown as ClerkWindow;
+  const deadline = Date.now() + 10_000;
+  while (!w.Clerk?.loaded && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 
-  return token ?? null;
+  return (await w.Clerk?.session?.getToken()) ?? null;
 }
 
 // Several calls can fail together (e.g. Send All fires one request per draft).
