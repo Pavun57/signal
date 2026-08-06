@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import {
   estimateClaudeCostFromUsage,
@@ -55,11 +56,15 @@ export async function filterRelevantResults(
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        relevant: z
-          .array(z.number().int())
-          .describe("Indices of results that are actually about this company"),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          relevant: z
+            .array(z.number().int())
+            .describe(
+              "Indices of results that are actually about this company",
+            ),
+        }),
+      ),
       prompt: `You are filtering search results for company enrichment.
 
 ${UNTRUSTED_NOTICE}

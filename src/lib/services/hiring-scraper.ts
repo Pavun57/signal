@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
@@ -474,18 +475,20 @@ async function extractJobsFromText(
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        jobs: z.array(
-          z.object({
-            title: z.string().describe("Job title"),
-            department: z
-              .string()
-              .optional()
-              .describe("Department or category"),
-            location: z.string().optional().describe("Job location"),
-          }),
-        ),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          jobs: z.array(
+            z.object({
+              title: z.string().describe("Job title"),
+              department: z
+                .string()
+                .optional()
+                .describe("Department or category"),
+              location: z.string().optional().describe("Job location"),
+            }),
+          ),
+        }),
+      ),
       prompt: `You extract open job listings from the text of a company careers page.
 
 ${UNTRUSTED_NOTICE}

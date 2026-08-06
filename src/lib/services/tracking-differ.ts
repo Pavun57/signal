@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import {
   estimateClaudeCostFromUsage,
@@ -169,18 +170,20 @@ export async function classifyNewRoles(
   const { object, usage } = await generateObject({
     abortSignal: llmTimeout(),
     model: anthropic(MODELS.LIGHT),
-    schema: z.object({
-      classifications: z.array(
-        z.object({
-          title: z.string(),
-          category: z
-            .string()
-            .describe(
-              "Role category relevant to the ICP: engineering, sales, marketing, operations, leadership, product, design, support, finance, hr, other",
-            ),
-        }),
-      ),
-    }),
+    schema: apiSafeSchema(
+      z.object({
+        classifications: z.array(
+          z.object({
+            title: z.string(),
+            category: z
+              .string()
+              .describe(
+                "Role category relevant to the ICP: engineering, sales, marketing, operations, leadership, product, design, support, finance, hr, other",
+              ),
+          }),
+        ),
+      }),
+    ),
     prompt: `Classify each job title into a category.
 
 ${UNTRUSTED_NOTICE}

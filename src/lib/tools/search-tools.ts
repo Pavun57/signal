@@ -1,6 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject, tool } from "ai";
 import { z } from "zod";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -572,30 +573,32 @@ export const discoverCompanies = tool({
 
     const { object: extracted, usage } = await generateObject({
       model: anthropic(MODELS.LIGHT),
-      schema: z.object({
-        companies: z.array(
-          z.object({
-            name: z.string().describe("Business name"),
-            domain: z
-              .string()
-              .nullable()
-              .describe("Website domain without protocol, e.g. 'acme.co.uk'"),
-            url: z.string().nullable().describe("Full website URL if found"),
-            location: z
-              .string()
-              .nullable()
-              .describe("Specific location/address if mentioned"),
-            industry: z
-              .string()
-              .nullable()
-              .describe("Industry or specialization"),
-            description: z
-              .string()
-              .nullable()
-              .describe("Brief description if available"),
-          }),
-        ),
-      }),
+      schema: apiSafeSchema(
+        z.object({
+          companies: z.array(
+            z.object({
+              name: z.string().describe("Business name"),
+              domain: z
+                .string()
+                .nullable()
+                .describe("Website domain without protocol, e.g. 'acme.co.uk'"),
+              url: z.string().nullable().describe("Full website URL if found"),
+              location: z
+                .string()
+                .nullable()
+                .describe("Specific location/address if mentioned"),
+              industry: z
+                .string()
+                .nullable()
+                .describe("Industry or specialization"),
+              description: z
+                .string()
+                .nullable()
+                .describe("Brief description if available"),
+            }),
+          ),
+        }),
+      ),
       prompt: `Extract individual ${stringify(input.industry)} businesses from the following directory/list pages. Only extract businesses that are actually located in or near ${stringify(input.location)}.${input.additionalContext ? ` Additional filter: ${stringify(input.additionalContext)}` : ""}
 
 ${UNTRUSTED_NOTICE}

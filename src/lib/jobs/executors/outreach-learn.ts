@@ -2,6 +2,7 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 
 import { getAdminClient } from "@/lib/supabase/admin";
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import { llmTimeout } from "@/lib/utils/timeout";
@@ -331,7 +332,7 @@ async function learnForUser(
       const { object, usage } = await generateObject({
         abortSignal: llmTimeout(),
         model: anthropic(MODELS.STRUCTURED),
-        schema: LearningAnalysisSchema,
+        schema: apiSafeSchema(LearningAnalysisSchema),
         prompt,
       });
       trackUsage({

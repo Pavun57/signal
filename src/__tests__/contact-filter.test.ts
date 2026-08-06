@@ -11,7 +11,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const generateObjectMock = vi.fn();
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  // apiSafeSchema needs the real asSchema/jsonSchema helpers.
+  ...(await importOriginal<typeof import("ai")>()),
   generateObject: (...args: unknown[]) => generateObjectMock(...args),
 }));
 vi.mock("@ai-sdk/anthropic", () => ({ anthropic: () => "model" }));

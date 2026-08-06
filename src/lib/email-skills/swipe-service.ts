@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { salvageObject } from "@/lib/ai/salvage-object";
 import {
@@ -191,7 +192,7 @@ export async function generateVoiceBatch(
     const { object } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
-      schema: BatchSchema,
+      schema: apiSafeSchema(BatchSchema),
       system: buildBatchSystem(campaign, senderContext),
       prompt: buildBatchPrompt(input.transcript, input.count),
       providerOptions: {
@@ -257,7 +258,7 @@ async function writeSkill(
     const { object } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
-      schema: SkillSchema,
+      schema: apiSafeSchema(SkillSchema),
       system: buildSkillSystem(campaign, senderContext),
       prompt: buildSkillPrompt(input.transcript),
       providerOptions: { anthropic: { effort: "medium" } },
