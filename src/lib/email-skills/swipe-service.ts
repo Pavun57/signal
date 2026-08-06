@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
-import { salvageObject } from "@/lib/ai/salvage-object";
+import { generateWithRetry } from "@/lib/ai/salvage-object";
 import {
   BatchSchema,
   MAX_INSTRUCTIONS_IN_PROMPT,
@@ -189,51 +189,50 @@ export async function generateVoiceBatch(
     input.campaignId,
   );
 
-  try {
-    const { object } = await generateObject({
-      abortSignal: llmTimeout(),
-      model: anthropic(MODELS.EMAIL),
-      schema: apiSafeSchema(BatchSchema),
-      system: buildBatchSystem(campaign, senderContext),
-      prompt: buildBatchPrompt(input.transcript, input.count),
-      providerOptions: {
-        anthropic: {
-          // Only the transcript changes between batches, so the rules and
-          // campaign context read from cache after the first call.
-          cacheControl: { type: "ephemeral" },
-          effort: "medium",
+  // The wrapped-payload flake hits these prompts like every other Opus 5
+  // structured call, so single-shot + salvage was not enough: a malformed
+  // wrapper surfaced straight to the deck as a failed batch. generateWithRetry
+  // salvages what it can and retries the rest.
+  const result = await generateWithRetry(
+    async () => {
+      const { object } = await generateObject({
+        abortSignal: llmTimeout(),
+        model: anthropic(MODELS.EMAIL),
+        schema: apiSafeSchema(BatchSchema),
+        system: buildBatchSystem(campaign, senderContext),
+        prompt: buildBatchPrompt(input.transcript, input.count),
+        providerOptions: {
+          anthropic: {
+            // Only the transcript changes between batches, so the rules and
+            // campaign context read from cache after the first call.
+            cacheControl: { type: "ephemeral" },
+            effort: "medium",
+          },
         },
-      },
-      // generateWithRetry owns retrying elsewhere; leaving the SDK default of
-      // 2 would stack upstream requests under a 429 storm.
-      maxRetries: 0,
-      // Opus 5 thinks by default and maxOutputTokens caps thinking plus
-      // visible output together, so a budget sized for the text alone
-      // truncates and fails generateObject outright.
-      // Sized for 8 drafts plus the invented persona object, with thinking
-      // headroom on top (Opus 5 thinks by default and this cap covers both).
-      maxOutputTokens: 10_000,
-    });
-    return {
-      ok: true,
-      drafts: object.drafts,
-      persona: { label: personaLabel(object.persona) },
-    };
-  } catch (err) {
-    const salvaged = salvageObject(err, BatchSchema);
-    if (salvaged) {
-      return {
-        ok: true,
-        drafts: salvaged.drafts,
-        persona: { label: personaLabel(salvaged.persona) },
-      };
-    }
-    return {
-      ok: false,
-      error:
-        err instanceof Error ? err.message : "Could not write the next drafts",
-    };
+        // generateWithRetry owns retrying; leaving the SDK default of 2 would
+        // stack upstream requests under a 429 storm.
+        maxRetries: 0,
+        // Opus 5 thinks by default and maxOutputTokens caps thinking plus
+        // visible output together, so a budget sized for the text alone
+        // truncates and fails generateObject outright.
+        // Sized for 8 drafts plus the invented persona object, with thinking
+        // headroom on top (Opus 5 thinks by default and this cap covers both).
+        maxOutputTokens: 10_000,
+      });
+      return object;
+    },
+    BatchSchema,
+    3,
+  );
+
+  if (!result.ok) {
+    return { ok: false, error: result.error };
   }
+  return {
+    ok: true,
+    drafts: result.value.drafts,
+    persona: { label: personaLabel(result.value.persona) },
+  };
 }
 
 /**
@@ -254,32 +253,27 @@ async function writeSkill(
     input.campaignId,
   );
 
-  let skill: { instructions: string; summary: string };
-  try {
-    const { object } = await generateObject({
-      abortSignal: llmTimeout(),
-      model: anthropic(MODELS.EMAIL),
-      schema: apiSafeSchema(SkillSchema),
-      system: buildSkillSystem(campaign, senderContext),
-      prompt: buildSkillPrompt(input.transcript),
-      providerOptions: { anthropic: { effort: "medium" } },
-      maxRetries: 0,
-      maxOutputTokens: 5_000,
-    });
-    skill = object;
-  } catch (err) {
-    const salvaged = salvageObject(err, SkillSchema);
-    if (!salvaged) {
-      return {
-        ok: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Could not write the voice rules",
-      };
-    }
-    skill = salvaged;
+  const skillResult = await generateWithRetry(
+    async () => {
+      const { object } = await generateObject({
+        abortSignal: llmTimeout(),
+        model: anthropic(MODELS.EMAIL),
+        schema: apiSafeSchema(SkillSchema),
+        system: buildSkillSystem(campaign, senderContext),
+        prompt: buildSkillPrompt(input.transcript),
+        providerOptions: { anthropic: { effort: "medium" } },
+        maxRetries: 0,
+        maxOutputTokens: 5_000,
+      });
+      return object;
+    },
+    SkillSchema,
+    3,
+  );
+  if (!skillResult.ok) {
+    return { ok: false, error: skillResult.error };
   }
+  const skill = skillResult.value;
 
   const instructions = normaliseInstructions(skill.instructions);
   if (!instructions) {

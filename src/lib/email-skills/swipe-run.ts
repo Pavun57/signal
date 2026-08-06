@@ -1,7 +1,10 @@
-import type {
-  DraftAxes,
-  JudgedDraft,
-  SwipeTranscript,
+import {
+  MAX_INSTRUCTIONS_IN_PROMPT,
+  MAX_JUDGED_IN_PROMPT,
+  MAX_SAMPLES_IN_PROMPT,
+  type DraftAxes,
+  type JudgedDraft,
+  type SwipeTranscript,
 } from "@/lib/email-skills/swipe-prompts";
 
 /**
@@ -61,11 +64,17 @@ export function newRun(campaignId: string | null, samples: string[]): VoiceRun {
 
 /** What the agent needs to continue the run: exactly the transcript shape the
  * batch and skill prompts consume. Queue and UI state stay client-side. */
+/**
+ * Truncated to the same windows the batch prompt renders, because the server
+ * rejects anything larger. A long run judges far more than 50 drafts, and
+ * sending the full history made every request past that point fail
+ * validation: the deck could never top up again.
+ */
 export function toTranscript(run: VoiceRun): SwipeTranscript {
   return {
-    judged: run.judged,
-    instructions: run.instructions,
-    samples: run.samples,
+    judged: run.judged.slice(-MAX_JUDGED_IN_PROMPT),
+    instructions: run.instructions.slice(-MAX_INSTRUCTIONS_IN_PROMPT),
+    samples: run.samples.slice(0, MAX_SAMPLES_IN_PROMPT),
   };
 }
 
