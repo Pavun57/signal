@@ -58,10 +58,19 @@ function emitDrafts(
   data: {
     mode: "opening" | "append" | "replace";
     drafts: unknown[];
-    persona: { label: string } | null;
+    persona: { label: string; real?: boolean } | null;
   },
 ) {
   writer?.write({ type: "data-voice-drafts", data, transient: true });
+}
+
+/** Honest about which recipient mode the batch used. */
+function personaNoteFor(
+  persona: { label: string; real?: boolean } | null,
+): string {
+  return persona?.real
+    ? "The recipient is a real contact from this campaign; drafts only reference enriched facts about them."
+    : "The recipient is a fictional persona invented from the campaign ICP; a fresh one appears each batch.";
 }
 
 export const startVoiceRun = tool({
@@ -102,8 +111,7 @@ export const startVoiceRun = tool({
       ok: true,
       draftCount: result.drafts.length,
       writtenTo: result.persona?.label ?? null,
-      personaNote:
-        "The recipient is a fictional persona invented from the campaign ICP; a fresh one appears each batch.",
+      personaNote: personaNoteFor(result.persona),
       samplesUsed: (ctx.voiceRun.transcript.samples ?? []).filter((s) =>
         s.trim(),
       ).length,
@@ -191,6 +199,8 @@ export const rewriteVoiceDrafts = tool({
       ok: true,
       draftCount: result.drafts.length,
       applied: instruction,
+      writtenTo: result.persona?.label ?? null,
+      personaNote: personaNoteFor(result.persona),
       note: "The drafts are on the deck. Do not quote them in your reply.",
     };
   },

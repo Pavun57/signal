@@ -90,8 +90,9 @@ const VoiceRunContext = createContext<VoiceRunContextValue>({
 interface DraftsPart {
   mode: "opening" | "append" | "replace";
   drafts: Omit<RunDraft, "id" | "personaLabel">[];
-  /** The fictional persona the batch is written to. Rotates per batch. */
-  persona: { label: string } | null;
+  /** Who the batch is written to: a real campaign contact, or an invented
+   * persona as the fallback. Rotates per batch. */
+  persona: { label: string; real?: boolean } | null;
 }
 
 interface SkillPart {
@@ -251,10 +252,12 @@ export function VoiceRunProvider({ children }: { children: ReactNode }) {
         // and a queue holding two batches must label each card with the
         // persona its drafts were actually written to.
         const label = data.persona?.label ?? null;
+        const real = data.persona?.real ?? false;
         const withIds: RunDraft[] = data.drafts.map((d) => ({
           ...d,
           id: crypto.randomUUID(),
           personaLabel: label,
+          personaReal: real,
         }));
         persist({
           ...current,

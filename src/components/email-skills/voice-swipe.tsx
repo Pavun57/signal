@@ -110,10 +110,13 @@ export function VoiceSwipe({
   }, [campaignId, resumeRun]);
 
   const queue = (run?.queue ?? []).map(toEmail);
-  // Per draft, not per run: the invented persona rotates each batch, and a
-  // queue holding two batches labels each card with its own batch's persona.
+  // Per draft, not per run: the recipient rotates each batch, and a queue
+  // holding two batches labels each card with its own batch's recipient.
   const personaById = new Map(
     (run?.queue ?? []).map((d) => [d.id, d.personaLabel ?? null]),
+  );
+  const personaRealById = new Map(
+    (run?.queue ?? []).map((d) => [d.id, d.personaReal ?? false]),
   );
   const judgedEmails: SwipeEmail[] = (run?.judged ?? []).map((d, i) => ({
     id: `j${i}`,
@@ -351,6 +354,7 @@ export function VoiceSwipe({
                 <Card
                   email={tallest}
                   to={personaById.get(tallest.id) ?? null}
+                  toReal={personaRealById.get(tallest.id) ?? false}
                   className="invisible"
                   aria-hidden
                 />
@@ -363,6 +367,7 @@ export function VoiceSwipe({
                     key={e.id}
                     email={e}
                     to={personaById.get(e.id) ?? null}
+                    toReal={personaRealById.get(e.id) ?? false}
                     aria-hidden
                     className={
                       behind.length - i === 1
@@ -379,6 +384,7 @@ export function VoiceSwipe({
                 key={card.id}
                 email={card}
                 to={personaById.get(card.id) ?? null}
+                toReal={personaRealById.get(card.id) ?? false}
                 className={cn(
                   // transition-all, not transition-transform: the opacity in
                   // the leaving classes was never animated, so the card
@@ -664,13 +670,16 @@ function Progress({
 function Card({
   email,
   to,
+  toReal = false,
   className,
   ...rest
 }: {
   email: SwipeEmail;
-  /** This batch's invented persona. Never a real contact: the marker beside
-   * it is what keeps the card honest about that. */
+  /** Who this batch is written to. The marker beside it says whether that is
+   * a real campaign contact or an invented persona, which keeps the card
+   * honest either way. */
   to?: string | null;
+  toReal?: boolean;
 } & React.HTMLAttributes<HTMLElement>) {
   return (
     <article
@@ -686,7 +695,7 @@ function Card({
         To {to ?? "an invented prospect"}
         {to && (
           <span className="text-muted-foreground/70 ml-1.5 text-[0.6875rem]">
-            · ✨ invented
+            {toReal ? "· in this campaign" : "· ✨ invented"}
           </span>
         )}
       </span>
