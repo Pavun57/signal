@@ -25,6 +25,11 @@ import {
   type SwipeSenderContext,
   type SwipeTranscript,
 } from "@/lib/email-skills/swipe-prompts";
+import {
+  loadRecipientCandidates,
+  pickRecipient,
+  recipientLabel,
+} from "@/lib/email-skills/swipe-recipient";
 import { getProfileForPrompt } from "@/lib/profile";
 import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
 import { llmTimeout } from "@/lib/utils/timeout";
@@ -120,8 +125,9 @@ export type VoiceServiceResult<T> =
  * Campaign context and sender context for the prompts. Each part is optional
  * and independently absent-able: a user with no profile or no campaign still
  * gets drafts, because being unable to write anything is a worse failure than
- * writing something generic. The recipient is not loaded at all: the batch
- * model invents a fictional persona from the campaign ICP.
+ * writing something generic. The recipient is picked separately in
+ * generateVoiceBatch: a real campaign contact when one exists, otherwise the
+ * batch model invents a fictional persona from the campaign ICP.
  *
  * RLS scopes campaigns to the signed-in user, so an id belonging to someone
  * else resolves to nothing rather than to their data.
@@ -176,8 +182,9 @@ export async function generateVoiceBatch(
 ): Promise<
   VoiceServiceResult<{
     drafts: Draft[];
-    /** The fictional persona this batch is written to, as a card label. */
-    persona: { label: string } | null;
+    /** Who this batch is written to, as a card label: a real campaign
+     * contact, or the invented persona as a fallback. */
+    persona: { label: string; real: boolean } | null;
   }>
 > {
   if (JSON.stringify(input.transcript).length > MAX_TRANSCRIPT_CHARS) {
@@ -187,6 +194,18 @@ export async function generateVoiceBatch(
   const { campaign, senderContext } = await loadPromptContext(
     supabase,
     input.campaignId,
+  );
+
+  // Real recipient when the campaign has contacts; invented persona
+  // otherwise. Any load failure returns [] and falls through to invented.
+  const candidates = input.campaignId
+    ? await loadRecipientCandidates(supabase, input.campaignId)
+    : [];
+  const recipient = pickRecipient(
+    candidates,
+    input.transcript.judged
+      .map((j) => j.personaLabel)
+      .filter((l): l is string => Boolean(l)),
   );
 
   // The wrapped-payload flake hits these prompts like every other Opus 5
@@ -199,7 +218,7 @@ export async function generateVoiceBatch(
         abortSignal: llmTimeout(),
         model: anthropic(MODELS.EMAIL),
         schema: apiSafeSchema(BatchSchema),
-        system: buildBatchSystem(campaign, senderContext),
+        system: buildBatchSystem(campaign, senderContext, recipient),
         prompt: buildBatchPrompt(input.transcript, input.count),
         providerOptions: {
           anthropic: {
@@ -228,10 +247,17 @@ export async function generateVoiceBatch(
   if (!result.ok) {
     return { ok: false, error: result.error };
   }
+  // Real recipient: the server stamps the label so the model cannot misname
+  // anyone. Invented: the label comes from the returned persona as before.
+  const label = recipient
+    ? recipientLabel(recipient)
+    : result.value.persona
+      ? personaLabel(result.value.persona)
+      : null;
   return {
     ok: true,
     drafts: result.value.drafts,
-    persona: { label: personaLabel(result.value.persona) },
+    persona: label ? { label, real: recipient !== null } : null,
   };
 }
 

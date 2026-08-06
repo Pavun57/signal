@@ -34,6 +34,8 @@ export interface RunDraft {
    * ingest. Per draft, not per run: a queue holding two batches labels each
    * card with the persona it was actually written to. */
   personaLabel: string | null;
+  /** True when personaLabel names a real campaign contact, not an invented persona. */
+  personaReal?: boolean;
 }
 
 export interface VoiceRun {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { UNTRUSTED_NOTICE, wrapUntrusted } from "@/lib/prompt-safety";
+import type { RealRecipient } from "@/lib/email-skills/swipe-recipient";
 
 /**
  * The two prompts behind voice-by-swiping.
@@ -80,7 +81,9 @@ export const PersonaSchema = z.object({
 export type Persona = z.infer<typeof PersonaSchema>;
 
 export const BatchSchema = z.object({
-  persona: PersonaSchema,
+  // Present only on the invented-persona path. With a real recipient the
+  // server stamps the card label itself, so the model returns drafts only.
+  persona: PersonaSchema.optional(),
   drafts: z.array(DraftSchema).min(2).max(8),
 });
 
@@ -337,6 +340,34 @@ const INVENT_RECIPIENT = `WHO THESE ARE TO: INVENT THE RECIPIENT. Before writing
 
 THE SENDER IS REAL. Never invent facts about the sender: everything the drafts claim about who is writing (their offer, their numbers, their story) must come from the sender context above.`;
 
+/**
+ * The flip side of INVENT_RECIPIENT: the person is real, so nothing about
+ * them may be invented. Enrichment lines are scraped content and ride inside
+ * the untrusted fence like the sender rows.
+ */
+function renderRealRecipient(r: RealRecipient): string {
+  const rows = [
+    field("Name", r.name),
+    field("Title", r.title),
+    field("Company", r.company),
+    field("LinkedIn headline", r.headline),
+    r.signals.length
+      ? `Known signals:\n${r.signals.map((s) => `- ${s}`).join("\n")}`
+      : null,
+  ].filter(Boolean) as string[];
+
+  const noEnrichment = !r.headline && r.signals.length === 0;
+
+  return `WHO THESE ARE TO: A REAL PERSON in this campaign. Every draft in this batch is written to them. Only reference the facts listed below; if none of them makes a usable opener, write a signal-free opener instead. Never invent details, signals, or history about this person.${
+    noEnrichment
+      ? "\nNo enrichment is available for them: assume nothing beyond the title and company."
+      : ""
+  }
+${wrapUntrusted(rows.join("\n"))}
+
+THE SENDER IS REAL TOO. Never invent facts about the sender: everything the drafts claim about who is writing must come from the sender context above. Do not return a persona object; return the drafts only.`;
+}
+
 function campaignBlock(campaign: SwipeCampaign | null): string {
   return campaign
     ? `THE CAMPAIGN THESE ARE FOR:\n${wrapUntrusted(
@@ -389,15 +420,16 @@ A highlighted phrase with a note is the strongest signal available: they pointed
 - Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name]. Write it as it would send.
 - No emojis.
 
-Return the persona and the drafts, nothing else.`;
+Return the drafts, plus the persona when the recipient block asked you to invent one.`;
 
 export function buildBatchSystem(
   campaign: SwipeCampaign | null,
   context: SwipeSenderContext = {},
+  recipient: RealRecipient | null = null,
 ): string {
   return `${BATCH_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderSender(
     context.sender,
-  )}\n\n${INVENT_RECIPIENT}\n\n${campaignBlock(campaign)}`;
+  )}\n\n${recipient ? renderRealRecipient(recipient) : INVENT_RECIPIENT}\n\n${campaignBlock(campaign)}`;
 }
 
 export function buildBatchPrompt(
