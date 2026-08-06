@@ -300,3 +300,42 @@ export const refineEmailVoice = tool({
     };
   },
 });
+
+export const getEmailVoices = tool({
+  description:
+    "List the user's saved email voice profiles: campaign-scoped voices and " +
+    "the user-level default. ALWAYS call this before claiming a voice does or " +
+    "does not exist (e.g. before sending the user to /email-skills to build " +
+    "one). A campaign without its own voice falls back to the default; drafts " +
+    "use generic base rules only when neither exists.",
+  inputSchema: z.object({}),
+  execute: async () => {
+    const auth = await getSupabaseAndUser();
+    if (!auth) return { error: "No authenticated session in tool context." };
+
+    // RLS scopes rows to the signed-in user; campaign name rides along so the
+    // model can answer "which campaigns have a voice" without a second call.
+    const { data, error } = await auth.supabase
+      .from("email_voice_profiles")
+      .select("campaign_id, summary, updated_at, campaign:campaigns(name)")
+      .order("updated_at", { ascending: false });
+    if (error) return { error: error.message };
+
+    const voices = (data ?? []).map((v) => ({
+      scope: v.campaign_id ? "campaign" : "default",
+      campaignId: (v.campaign_id as string | null) ?? null,
+      campaignName:
+        ((v.campaign as { name?: string } | null)?.name as string | null) ??
+        null,
+      summary: (v.summary as string | null) ?? null,
+      updatedAt: v.updated_at as string,
+    }));
+    return {
+      voices,
+      note:
+        voices.length === 0
+          ? "No email voices saved yet, at any scope."
+          : "A campaign without its own voice falls back to the default (scope: default).",
+    };
+  },
+});

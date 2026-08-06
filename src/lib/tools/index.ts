@@ -83,6 +83,7 @@ import {
   rewriteVoiceDrafts,
   saveVoiceProfile,
   refineEmailVoice,
+  getEmailVoices,
 } from "./voice-tools";
 import {
   listEmailLearnings,
@@ -162,6 +163,7 @@ const rawTools = {
   rewriteVoiceDrafts,
   saveVoiceProfile,
   refineEmailVoice,
+  getEmailVoices,
   listEmailLearnings,
   addEmailLearning,
   setEmailLearningStatus,
