@@ -7,6 +7,7 @@ import { AlertTriangle, Check, Loader2, Layers } from "lucide-react";
 import { SafeLink } from "@/components/safe-link";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LearningsSection } from "@/components/email-skills/learnings-section";
 import { VoiceProfileView } from "@/components/email-skills/voice-profile-view";
 import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
 import { useCampaign } from "@/lib/campaign-context";
@@ -215,6 +216,10 @@ function EmailVoiceScope() {
       {!campaignId && campaigns.length > 0 && (
         <CampaignVoiceList campaigns={campaigns} profiles={profiles} />
       )}
+
+      {/* Outcome learnings live beside the voice they compose with. Overview
+          only, same reasoning as the campaign list above. */}
+      {!campaignId && <LearningsSection />}
     </PageShell>
   );
 }

@@ -84,6 +84,13 @@ import {
   saveVoiceProfile,
   refineEmailVoice,
 } from "./voice-tools";
+import {
+  listEmailLearnings,
+  addEmailLearning,
+  setEmailLearningStatus,
+  suppressContact,
+  getOutreachPerformance,
+} from "./learning-tools";
 import { getPostHogClient } from "@/lib/posthog-server";
 
 const rawTools = {
@@ -155,6 +162,11 @@ const rawTools = {
   rewriteVoiceDrafts,
   saveVoiceProfile,
   refineEmailVoice,
+  listEmailLearnings,
+  addEmailLearning,
+  setEmailLearningStatus,
+  suppressContact,
+  getOutreachPerformance,
 };
 
 type ToolCtx = { userId?: string; campaignId?: string | null };

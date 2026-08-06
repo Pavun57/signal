@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   getEffectiveDailyLimit,
   isWithinSendWindow,
+  localSendClock,
   sendGmailMessage,
 } from "@/lib/services/gmail-service";
 import {
@@ -43,6 +44,11 @@ export interface DraftForSend {
    * uses it to look up a per-sequence scope override.
    */
   sequence_id?: string | null;
+  /**
+   * Present on every real row (all loaders select *); the attribution
+   * snapshot resolves it to a step number on the sent_emails row.
+   */
+  sequence_step_id?: string | null;
 }
 
 export type SendResult =
@@ -89,6 +95,85 @@ async function recordSendFailure(
   }
 }
 
+/**
+ * The clock that governs a send: the recipient's when the send-window scope
+ * resolves to 'recipient' and the contact's zone is resolvable, otherwise
+ * the sender's.
+ *
+ * Recipient scope reads the contact's clock instead of the sender's: cached
+ * people.timezone first, then resolved best-effort from location strings.
+ * Unresolvable falls back to the sender's zone: a send must never be
+ * deferred forever because a contact's location is unknown.
+ */
+async function resolveGoverningClock(
+  supabase: SupabaseClient,
+  draft: DraftForSend,
+  sender: SenderConfig,
+): Promise<{
+  timezone: string | null;
+  label: string;
+  scope: "sender" | "recipient";
+}> {
+  let timezone = sender.sendTimezone;
+  let label = sender.sendTimezone ?? "UTC";
+
+  // The sequence can override whose clock the window reads; null inherits
+  // the user's global setting.
+  let scope: "sender" | "recipient" = sender.sendWindowScope;
+  if (draft.sequence_id) {
+    const { data: seq } = await supabase
+      .from("sequences")
+      .select("send_window_scope")
+      .eq("id", draft.sequence_id)
+      .maybeSingle();
+    if (seq?.send_window_scope === "recipient") scope = "recipient";
+    else if (seq?.send_window_scope === "sender") scope = "sender";
+  }
+
+  if (scope === "recipient" && draft.person_id) {
+    const { data: located } = await supabase
+      .from("people")
+      .select(
+        "timezone, location, enrichment_data, organization:organizations(location)",
+      )
+      .eq("id", draft.person_id)
+      .maybeSingle();
+    const enrichment = (located?.enrichment_data ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const github = (enrichment.github ?? {}) as Record<string, unknown>;
+    const org = Array.isArray(located?.organization)
+      ? located?.organization[0]
+      : located?.organization;
+    const recipientTimezone =
+      (located?.timezone as string | null) ??
+      resolveTimezoneFromLocation(
+        located?.location as string | undefined,
+        enrichment.location as string | undefined,
+        enrichment.city as string | undefined,
+        enrichment.country as string | undefined,
+        github.location as string | undefined,
+        (org as { location?: string | null } | null)?.location,
+      );
+    if (recipientTimezone) {
+      timezone = recipientTimezone;
+      label = `${recipientTimezone} (recipient's timezone)`;
+      // Cache the resolution so each contact resolves at most once; a
+      // location edit clears the cache (people PATCH nulls timezone).
+      if (!located?.timezone) {
+        await supabase
+          .from("people")
+          .update({ timezone: recipientTimezone })
+          .eq("id", draft.person_id)
+          .is("timezone", null);
+      }
+    }
+  }
+
+  return { timezone, label, scope };
+}
+
 /** Refuse, and leave the reason on the draft for the user to act on. */
 async function refuse(
   supabase: SupabaseClient,
@@ -133,89 +218,69 @@ export async function claimAndSendDraft(
     );
   }
 
-  // Send window: cron-driven paths wait for the window; interactive paths
-  // (send-now click, agent send confirmed in chat) pass bypassSendWindow —
-  // an explicit human "send" beats a schedule preference.
-  if (
-    !opts?.bypassSendWindow &&
-    sender.sendWindowStart !== null &&
-    sender.sendWindowEnd !== null
-  ) {
-    let windowTimezone = sender.sendTimezone;
-    let timezoneLabel = sender.sendTimezone ?? "UTC";
-
-    // The sequence can override whose clock the window reads; null inherits
-    // the user's global setting.
-    let windowScope: "sender" | "recipient" = sender.sendWindowScope;
-    if (draft.sequence_id) {
-      const { data: seq } = await supabase
-        .from("sequences")
-        .select("send_window_scope")
-        .eq("id", draft.sequence_id)
-        .maybeSingle();
-      if (seq?.send_window_scope === "recipient") windowScope = "recipient";
-      else if (seq?.send_window_scope === "sender") windowScope = "sender";
-    }
-
-    // Recipient scope reads the contact's clock instead of the sender's:
-    // cached people.timezone first, then resolved best-effort from location
-    // strings. Unresolvable falls back to the sender's zone: a send must
-    // never be deferred forever because a contact's location is unknown.
-    if (windowScope === "recipient" && draft.person_id) {
-      const { data: located } = await supabase
-        .from("people")
-        .select(
-          "timezone, location, enrichment_data, organization:organizations(location)",
-        )
-        .eq("id", draft.person_id)
-        .maybeSingle();
-      const enrichment = (located?.enrichment_data ?? {}) as Record<
-        string,
-        unknown
-      >;
-      const github = (enrichment.github ?? {}) as Record<string, unknown>;
-      const org = Array.isArray(located?.organization)
-        ? located?.organization[0]
-        : located?.organization;
-      const recipientTimezone =
-        (located?.timezone as string | null) ??
-        resolveTimezoneFromLocation(
-          located?.location as string | undefined,
-          enrichment.location as string | undefined,
-          enrichment.city as string | undefined,
-          enrichment.country as string | undefined,
-          github.location as string | undefined,
-          (org as { location?: string | null } | null)?.location,
-        );
-      if (recipientTimezone) {
-        windowTimezone = recipientTimezone;
-        timezoneLabel = `${recipientTimezone} (recipient's timezone)`;
-        // Cache the resolution so each contact resolves at most once; a
-        // location edit clears the cache (people PATCH nulls timezone).
-        if (!located?.timezone) {
-          await supabase
-            .from("people")
-            .update({ timezone: recipientTimezone })
-            .eq("id", draft.person_id)
-            .is("timezone", null);
-        }
-      }
-    }
-
-    if (
-      !isWithinSendWindow(
-        sender.sendWindowStart,
-        sender.sendWindowEnd,
-        windowTimezone,
-      )
-    ) {
+  // Suppression list: an address whose owner unsubscribed or declined stays
+  // un-contactable through every send path (cron, send-now, agent tools all
+  // funnel here and none can bypass this). Checked before the send window so
+  // a suppressed draft surfaces as blocked now instead of deferring forever,
+  // and before the claim so it spends nothing.
+  {
+    const { data: suppression, error: suppressionError } = await supabase
+      .from("outreach_suppressions")
+      .select("reason")
+      .eq("user_id", draft.user_id)
+      .eq("email", draft.to_email.toLowerCase())
+      .maybeSingle();
+    // Fail closed, matching the person gate below: "could not check the
+    // suppression list" must not become "send anyway".
+    if (suppressionError) {
       return refuse(
         supabase,
         draft.id,
         "deferred",
-        `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${timezoneLabel}); will send during the next window.`,
+        "Could not check the suppression list; will retry.",
       );
     }
+    if (suppression) {
+      const why =
+        suppression.reason === "unsubscribe"
+          ? "they asked to stop being contacted"
+          : suppression.reason === "not_interested"
+            ? "they declined earlier outreach"
+            : "you suppressed this address";
+      return refuse(
+        supabase,
+        draft.id,
+        "blocked",
+        `Not sending to ${draft.to_email}: ${why}.`,
+      );
+    }
+  }
+
+  // Send window: cron-driven paths wait for the window; interactive paths
+  // (send-now click, agent send confirmed in chat) pass bypassSendWindow —
+  // an explicit human "send" beats a schedule preference.
+  // Which clock governs this send. The window gate reads it, and so does the
+  // attribution snapshot written to sent_emails, which is why it is resolved
+  // even when the window is bypassed or unconfigured: send-time stats must
+  // always be recorded in the clock a window would have applied to.
+  const clock = await resolveGoverningClock(supabase, draft, sender);
+
+  if (
+    !opts?.bypassSendWindow &&
+    sender.sendWindowStart !== null &&
+    sender.sendWindowEnd !== null &&
+    !isWithinSendWindow(
+      sender.sendWindowStart,
+      sender.sendWindowEnd,
+      clock.timezone,
+    )
+  ) {
+    return refuse(
+      supabase,
+      draft.id,
+      "deferred",
+      `Outside the configured send window (${sender.sendWindowStart}:00–${sender.sendWindowEnd}:00 ${clock.label}); will send during the next window.`,
+    );
   }
 
   // Data-quality gate, before the claim so a blocked draft stays sendable once
@@ -439,6 +504,22 @@ export async function claimAndSendDraft(
   // random value: an unmatched id is better than an unmatchable one.
   const messageId = sent.messageId || null;
 
+  // Attribution snapshot for the learning job: when the send left in the
+  // governing clock, which step it was, and cheap per-send copy features.
+  // Snapshotted here because draft_id is on-delete-set-null: the features
+  // must outlive the draft row. Best-effort throughout: attribution can
+  // never cost the send or its bookkeeping.
+  const local = localSendClock(clock.timezone, new Date(now));
+  let stepNumber: number | null = null;
+  if (draft.sequence_step_id) {
+    const { data: step } = await supabase
+      .from("sequence_steps")
+      .select("step_number")
+      .eq("id", draft.sequence_step_id)
+      .maybeSingle();
+    stepNumber = (step?.step_number as number | undefined) ?? null;
+  }
+
   const { error: insertError } = await supabase.from("sent_emails").insert({
     message_id: messageId,
     draft_id: draft.id,
@@ -451,6 +532,20 @@ export async function claimAndSendDraft(
     subject: draft.subject,
     status: "sent",
     sent_at: now,
+    sequence_id: draft.sequence_id ?? null,
+    step_number: stepNumber,
+    sent_local_hour: local?.hour ?? null,
+    sent_weekday: local?.weekday ?? null,
+    // Null when the clock was unparseable, so hour/weekday/tz stay a
+    // consistent triple rather than naming a zone the hour isn't in.
+    sent_tz: local ? (clock.timezone ?? "UTC") : null,
+    features: {
+      subject_len: draft.subject.length,
+      body_words: draft.body_text
+        ? draft.body_text.split(/\s+/).filter(Boolean).length
+        : null,
+      window_scope: clock.scope,
+    },
   });
   if (insertError) {
     // The email already left — never release the claim — but a missing

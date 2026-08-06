@@ -362,3 +362,34 @@ export function isWithinSendWindow(
     ? hour >= startHour && hour < endHour
     : hour >= startHour || hour < endHour;
 }
+
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * The local hour (0-23) and weekday (0 = Sunday) of `now` in `timeZone`,
+ * using the same Intl mechanism as isWithinSendWindow so the attribution
+ * snapshot on sent_emails can never disagree with the window gate about
+ * what hour a send happened. Null on an unparseable timezone: a bad
+ * setting costs the snapshot, never the send.
+ */
+export function localSendClock(
+  timeZone: string | null,
+  now: Date = new Date(),
+): { hour: number; weekday: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hourCycle: "h23",
+      weekday: "short",
+      timeZone: timeZone ?? "UTC",
+    }).formatToParts(now);
+    const hour = Number(parts.find((p) => p.type === "hour")?.value);
+    const weekday = WEEKDAY_NAMES.indexOf(
+      parts.find((p) => p.type === "weekday")?.value ?? "",
+    );
+    if (!Number.isInteger(hour) || weekday === -1) return null;
+    return { hour, weekday };
+  } catch {
+    return null;
+  }
+}

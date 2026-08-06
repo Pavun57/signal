@@ -90,7 +90,7 @@ function stubClient() {
     });
 
     const builder: Record<string, unknown> = {};
-    for (const name of ["select", "eq", "in", "order"]) {
+    for (const name of ["select", "eq", "in", "order", "limit", "or", "is"]) {
       builder[name] = () => builder;
     }
     builder.single = single;
