@@ -150,14 +150,17 @@ async function run() {
 
   // ── Batch 1: cold start, maximum spread expected ──────────────────────────
   const t0 = Date.now();
-  const first = await generate<{ persona: Persona; drafts: Draft[] }>(
+  const first = await generate<{ persona?: Persona; drafts: Draft[] }>(
     BatchSchema,
     buildBatchSystem(campaign, SENDER_CONTEXT),
     buildBatchPrompt(transcript, 6),
     8_000,
   );
   console.log(`\n(batch 1 took ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-  console.log(`Invented persona: ${personaLabel(first.persona)}`);
+  // The probe drives the invented path, where a persona is always expected.
+  const firstPersona = first.persona;
+  if (!firstPersona) throw new Error("batch 1 returned no persona");
+  console.log(`Invented persona: ${personaLabel(firstPersona)}`);
   report(first.drafts, "BATCH 1: cold start");
 
   // ── Simulate a picky user: keeps blunt/signal, passes the rest ────────────
@@ -166,7 +169,7 @@ async function run() {
     body: d.body,
     axes: d.axes,
     kept: d.axes.opener === "signal" || d.axes.tone === "blunt",
-    personaLabel: personaLabel(first.persona),
+    personaLabel: personaLabel(firstPersona),
   }));
   transcript.judged.push(...judged);
   transcript.instructions.push(
@@ -192,15 +195,17 @@ async function run() {
 
   // ── Batch 2: must narrow AND obey the instructions ────────────────────────
   const t1 = Date.now();
-  const second = await generate<{ persona: Persona; drafts: Draft[] }>(
+  const second = await generate<{ persona?: Persona; drafts: Draft[] }>(
     BatchSchema,
     buildBatchSystem(campaign, SENDER_CONTEXT),
     buildBatchPrompt(transcript, 4),
     6_000,
   );
   console.log(`\n(batch 2 took ${((Date.now() - t1) / 1000).toFixed(1)}s)`);
-  console.log(`Invented persona: ${personaLabel(second.persona)}`);
-  if (personaLabel(second.persona) === personaLabel(first.persona)) {
+  const secondPersona = second.persona;
+  if (!secondPersona) throw new Error("batch 2 returned no persona");
+  console.log(`Invented persona: ${personaLabel(secondPersona)}`);
+  if (personaLabel(secondPersona) === personaLabel(firstPersona)) {
     console.log("  ← PERSONA REUSED (the prompt forbids this)");
   }
   report(second.drafts, "BATCH 2: after keeps + instructions");
@@ -230,7 +235,7 @@ async function run() {
       body: d.body,
       axes: d.axes,
       kept: d.axes.tone === "blunt",
-      personaLabel: personaLabel(second.persona),
+      personaLabel: personaLabel(secondPersona),
     })),
   );
 

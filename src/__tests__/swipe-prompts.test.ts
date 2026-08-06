@@ -321,13 +321,12 @@ describe("fictional personas", () => {
     signals: ["Hiring 4 SDRs this quarter"],
   };
 
-  it("batch schema requires a persona alongside the drafts", () => {
-    expect(() =>
-      BatchSchema.parse({ drafts: [validDraft, validDraft] }),
-    ).toThrow();
+  it("batch schema carries the persona when the invented path returns one", () => {
+    // Persona is optional now: real-recipient batches return drafts only and
+    // the server stamps the label. The invented path still round-trips it.
     expect(
       BatchSchema.parse({ persona, drafts: [validDraft, validDraft] }).persona
-        .name,
+        ?.name,
     ).toBe("Riya Shah");
   });
 
