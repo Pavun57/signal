@@ -42,11 +42,16 @@ export const DraftAxesSchema = z.object({
   signoff: z.enum(["name", "none", "best", "regards"]),
 });
 
+// Body cap matches the transcript's JudgedSchema bound (4,000), so any draft
+// the model produces can always round-trip onto the deck and back. The bound
+// no longer reaches the model (the wire schema cannot carry it), so one
+// long-winded draft must not sink the whole batch: keep it generous and let
+// the user steer length through feedback instead.
 export const DraftSchema = z.object({
   subject: z.string().max(200),
   body: z
     .string()
-    .max(2_000)
+    .max(4_000)
     .describe("Plain text. Real line breaks, no HTML."),
   axes: DraftAxesSchema,
 });
@@ -275,6 +280,9 @@ export interface SwipeSender {
   roleTitle?: string | null;
   companyName?: string | null;
   offeringSummary?: string | null;
+  /** Free-form profile notes: constraints and corrections the user wrote for
+   * the drafter ("solo consultant", "do not use company name in sign-off"). */
+  notes?: string | null;
   /** The rendered SENDER FACT BANK block, already fenced by renderFactBank.
    * Null when the user has no facts, which renders nothing. */
   factBank?: string | null;
@@ -304,6 +312,7 @@ function renderSender(sender: SwipeSender | null | undefined): string {
         field("Role", sender.roleTitle),
         field("Company", sender.companyName),
         field("What they sell", sender.offeringSummary),
+        field("Sender notes (follow these)", sender.notes),
       ].filter(Boolean) as string[])
     : [];
 

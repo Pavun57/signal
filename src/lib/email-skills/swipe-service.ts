@@ -157,6 +157,7 @@ async function loadPromptContext(
           roleTitle: profile.role_title,
           companyName: profile.company_name,
           offeringSummary: profile.offering_summary,
+          notes: profile.notes,
           factBank,
         }
       : null,
