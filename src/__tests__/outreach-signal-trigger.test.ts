@@ -71,6 +71,10 @@ function fake() {
       signals: () => [
         { id: SIGNAL, name: "Hiring Activity", category: "hiring" },
       ],
+      // pickAndDraft filters suppressed addresses and loads outcome
+      // learnings for the compose prompt; empty on both is the normal case.
+      outreach_suppressions: () => [],
+      email_learnings: () => [],
       // pickAndDraft reads the full send-gate column set off each person.
       people: () => [
         {

@@ -16,6 +16,8 @@ type UserPromptInput = Parameters<typeof buildComposeUserPrompt>[0];
 export type ComposeInput = UserPromptInput & {
   voice?: VoiceProfile | null;
   factBank?: string | null;
+  /** Rendered LEARNINGS block (email-learnings.ts), part of the cached system prompt. */
+  learnings?: string | null;
 };
 
 export type ComposeResult =
@@ -38,9 +40,9 @@ export type ComposeResult =
 export async function composeEmail(
   input: ComposeInput,
 ): Promise<ComposeResult> {
-  // factBank is destructured out so it cannot leak into the per-contact user
-  // prompt; it belongs only in the cached system prompt.
-  const { voice, factBank, ...userPromptInput } = input;
+  // factBank and learnings are destructured out so they cannot leak into the
+  // per-contact user prompt; they belong only in the cached system prompt.
+  const { voice, factBank, learnings, ...userPromptInput } = input;
 
   // claude-opus-5 honours the structured-output schema only ~65-80% of the time
   // on this prompt, sometimes wrapping the payload and sometimes emitting
@@ -52,7 +54,11 @@ export async function composeEmail(
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: ComposedEmailSchema,
-      system: buildEmailSystemPrompt(voice ?? null, factBank ?? null),
+      system: buildEmailSystemPrompt(
+        voice ?? null,
+        factBank ?? null,
+        learnings ?? null,
+      ),
       prompt: buildComposeUserPrompt(userPromptInput),
       providerOptions: {
         anthropic: {

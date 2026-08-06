@@ -187,6 +187,7 @@ describe("sendEmail review gating", () => {
     const { calls } = wire([
       { data: { ...baseDraft, review_status: "approved" } }, // draft select
       settingsResponse(), // resolveSenderConfig
+      { data: null }, // suppression check: not suppressed
       gatePasses(), // send-gate person read
       { data: { id: baseDraft.id } }, // claim won
       { count: 0 }, // daily-cap count
@@ -207,7 +208,7 @@ describe("sendEmail review gating", () => {
     });
     expect(sendGmailMock).toHaveBeenCalledTimes(1);
 
-    const claim = calls[3]; // 2 is the send-gate person read
+    const claim = calls[4]; // 2 suppression check, 3 send-gate person read
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -220,6 +221,7 @@ describe("sendEmail review gating", () => {
     wire([
       { data: { ...baseDraft, review_status: "approved" } },
       settingsResponse(),
+      { data: null }, // suppression check: not suppressed
       gatePasses(), // send-gate person read
       { data: null }, // claim lost
     ]);
@@ -247,6 +249,7 @@ describe("sendBulkEmails review gating", () => {
       },
       { data: [{ ...baseDraft, id: "d_ok", review_status: "approved" }] },
       settingsResponse(),
+      { data: null }, // suppression check: not suppressed
       gatePasses(), // send-gate person read
       { data: { id: "d_ok" } }, // claim won
       { count: 0 }, // daily-cap count

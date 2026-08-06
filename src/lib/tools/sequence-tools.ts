@@ -5,6 +5,10 @@ import { composeEmail, mapConcurrent } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { saveDraft } from "@/lib/email-composition/save";
 import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
+import {
+  loadActiveLearnings,
+  renderLearningsBlock,
+} from "@/lib/email-learnings";
 
 export const createSequence = tool({
   description:
@@ -425,131 +429,145 @@ export const draftEmailsForSequence = tool({
       };
     }
 
-    // Build the (contact × step) task list. Skip contacts with no email.
-    type Task = {
-      enrollmentId: string;
-      personId: string;
-      stepId: string;
-      stepNumber: number;
-      isFinal: boolean;
-      condition: string;
-      skipReason?: string;
-    };
+    // Outcome learnings, loaded once for the whole batch like the fact bank.
+    const learnings = renderLearningsBlock(
+      await loadActiveLearnings(supabase, userId, sequence.campaign_id),
+    );
+
+    // Fan out per CONTACT, steps sequential inside. Contact-level concurrency
+    // (not contact × step) so step N+1 composes with step N's actual subject
+    // as previousSubject; a follow-up written blind to what it follows up on
+    // was the old failure mode.
     const totalSteps = steps.length;
-    const tasks: Task[] = [];
-    for (const enrollment of enrollments) {
-      const person = personMap.get(enrollment.person_id);
-      const hasEmail = person?.work_email || person?.personal_email;
-      for (const step of steps) {
-        tasks.push({
-          enrollmentId: enrollment.id,
-          personId: enrollment.person_id,
-          stepId: step.id,
-          stepNumber: step.step_number,
-          isFinal: step.step_number === totalSteps,
-          condition: step.condition,
-          skipReason: hasEmail ? undefined : "no email on contact",
-        });
-      }
-    }
+    type StepResult = {
+      personId: string;
+      stepNumber: number;
+      skipped: boolean;
+      reason?: string;
+      error?: string;
+      draftId?: string;
+      subject?: string;
+    };
 
-    // Fan out composition.
-    const results = await mapConcurrent(tasks, concurrency, async (task) => {
-      if (task.skipReason) {
-        return {
-          personId: task.personId,
-          stepNumber: task.stepNumber,
-          skipped: true as const,
-          reason: task.skipReason,
-        };
-      }
+    const perContact = await mapConcurrent(
+      enrollments,
+      concurrency,
+      async (enrollment): Promise<StepResult[]> => {
+        const person = personMap.get(enrollment.person_id);
+        const hasEmail = person?.work_email || person?.personal_email;
+        if (!person || !hasEmail) {
+          return steps.map((step) => ({
+            personId: enrollment.person_id,
+            stepNumber: step.step_number,
+            skipped: true,
+            reason: "no email on contact",
+          }));
+        }
 
-      const person = personMap.get(task.personId)!;
-      const org = person.organization_id
-        ? orgMap.get(person.organization_id)
-        : null;
+        const org = person.organization_id
+          ? orgMap.get(person.organization_id)
+          : null;
 
-      const composed = await composeEmail({
-        voice,
-        contact: {
-          name: person.name ?? null,
-          title: person.title ?? null,
-          email: person.work_email ?? person.personal_email ?? "",
-          enrichmentData:
-            (person.enrichment_data as Record<string, unknown> | null) ?? null,
-        },
-        company: org
-          ? {
-              name: org.name ?? null,
-              domain: org.domain ?? null,
-              industry: org.industry ?? null,
+        const stepResults: StepResult[] = [];
+        let previousSubject: string | null = null;
+
+        for (const step of steps) {
+          const composed = await composeEmail({
+            voice,
+            contact: {
+              name: person.name ?? null,
+              title: person.title ?? null,
+              email: person.work_email ?? person.personal_email ?? "",
               enrichmentData:
-                (org.enrichment_data as Record<string, unknown> | null) ?? null,
-            }
-          : null,
-        step: {
-          stepNumber: task.stepNumber,
-          totalSteps,
-          condition: task.condition,
-          isFinal: task.isFinal,
-        },
-        campaign: {
-          name: campaign.name,
-          icp: (campaign.icp as Record<string, unknown> | null) ?? null,
-          offering:
-            (campaign.offering as Record<string, unknown> | null) ?? null,
-          positioning:
-            (campaign.positioning as Record<string, unknown> | null) ?? null,
-        },
-        senderProfile: {
-          name: profile?.name ?? null,
-          title: profile?.role_title ?? null,
-          company: profile?.company_name ?? null,
-          offeringSummary: profile?.offering_summary ?? null,
-          notes: profile?.notes ?? null,
-        },
-        factBank,
-      });
+                (person.enrichment_data as Record<string, unknown> | null) ??
+                null,
+            },
+            company: org
+              ? {
+                  name: org.name ?? null,
+                  domain: org.domain ?? null,
+                  industry: org.industry ?? null,
+                  enrichmentData:
+                    (org.enrichment_data as Record<string, unknown> | null) ??
+                    null,
+                }
+              : null,
+            step: {
+              stepNumber: step.step_number,
+              totalSteps,
+              condition: step.condition,
+              isFinal: step.step_number === totalSteps,
+            },
+            campaign: {
+              name: campaign.name,
+              icp: (campaign.icp as Record<string, unknown> | null) ?? null,
+              offering:
+                (campaign.offering as Record<string, unknown> | null) ?? null,
+              positioning:
+                (campaign.positioning as Record<string, unknown> | null) ??
+                null,
+            },
+            senderProfile: {
+              name: profile?.name ?? null,
+              title: profile?.role_title ?? null,
+              company: profile?.company_name ?? null,
+              offeringSummary: profile?.offering_summary ?? null,
+              notes: profile?.notes ?? null,
+            },
+            factBank,
+            learnings,
+            previousSubject,
+          });
 
-      if (!composed.ok) {
-        return {
-          personId: task.personId,
-          stepNumber: task.stepNumber,
-          skipped: false as const,
-          error: composed.error,
-        };
-      }
+          if (!composed.ok) {
+            // Later steps still compose: previousSubject just stays at the
+            // last step that succeeded.
+            stepResults.push({
+              personId: enrollment.person_id,
+              stepNumber: step.step_number,
+              skipped: false,
+              error: composed.error,
+            });
+            continue;
+          }
 
-      const saved = await saveDraft(supabase, {
-        userId,
-        campaignId: campaign.id,
-        personId: task.personId,
-        subject: composed.email.subject,
-        bodyHtml: composed.email.bodyHtml,
-        bodyText: composed.email.bodyText,
-        sequenceId,
-        sequenceStepId: task.stepId,
-        enrollmentId: task.enrollmentId,
-        aiReasoning: composed.email.aiReasoning,
-      });
+          const saved = await saveDraft(supabase, {
+            userId,
+            campaignId: campaign.id,
+            personId: enrollment.person_id,
+            subject: composed.email.subject,
+            bodyHtml: composed.email.bodyHtml,
+            bodyText: composed.email.bodyText,
+            sequenceId,
+            sequenceStepId: step.id,
+            enrollmentId: enrollment.id,
+            aiReasoning: composed.email.aiReasoning,
+          });
 
-      if (!saved.ok) {
-        return {
-          personId: task.personId,
-          stepNumber: task.stepNumber,
-          skipped: false as const,
-          error: saved.error,
-        };
-      }
+          if (!saved.ok) {
+            stepResults.push({
+              personId: enrollment.person_id,
+              stepNumber: step.step_number,
+              skipped: false,
+              error: saved.error,
+            });
+            continue;
+          }
 
-      return {
-        personId: task.personId,
-        stepNumber: task.stepNumber,
-        skipped: false as const,
-        draftId: saved.draftId,
-        subject: saved.subject,
-      };
-    });
+          previousSubject = composed.email.subject;
+          stepResults.push({
+            personId: enrollment.person_id,
+            stepNumber: step.step_number,
+            skipped: false,
+            draftId: saved.draftId,
+            subject: saved.subject,
+          });
+        }
+
+        return stepResults;
+      },
+    );
+    const results = perContact.flat();
 
     const drafted = results.filter((r) => !r.skipped && "draftId" in r).length;
     const skipped = results.filter((r) => r.skipped).length;

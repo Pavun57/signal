@@ -3,6 +3,10 @@ import { NextResponse } from "next/server";
 import { composeEmail } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
+import {
+  loadActiveLearnings,
+  renderLearningsBlock,
+} from "@/lib/email-learnings";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
@@ -35,7 +39,7 @@ export async function POST(request: Request) {
   const { data: draft, error: draftErr } = await supabase
     .from("email_drafts")
     .select(
-      "id, user_id, campaign_id, person_id, sequence_id, sequence_step_id, ai_reasoning, review_status, status",
+      "id, user_id, campaign_id, person_id, sequence_id, sequence_step_id, enrollment_id, ai_reasoning, review_status, status",
     )
     .eq("id", body.draftId)
     .single();
@@ -115,6 +119,7 @@ export async function POST(request: Request) {
   let totalSteps = 1;
   let condition = "always";
   let isFinal = true;
+  let previousSubject: string | null = null;
 
   if (draft.sequence_step_id && draft.sequence_id) {
     const { data: stepRow } = await supabase
@@ -133,9 +138,32 @@ export async function POST(request: Request) {
       .eq("sequence_id", draft.sequence_id);
     totalSteps = count ?? 1;
     isFinal = stepNumber === totalSteps;
+
+    // A follow-up regenerates with the subject it actually follows up on.
+    if (stepNumber > 1 && draft.enrollment_id) {
+      const { data: priorStep } = await supabase
+        .from("sequence_steps")
+        .select("id")
+        .eq("sequence_id", draft.sequence_id)
+        .eq("step_number", stepNumber - 1)
+        .maybeSingle();
+      if (priorStep) {
+        const { data: priorDraft } = await supabase
+          .from("email_drafts")
+          .select("subject")
+          .eq("enrollment_id", draft.enrollment_id)
+          .eq("sequence_step_id", priorStep.id)
+          .maybeSingle();
+        previousSubject = (priorDraft?.subject as string | undefined) ?? null;
+      }
+    }
   }
 
   const voice = await loadVoiceProfile(supabase, user.id, draft.campaign_id);
+
+  const learnings = renderLearningsBlock(
+    await loadActiveLearnings(supabase, user.id, draft.campaign_id),
+  );
 
   const composed = await composeEmail({
     voice,
@@ -177,6 +205,8 @@ export async function POST(request: Request) {
       notes: (senderProfile?.notes as string) ?? null,
     },
     factBank,
+    learnings,
+    previousSubject,
     triggerReason: (draft.ai_reasoning as string) ?? null,
   });
 

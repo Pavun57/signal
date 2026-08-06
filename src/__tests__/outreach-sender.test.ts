@@ -98,7 +98,8 @@ function settingsRow(overrides: Record<string, unknown> = {}) {
 
 // Await order inside sendApprovedDraft:
 // 0 step select · 1 draft select · 2 settings select (resolveSenderConfig) ·
-// 3 send-gate person select · 4 claim update · 5 daily-cap count
+// 3 suppression select · 4 send-gate person select · 5 claim update ·
+// 6 daily-cap count
 // then send, then bookkeeping (insert, updates, next-step select, enrollment)
 /** A contact the data-quality gate lets through: verified email, known employer. */
 function gatePasses() {
@@ -119,6 +120,7 @@ function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
     { data: { id: "step_1" } },
     { data: draft },
     { data: settings },
+    { data: null }, // suppression check: not suppressed
     // The send gate reads the contact before claiming the draft.
     gatePasses(),
   ];
@@ -166,6 +168,56 @@ describe("sendApprovedDraft claim semantics", () => {
     });
   });
 
+  it("refuses a suppressed address as blocked, before the gate and the claim", async () => {
+    const { client, calls } = fakeSupabase([
+      { data: { id: "step_1" } }, // step select
+      { data: draft }, // draft select
+      { data: settingsRow() }, // sender config
+      { data: { reason: "unsubscribe" } }, // suppression hit
+      {}, // refuse() bookkeeping
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("stop being contacted"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+    // No gate read, no verification credits, no claim: the suppression check
+    // must sit before all of them, and the only write is the refusal record.
+    expect(calls.map((c) => c.table)).toEqual([
+      "sequence_steps",
+      "email_drafts",
+      "user_settings",
+      "outreach_suppressions",
+      "email_drafts",
+    ]);
+    expect(calls[4].ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ last_error_kind: "blocked" })],
+    });
+  });
+
+  it("defers when the suppression list cannot be checked", async () => {
+    // Fail closed: "could not check the list" must never become "send anyway".
+    const { client } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      { data: settingsRow() },
+      { data: null, error: { message: "connection reset" } }, // lookup failed
+      {}, // refuse() bookkeeping
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("suppression"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+  });
+
   it("sends after winning the claim", async () => {
     const { client, calls } = fakeSupabase([
       ...preSendResponses(),
@@ -193,7 +245,7 @@ describe("sendApprovedDraft claim semantics", () => {
       }),
     );
 
-    const claim = calls[4]; // 3 is the send-gate person read
+    const claim = calls[5]; // 3 suppression check, 4 send-gate person read
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -206,7 +258,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
 
     // The sent_emails row records the RFC Message-ID and the real address.
-    const insert = calls[6]; // 3 gate read, 5 cap count (also sent_emails)
+    const insert = calls[7]; // 4 gate read, 6 cap count (also sent_emails)
     expect(insert.table).toBe("sent_emails");
     expect(insert.ops).toContainEqual({
       name: "insert",
@@ -249,6 +301,7 @@ describe("sendApprovedDraft claim semantics", () => {
           gmail_connected_at: new Date().toISOString(), // day 0 → ramp cap 5
         }),
       },
+      { data: null }, // suppression check: not suppressed
       gatePasses(), // send-gate person read
       { data: { id: draft.id } }, // claim won
       { count: 5 }, // already sent 5 today
@@ -263,7 +316,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
     expect(sendGmailMock).not.toHaveBeenCalled();
     // The capped draft must go back to "draft" so tomorrow's cron sends it.
-    const release = calls[6];
+    const release = calls[7];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",
@@ -332,7 +385,7 @@ describe("sendApprovedDraft claim semantics", () => {
       ok: false,
       reason: "SMTP 421 try again later",
     });
-    const release = calls[6];
+    const release = calls[7];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",

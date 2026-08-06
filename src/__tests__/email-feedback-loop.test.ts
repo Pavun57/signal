@@ -137,6 +137,7 @@ function sendResponses(personId: string | null): FakeResponse[] {
     { data: { id: "step_1" } }, // step select
     { data: draftWith(personId) }, // draft select
     { data: settings() }, // sender config
+    { data: null }, // suppression check: not suppressed
     gatePasses(), // send-gate person read
     { data: { id: "draft_1" } }, // claim won
     { count: 0 }, // daily cap
@@ -182,6 +183,7 @@ describe("send_confirmed", () => {
     // on the direct callers (the agent's sendEmail tool, send-now).
     await claimAndSendDraft(
       fakeSupabase([
+        { data: null }, // suppression check: not suppressed
         { data: { id: "draft_1" } }, // claim won
         { count: 0 }, // daily cap
         {}, // sent_emails insert
@@ -222,7 +224,7 @@ describe("send_confirmed", () => {
       },
     };
     const responses = sendResponses("per_1");
-    responses[3] = blocked; // the send-gate person read
+    responses[4] = blocked; // the send-gate person read
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -242,7 +244,7 @@ describe("send_confirmed", () => {
       },
     };
     const responses = sendResponses("per_1");
-    responses[3] = blocked;
+    responses[4] = blocked;
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -256,7 +258,7 @@ describe("send_confirmed", () => {
     // for no rows, so treating null as "carry on" let a DB hiccup disable the
     // one gate that cannot otherwise be bypassed.
     const responses = sendResponses("per_1");
-    responses[3] = { data: null, error: { message: "connection reset" } };
+    responses[4] = { data: null, error: { message: "connection reset" } };
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -270,7 +272,7 @@ describe("send_confirmed", () => {
     // the old one — without this check the gate approved on the new address's
     // verdict and delivered to the very address that just hard-bounced.
     const responses = sendResponses("per_1");
-    responses[3] = {
+    responses[4] = {
       data: {
         work_email: "corrected@example.com", // person was fixed…
         work_email_source: "user_entered",
@@ -372,7 +374,7 @@ describe("send failure recording", () => {
 
   it("classifies the daily cap as deferred, not failed", async () => {
     const responses = sendResponses("per_1");
-    responses[5] = { count: 999 }; // over the cap
+    responses[6] = { count: 999 }; // over the cap
 
     const { client, updates } = observingSupabase(responses);
     const result = await sendApprovedDraft(client, enrollment);
@@ -389,7 +391,7 @@ describe("send failure recording", () => {
 
   it("classifies a stale address as blocked, with the reason kept verbatim", async () => {
     const responses = sendResponses("per_1");
-    responses[3] = {
+    responses[4] = {
       data: {
         work_email: "corrected@example.com",
         work_email_source: "user_entered",

@@ -76,6 +76,8 @@ export function EmailSettings() {
   );
   const [windowScope, setWindowScope] = useState("sender");
   const [windowSaving, setWindowSaving] = useState(false);
+  const [autoAdjustWindow, setAutoAdjustWindow] = useState(false);
+  const [autoAdjustToggling, setAutoAdjustToggling] = useState(false);
 
   const [testTo, setTestTo] = useState("");
   const [testSending, setTestSending] = useState(false);
@@ -132,6 +134,7 @@ export function EmailSettings() {
           ? "recipient"
           : "sender",
       );
+      setAutoAdjustWindow(data.settings.auto_adjust_send_window ?? false);
 
       const testRes = await apiFetch("/api/settings/email/test");
       if (!testRes.ok || !mountedRef.current) return;
@@ -377,6 +380,39 @@ export function EmailSettings() {
       toast.error("Failed to save send window");
     } finally {
       if (mountedRef.current) setWindowSaving(false);
+    }
+  };
+
+  const handleToggleAutoAdjust = async (enabled: boolean) => {
+    // Optimistic, matching the kill switch: an autonomy grant should flip
+    // instantly and roll back on failure.
+    setAutoAdjustWindow(enabled);
+    setAutoAdjustToggling(true);
+    try {
+      const res = await apiFetch("/api/settings/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "set_auto_adjust_send_window",
+          enabled,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAutoAdjustWindow(!enabled);
+        toast.error(data.error ?? "Failed to update auto-adjust");
+        return;
+      }
+      toast.success(
+        enabled
+          ? "The agent may now shift your send window toward hours that get replies"
+          : "Send window auto-adjust turned off",
+      );
+    } catch {
+      setAutoAdjustWindow(!enabled);
+      toast.error("Failed to update auto-adjust");
+    } finally {
+      setAutoAdjustToggling(false);
     }
   };
 
@@ -725,6 +761,26 @@ export function EmailSettings() {
           >
             {windowSaving ? "Saving..." : "Save send window"}
           </Button>
+
+          {/* Auto-adjust opt-in */}
+          <div className="flex items-center justify-between gap-4 border-t pt-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">Auto-adjust from reply data</p>
+              <p className="text-muted-foreground text-xs">
+                {windowStart === "" || windowEnd === ""
+                  ? "Set a send window first. Once enough sends and replies accrue, the weekly analysis can shift it toward the hours that actually get replies."
+                  : "The weekly analysis may shift this window toward the hours that get replies, once there is enough data (100+ sends). Every change is recorded as a timing learning you can review."}
+              </p>
+            </div>
+            <Switch
+              checked={autoAdjustWindow}
+              onCheckedChange={handleToggleAutoAdjust}
+              disabled={
+                autoAdjustToggling || windowStart === "" || windowEnd === ""
+              }
+              aria-label="Auto-adjust send window from reply data"
+            />
+          </div>
         </div>
 
         {/* From Name */}

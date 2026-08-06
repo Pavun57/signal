@@ -20,7 +20,7 @@ export async function GET() {
   const { data: settings } = await supabase
     .from("user_settings")
     .select(
-      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope",
+      "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope, auto_adjust_send_window",
     )
     .eq("user_id", user.id)
     .maybeSingle();
@@ -39,6 +39,7 @@ export async function GET() {
       send_window_end: null,
       send_timezone: null,
       send_window_scope: "sender",
+      auto_adjust_send_window: false,
     },
     is_configured: !!settings?.gmail_address,
     effective_daily_limit: getEffectiveDailyLimit(
@@ -193,6 +194,31 @@ export async function POST(request: Request) {
       send_timezone: timezone,
       send_window_scope: scope,
     });
+  }
+
+  // Opt-in for the weekly learning job to shift the send window toward the
+  // hours that earn replies. Its own action, same rationale as the kill
+  // switch: an autonomy grant must be toggled atomically, never lost to a
+  // half-filled form.
+  if (body.action === "set_auto_adjust_send_window") {
+    if (typeof body.enabled !== "boolean") {
+      return NextResponse.json(
+        { error: "enabled must be a boolean" },
+        { status: 400 },
+      );
+    }
+    const { error } = await supabase.from("user_settings").upsert(
+      {
+        user_id: user.id,
+        auto_adjust_send_window: body.enabled,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" },
+    );
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ auto_adjust_send_window: body.enabled });
   }
 
   if (body.action === "disconnect_gmail") {

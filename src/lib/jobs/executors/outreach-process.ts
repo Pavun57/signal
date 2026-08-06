@@ -14,6 +14,10 @@ import { composeEmail } from "@/lib/email-composition/compose";
 import { loadVoiceProfile } from "@/lib/email-composition/load-voice";
 import { autoApproveDraft, saveDraft } from "@/lib/email-composition/save";
 import { loadSenderFacts, renderFactBank } from "@/lib/sender-facts";
+import {
+  loadActiveLearnings,
+  renderLearningsBlock,
+} from "@/lib/email-learnings";
 
 /**
  * Outreach processor. Handles two jobs:
@@ -218,6 +222,20 @@ async function pickAndDraft(
     "bounced",
     "complained",
   ]);
+  // Addresses this owner has suppressed (unsubscribed / declined). Filtered
+  // at draft time so a signal fire doesn't bill a compose call for a draft
+  // the send gate must refuse anyway; outreach-sender re-checks and is the
+  // authoritative gate.
+  const ownerId = sequences[0]?.user_id ?? null;
+  const suppressedEmails = new Set<string>();
+  if (ownerId) {
+    const { data: suppressions } = await supabase
+      .from("outreach_suppressions")
+      .select("email")
+      .eq("user_id", ownerId);
+    for (const s of suppressions ?? []) suppressedEmails.add(s.email);
+  }
+
   const candidates: Candidate[] = [];
   const blockedByGate: string[] = [];
   for (const p of people) {
@@ -228,6 +246,7 @@ async function pickAndDraft(
     // Must have an email to be draft-able. saveDraft reads work_email ?? personal_email.
     const email = (p.work_email as string) ?? (p.personal_email as string);
     if (!email) continue;
+    if (suppressedEmails.has(email.toLowerCase())) continue;
     // Don't spend a Claude call drafting for someone the send gate will refuse.
     // outreach-sender re-checks this — that is the authoritative gate — but
     // filtering here means a signal fire doesn't quietly bill for a draft that
@@ -298,9 +317,15 @@ async function pickAndDraft(
     .eq("id", payload.organizationId)
     .single();
 
-  const ownerId = sequences[0]?.user_id ?? null;
   const voice = ownerId
     ? await loadVoiceProfile(supabase, ownerId, payload.campaignId)
+    : null;
+
+  // Outcome learnings, loaded once for the whole batch like the fact bank.
+  const learnings = ownerId
+    ? renderLearningsBlock(
+        await loadActiveLearnings(supabase, ownerId, payload.campaignId),
+      )
     : null;
 
   let drafted = 0;
@@ -411,6 +436,7 @@ async function pickAndDraft(
           notes: (senderProfile?.notes as string) ?? null,
         },
         factBank,
+        learnings,
         triggerReason: payload.reason ?? null,
       });
 
