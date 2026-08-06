@@ -118,6 +118,7 @@ function ReviewPageInner() {
   const sequenceId = searchParams.get("sequence");
 
   const [drafts, setDrafts] = useState<DraftForReview[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [currentPersonIndex, setCurrentPersonIndex] = useState(0);
   const [loading, setLoading] = useState(!!sequenceId);
   const [saving, setSaving] = useState(false);
@@ -154,7 +155,7 @@ function ReviewPageInner() {
             work_email_verification, affiliation_source,
             affiliation_confidence, affiliation_evidence,
             personal_email, linkedin_url, twitter_url,
-            organizations(name, domain, industry)
+            organizations!organization_id(name, domain, industry)
           ),
           campaign_people(priority_score),
           sequence_enrollments(current_step),
@@ -172,6 +173,15 @@ function ReviewPageInner() {
       ]);
 
       if (!mountedRef.current) return;
+
+      // A failed query must never render as an empty queue: that is how a
+      // broken embed hid eight pending drafts behind "No drafts to review".
+      if (draftsRes.error) {
+        console.error("[outreach/review] drafts load failed:", draftsRes.error);
+        setLoadError(draftsRes.error.message);
+        setLoading(false);
+        return;
+      }
 
       const rawDrafts = draftsRes.data;
       const steps = stepsRes.data;
@@ -814,6 +824,16 @@ function ReviewPageInner() {
     return (
       <div className="flex flex-1 items-center justify-center">
         <p className="text-muted-foreground text-sm">No sequence specified.</p>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-destructive text-sm" role="alert">
+          Could not load drafts: {loadError}
+        </p>
       </div>
     );
   }
