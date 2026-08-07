@@ -81,7 +81,11 @@ export function classifyDraft(draft: DraftRow): GroupKey | null {
   if (draft.review_status === "pending") return "needs_review";
   if (draft.review_status === "rejected") return "rejected";
   if (draft.review_status === "approved" && draft.status === "draft") {
-    if (!draft.has_inbox || !draft.enrollment_id) return "blocked";
+    if (!draft.has_inbox) return "blocked";
+    // Ad-hoc drafts (no enrollment) are sendable the moment they are
+    // approved: send-now handles them directly. Filing them "blocked"
+    // left approved drafts with no action anywhere in the UI.
+    if (!draft.enrollment_id) return "ready";
     const next = draft.next_send_at ? new Date(draft.next_send_at) : null;
     if (next && next.getTime() > Date.now()) return "waiting";
     return "ready";
@@ -292,14 +296,6 @@ export function OutreachDraftsPanel({
                               Configure inbox
                             </Link>
                           )}
-
-                          {key === "blocked" &&
-                            firstDraft.has_inbox &&
-                            !firstDraft.enrollment_id && (
-                              <span className="text-muted-foreground text-xs">
-                                No enrollment
-                              </span>
-                            )}
 
                           {/* No sequence_id guard: ad-hoc drafts (agent
                               writeEmail with no enrollment) review at

@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { sendApprovedDraft } from "@/lib/services/outreach-sender";
+import {
+  sendApprovedDraft,
+  sendDraftAndAdvance,
+  type DraftForSend,
+} from "@/lib/services/outreach-sender";
+import { resolveSenderConfig } from "@/lib/services/email-transport";
 import { getPostHogClient } from "@/lib/posthog-server";
 import { getAdminClient } from "@/lib/supabase/admin";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
@@ -37,11 +42,10 @@ export async function POST(request: Request) {
 
   const supabase = getAdminClient();
 
+  // The whole row: the ad-hoc branch below hands it to the sender directly.
   const { data: draft, error: draftError } = await supabase
     .from("email_drafts")
-    .select(
-      "id, user_id, review_status, status, enrollment_id, sequence_step_id",
-    )
+    .select("*")
     .eq("id", body.draftId)
     .single();
 
@@ -76,14 +80,50 @@ export async function POST(request: Request) {
   }
 
   if (!draft.enrollment_id) {
-    return NextResponse.json(
-      {
-        ok: false,
-        blocker: "no_enrollment",
-        error: "Draft has no enrollment",
-      },
-      { status: 409 },
+    // Ad-hoc drafts (the agent's writeEmail outside any sequence) send
+    // directly: ownership is already asserted on draft.user_id above, and
+    // with no sequence there is no step or schedule to pace. This used to
+    // 409 as "no_enrollment", which left an APPROVED ad-hoc draft with no
+    // send path anywhere in the product. claimAndSendDraft still applies
+    // every hard gate (suppression, recipient status, data quality, daily
+    // cap), and the enrollment advance no-ops without an enrollment.
+    const sender = await resolveSenderConfig(supabase, draft.user_id);
+    if ("error" in sender) {
+      return NextResponse.json(
+        { ok: false, error: sender.error },
+        { status: 500 },
+      );
+    }
+
+    const adhoc = await sendDraftAndAdvance(
+      supabase,
+      draft as DraftForSend & { enrollment_id?: string | null },
+      sender,
+      undefined,
+      // Same human-override semantics as the enrollment path's click.
+      { bypassSendWindow: true },
     );
+
+    if (!adhoc.ok) {
+      return NextResponse.json(
+        { ok: false, error: adhoc.reason },
+        { status: 500 },
+      );
+    }
+
+    const posthog = getPostHogClient();
+    posthog.capture({
+      distinctId: user.id,
+      event: "outreach_email_sent",
+      properties: { draft_id: adhoc.draftId, ad_hoc: true },
+    });
+
+    return NextResponse.json({
+      ok: true,
+      draftId: adhoc.draftId,
+      messageId: adhoc.messageId,
+      sentAt: new Date().toISOString(),
+    });
   }
 
   // sendApprovedDraft resolves the draft to send from the *enrollment*, not

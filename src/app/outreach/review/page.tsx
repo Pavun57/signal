@@ -1119,11 +1119,13 @@ function EmailCard({
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const alreadyReviewed = draft.review_status !== "pending";
   const isSent = draft.status === "sent";
+  // Ad-hoc drafts (no enrollment) are sendable directly: send-now handles
+  // them. Sequence drafts still only offer Send now on their current step.
   const canSendNow =
     !alreadyReviewed &&
     !isSent &&
-    draft.enrollment_current_step != null &&
-    draft.step_number === draft.enrollment_current_step;
+    (draft.enrollment_current_step == null ||
+      draft.step_number === draft.enrollment_current_step);
   const canRegenerate = !alreadyReviewed && !isSent;
 
   // Autosize textarea to content — no scrollbar, full email visible
