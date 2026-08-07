@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ── Router: which mode the page runs in comes from the URL ────────────────
@@ -23,6 +29,7 @@ vi.mock("@/components/campaign/contact-detail", () => ({
 interface BuilderCall {
   table: string;
   filters: Array<[string, string, unknown]>;
+  updatePayload?: Record<string, unknown>;
 }
 let builderCalls: BuilderCall[] = [];
 let draftRows: unknown[] = [];
@@ -30,10 +37,14 @@ let draftRows: unknown[] = [];
 function makeBuilder(table: string) {
   const call: BuilderCall = { table, filters: [] };
   builderCalls.push(call);
-  const rows = table === "email_drafts" ? draftRows : [];
   const builder = {
     select: () => builder,
     order: () => builder,
+    in: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      call.updatePayload = payload;
+      return builder;
+    },
     eq: (col: string, val: unknown) => {
       call.filters.push([table, col, val]);
       return builder;
@@ -42,8 +53,17 @@ function makeBuilder(table: string) {
       call.filters.push([table, col, val]);
       return builder;
     },
-    then: (resolve: (v: { data: unknown[]; error: null }) => void) =>
-      Promise.resolve({ data: rows, error: null }).then(resolve),
+    then: (resolve: (v: { data: unknown[]; error: null }) => void) => {
+      // Reads return the seeded drafts; the review_status write echoes ids
+      // back (the page verifies the updated row count); other writes are {}.
+      const rows =
+        table === "email_drafts" && !call.updatePayload
+          ? draftRows
+          : call.updatePayload && "review_status" in call.updatePayload
+            ? draftRows.map((d) => ({ id: (d as { id: string }).id }))
+            : [];
+      return Promise.resolve({ data: rows, error: null }).then(resolve);
+    },
   };
   return builder;
 }
@@ -128,6 +148,39 @@ describe("review page ad-hoc mode", () => {
     expect(screen.getByText("One-off email")).toBeVisible();
     expect(screen.queryByText(/Step 1 of/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve all" })).toBeEnabled();
+  });
+
+  it("a subject-only edit never rewrites the body", async () => {
+    // Regression: the save payload used to include body_html/body_text
+    // unconditionally, so tweaking just the subject pushed the untouched
+    // body through the lossy htmlToPlain -> plainToHtml round-trip and
+    // silently stripped every link the composer had written.
+    search = "";
+    draftRows = [adhocDraft("d1", "p1", "Mark Ryan")];
+
+    render(<ReviewPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Mark Ryan", level: 2 }),
+      ).toBeVisible(),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Subject..."), {
+      target: { value: "A sharper subject" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Approve all" }));
+
+    await waitFor(() => {
+      const editWrite = builderCalls.find(
+        (c) =>
+          c.table === "email_drafts" &&
+          c.updatePayload &&
+          "subject" in c.updatePayload,
+      );
+      expect(editWrite).toBeDefined();
+      expect(editWrite!.updatePayload).not.toHaveProperty("body_html");
+      expect(editWrite!.updatePayload).not.toHaveProperty("body_text");
+    });
   });
 
   it("with a sequence param, still scopes to that sequence", async () => {

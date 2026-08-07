@@ -80,6 +80,29 @@ export function htmlToPlain(html: string): string {
 }
 
 /**
+ * The editor's serialiser: the other half of htmlToPlain's round-trip.
+ *
+ * Escapes &, < and > before wrapping, because htmlToPlain DECODES entities
+ * on the way into the textarea: without the matching encode on the way back
+ * the round trip was asymmetric, and a body containing "&lt;10ms" came back
+ * as a raw "<10ms" that mail clients parse as a tag open and swallow.
+ *
+ * Moved out of outreach/review/page.tsx so it can be tested against
+ * htmlToPlain directly.
+ */
+export function plainToHtml(text: string): string {
+  const escaped = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  const paragraphs = escaped
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return paragraphs.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+/**
  * Read-only conversion that keeps link targets.
  *
  * The composer is allowed to emit anchors (skill.ts permits <p>, <br> and <a>),
