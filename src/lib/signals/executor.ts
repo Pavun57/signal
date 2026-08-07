@@ -17,6 +17,8 @@ export interface ExecuteSignalContext {
   domain?: string;
   name?: string;
   campaignId?: string;
+  /** For person-level tracking configs (e.g. the social-engagement signal). */
+  personId?: string;
   /** Use admin client (for tracking runs without user session) */
   useAdmin?: boolean;
 }
@@ -102,6 +104,7 @@ async function executeExaSearch(
     ctx.organizationId,
     results.results.map((r) => ({ title: r.title, url: r.url })),
     ctx.useAdmin,
+    ctx.campaignId,
   );
 
   const found = results.resultCount > 0;
@@ -176,6 +179,13 @@ async function executeToolCall(
 
   // Map context to tool-specific arg names
   if (ctx.organizationId) args.organizationId = ctx.organizationId;
+  // The google-reviews builtin (getGoogleReviews) requires companyName, and
+  // neither its config nor the old mapping supplied it: the signal failed
+  // input validation on every run it ever had.
+  if (ctx.name && args.companyName === undefined) args.companyName = ctx.name;
+  // Person-level tracking configs carry the contact for enrichContact.
+  if (ctx.personId && args.contactId === undefined)
+    args.contactId = ctx.personId;
   if (ctx.domain) {
     args.domain = ctx.domain;
     // extractWebContent needs url, not domain
@@ -271,7 +281,15 @@ async function executeBrowserScript(
       },
     };
 
-    const { output } = await runRecipe({ recipe, context: recipeContext });
+    const { output } = await runRecipe({
+      recipe,
+      context: recipeContext,
+      // Under the tracking cron there is no user session: the default
+      // session client is anon on the public /api/jobs route, so the
+      // recipe's history step saw zero rows and every run reported
+      // "first observed value" with changed:true.
+      supabaseClient: ctx.useAdmin ? getAdminClient() : undefined,
+    });
     return output;
   } catch {
     // No hardcoded recipe -- fall through
@@ -285,9 +303,11 @@ async function executeBrowserScript(
   // Generic browser_script: use Stagehand with config.instructions
   const config = signal.config ?? {};
   const instructions = config.instructions as string;
-  const targetUrl = ctx.domain
-    ? `https://${ctx.domain}`
-    : (config.url as string);
+  // An explicit config.url is the page the signal promises to watch;
+  // preferring the bare domain scraped the homepage instead.
+  const targetUrl =
+    (config.url as string | undefined) ??
+    (ctx.domain ? `https://${ctx.domain}` : undefined);
 
   if (!targetUrl) {
     return {
@@ -363,7 +383,14 @@ async function executeHiringActivity(
   }
 
   const { scrapeHiringData } = await import("@/lib/services/hiring-scraper");
-  const result = await scrapeHiringData(ctx.organizationId, ctx.domain);
+  // Under the cron the session client is anon and the hiring persist
+  // silently no-oped; the admin client is what actually writes.
+  const result = await scrapeHiringData(
+    ctx.organizationId,
+    ctx.domain,
+    undefined,
+    ctx.useAdmin ? getAdminClient() : undefined,
+  );
 
   const found = result.totalJobs > 0;
 
@@ -396,23 +423,39 @@ async function diffAgainstPrevious(
   organizationId: string | undefined,
   currentData: unknown,
   useAdmin?: boolean,
+  campaignId?: string,
 ): Promise<SignalOutput["diff"] | null> {
   if (!organizationId) return null;
 
   const supabase = useAdmin ? getAdminClient() : await createClient();
 
-  const { data: prev } = await supabase
+  // Campaign-scoped when the caller has one: builtin signals are shared
+  // rows and organizations are a global pool, so signal_id + org alone can
+  // match ANOTHER tenant's result under the admin client and diff against a
+  // foreign baseline.
+  let query = supabase
     .from("signal_results")
     .select("output")
     .eq("signal_id", signalId)
-    .eq("organization_id", organizationId)
+    .eq("organization_id", organizationId);
+  if (campaignId) query = query.eq("campaign_id", campaignId);
+  const { data: prev, error: prevError } = await query
     .order("ran_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
+  // A failed read is not "no baseline": returning null here reads as
+  // first-observation downstream, which is a fabricated diff.
+  if (prevError) {
+    console.error("[signals] baseline read failed:", prevError);
+    return null;
+  }
   if (!prev) return null;
 
-  const previousData = (prev.output as Record<string, unknown>)?.data;
+  // Writers store the data payload directly; some legacy rows carry the
+  // full SignalOutput wrapper. Tolerate both.
+  const raw = prev.output as Record<string, unknown> | null;
+  const previousData = (raw?.data as unknown) ?? raw;
   if (!previousData) return null;
 
   const diff = structuralDiff(previousData, currentData);

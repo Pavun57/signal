@@ -348,8 +348,11 @@ export async function mergeEnrichmentData(
   id: string,
   newData: Record<string, unknown>,
   status: "enriched" | "failed" = "enriched",
+  // Cron paths pass the admin client: the default session client is anon
+  // on the public /api/jobs route, so their writes silently no-oped.
+  client?: Awaited<ReturnType<typeof createClient>>,
 ): Promise<void> {
-  const supabase = await createClient();
+  const supabase = client ?? (await createClient());
 
   // Fetch existing enrichment_data
   const { data: existing } = await supabase
