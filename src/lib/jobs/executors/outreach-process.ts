@@ -329,6 +329,13 @@ async function pickAndDraft(
     : null;
 
   let drafted = 0;
+  const stepCache = new Map<
+    string,
+    {
+      step1: { id: unknown; step_number: unknown; condition: unknown };
+      totalSteps: number;
+    }
+  >();
 
   for (const pick of picks) {
     const person = people.find((p) => p.id === pick.personId);
@@ -373,19 +380,27 @@ async function pickAndDraft(
         enrollmentId = newEnrollment.id as string;
       }
 
-      // Load step 1 and total steps for this sequence.
-      const { data: step1 } = await supabase
-        .from("sequence_steps")
-        .select("id, step_number, condition")
-        .eq("sequence_id", seq.id)
-        .eq("step_number", 1)
-        .single();
-      if (!step1) continue;
+      // Load step 1 and total steps for this sequence, once per sequence:
+      // both are sequence-invariant, and refetching them per (pick x
+      // sequence) multiplied two queries by the size of every batch.
+      let seqSteps = stepCache.get(seq.id);
+      if (!seqSteps) {
+        const { data: step1 } = await supabase
+          .from("sequence_steps")
+          .select("id, step_number, condition")
+          .eq("sequence_id", seq.id)
+          .eq("step_number", 1)
+          .single();
+        if (!step1) continue;
 
-      const { count: totalSteps } = await supabase
-        .from("sequence_steps")
-        .select("*", { count: "exact", head: true })
-        .eq("sequence_id", seq.id);
+        const { count: totalSteps } = await supabase
+          .from("sequence_steps")
+          .select("*", { count: "exact", head: true })
+          .eq("sequence_id", seq.id);
+        seqSteps = { step1, totalSteps: totalSteps ?? 1 };
+        stepCache.set(seq.id, seqSteps);
+      }
+      const { step1, totalSteps } = seqSteps;
 
       // Skip if a draft already exists for (enrollment, step).
       const { data: existingDraft } = await supabase
@@ -526,41 +541,80 @@ function summarizeEnrichment(
 async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
   const now = new Date().toISOString();
 
-  // Find enrollments where it's time to send the next step
-  const { data: dueEnrollments } = await supabase
+  // Find enrollments where it's time to send the next step. Oldest due
+  // first: the unordered limit let an arbitrary 50 crowd out enrollments
+  // that had been due the longest.
+  const { data: dueEnrollments, error: dueError } = await supabase
     .from("sequence_enrollments")
-    .select("id, sequence_id, person_id, campaign_people_id, current_step")
+    .select(
+      "id, sequence_id, person_id, campaign_people_id, current_step, next_send_at",
+    )
     .eq("status", "active")
     .lte("next_send_at", now)
+    .order("next_send_at", { ascending: true })
     .limit(50);
-
-  // Also pick up enrollments still parked at "waiting": pickAndDraft leaves
-  // them there pending review, and nothing re-enters after the reviewer
-  // approves — without this, bulk-approved step-1 drafts never send.
-  const { data: waitingEnrollments } = await supabase
-    .from("sequence_enrollments")
-    .select("id, sequence_id, person_id, campaign_people_id, current_step")
-    .eq("status", "waiting")
-    .limit(50);
-
-  let approvedWaiting: typeof waitingEnrollments = [];
-  if (waitingEnrollments && waitingEnrollments.length > 0) {
-    const { data: approvedDrafts } = await supabase
-      .from("email_drafts")
-      .select("enrollment_id")
-      .in(
-        "enrollment_id",
-        waitingEnrollments.map((e) => e.id),
-      )
-      .eq("review_status", "approved")
-      .eq("status", "draft");
-    const approvedIds = new Set(
-      (approvedDrafts ?? []).map((d) => d.enrollment_id as string),
-    );
-    approvedWaiting = waitingEnrollments.filter((e) => approvedIds.has(e.id));
+  if (dueError) {
+    console.error("[outreach/process] due-enrollment scan failed:", dueError);
   }
 
-  const enrollments = [...(dueEnrollments ?? []), ...(approvedWaiting ?? [])];
+  // Also pick up enrollments still parked at "waiting": pickAndDraft and
+  // createSequence leave them there pending review, and nothing re-enters
+  // after the reviewer approves — without this, bulk-approved step-1 drafts
+  // never send.
+  //
+  // Driven from the approved drafts, not from a page of waiting
+  // enrollments: the old shape loaded an UNORDERED limit(50) of waiting
+  // rows and joined drafts onto them, so once more than 50 sat waiting
+  // (most parked in review forever) the one the user just approved could
+  // miss the window every run, permanently.
+  //
+  // Signal-triggered sequences are excluded: their queued/waiting
+  // enrollments send when the signal fires (handleSignalTrigger), and
+  // approval alone must not launch them.
+  let approvedWaiting: NonNullable<typeof dueEnrollments> = [];
+  const { data: approvedDrafts, error: approvedError } = await supabase
+    .from("email_drafts")
+    .select("enrollment_id")
+    .eq("review_status", "approved")
+    .eq("status", "draft")
+    .not("enrollment_id", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(500);
+  if (approvedError) {
+    console.error(
+      "[outreach/process] approved-draft scan failed:",
+      approvedError,
+    );
+  } else if (approvedDrafts && approvedDrafts.length > 0) {
+    const ids = [
+      ...new Set(approvedDrafts.map((d) => d.enrollment_id as string)),
+    ];
+    const { data: waitingRows, error: waitingError } = await supabase
+      .from("sequence_enrollments")
+      .select(
+        "id, sequence_id, person_id, campaign_people_id, current_step, next_send_at, sequences!inner(trigger_signal_id)",
+      )
+      .in("id", ids)
+      .eq("status", "waiting")
+      .is("sequences.trigger_signal_id", null);
+    if (waitingError) {
+      console.error(
+        "[outreach/process] waiting-enrollment scan failed:",
+        waitingError,
+      );
+    } else {
+      approvedWaiting = (waitingRows ?? []).map((row) => {
+        // The sequences embed exists only for the trigger filter above.
+        const enrollment = { ...(row as Record<string, unknown>) };
+        delete enrollment.sequences;
+        return enrollment as unknown as NonNullable<
+          typeof dueEnrollments
+        >[number];
+      });
+    }
+  }
+
+  const enrollments = [...(dueEnrollments ?? []), ...approvedWaiting];
 
   if (enrollments.length === 0) {
     return { sent: 0 };

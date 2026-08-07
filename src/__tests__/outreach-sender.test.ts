@@ -133,6 +133,60 @@ function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
 
 let savedKey: string | undefined;
 
+describe("sendApprovedDraft schedule", () => {
+  beforeEach(() => {
+    savedKey = process.env.EMAIL_CREDENTIALS_KEY;
+    process.env.EMAIL_CREDENTIALS_KEY = Buffer.alloc(32, 7).toString("base64");
+    sendGmailMock.mockReset();
+  });
+  afterEach(() => {
+    process.env.EMAIL_CREDENTIALS_KEY = savedKey;
+  });
+
+  it("refuses a not-due enrollment before touching anything", async () => {
+    // The old contract ("ignores next_send_at, callers must check") was
+    // held by one caller out of four: Send all delivered follow-ups
+    // seconds after their predecessor.
+    const { client, calls } = fakeSupabase([]);
+
+    const result = await sendApprovedDraft(client, {
+      ...enrollment,
+      next_send_at: new Date(Date.now() + 3 * 86400_000).toISOString(),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("not due"),
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a human override (ignoreSchedule) proceeds past the guard", async () => {
+    // Reaches the sender-config stage (which refuses on paused settings),
+    // proving the schedule guard stepped aside.
+    const { client } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      { data: settingsRow({ sending_paused: true }) },
+      {}, // refuse() bookkeeping
+    ]);
+
+    const result = await sendApprovedDraft(
+      client,
+      {
+        ...enrollment,
+        next_send_at: new Date(Date.now() + 3 * 86400_000).toISOString(),
+      },
+      { ignoreSchedule: true },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("paused"),
+    });
+  });
+});
+
 describe("advanceEnrollmentAfterSend", () => {
   it("leaves the enrollment untouched when the step lookup fails", async () => {
     // "The query failed" is not "there is no next step": completing the
