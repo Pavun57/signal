@@ -71,7 +71,9 @@ export function SignalKanban({ enrollments }: SignalKanbanProps) {
       <div className="grid grid-cols-4 gap-4">
         {COLUMNS.map((col) => {
           const cards = enrollments.filter(
-            (e) => resolveDbEnrollmentStatus(e.status) === col.status,
+            (e) =>
+              resolveDbEnrollmentStatus(e.status, e.next_send_at) ===
+              col.status,
           );
           return (
             <div key={col.status} className="border-border rounded-lg border">

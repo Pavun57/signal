@@ -11,6 +11,7 @@ vi.mock("@/lib/api-fetch", () => ({
 }));
 
 import {
+  classifyDraft,
   OutreachDraftsPanel,
   type DraftRow,
 } from "@/components/outreach/outreach-drafts-panel";
@@ -39,6 +40,29 @@ function draft(over: Partial<DraftRow> = {}): DraftRow {
     ...over,
   };
 }
+
+describe("classifyDraft ad-hoc drafts", () => {
+  it("files an approved ad-hoc draft as ready, not blocked", () => {
+    // Regression: approved drafts without an enrollment were classified
+    // "blocked" with a bare "No enrollment" label and no action anywhere;
+    // send-now now handles them directly, so they are sendable.
+    expect(
+      classifyDraft(draft({ review_status: "approved", enrollment_id: null })),
+    ).toBe("ready");
+  });
+
+  it("still blocks an approved draft when no inbox is configured", () => {
+    expect(
+      classifyDraft(
+        draft({
+          review_status: "approved",
+          enrollment_id: null,
+          has_inbox: false,
+        }),
+      ),
+    ).toBe("blocked");
+  });
+});
 
 describe("<OutreachDraftsPanel> review buttons", () => {
   it("links sequence drafts to their sequence review queue", () => {

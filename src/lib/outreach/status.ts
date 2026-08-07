@@ -87,13 +87,20 @@ export type OutreachStatus = keyof typeof OUTREACH_STATUS;
 
 export function resolveDbEnrollmentStatus(
   dbStatus: string,
+  nextSendAt?: string | null,
 ): OutreachStatus | null {
   switch (dbStatus) {
     case "waiting":
     case "queued":
       return "waiting";
     case "active":
-      return "sent";
+      // An active enrollment past its scheduled delay is "Ready to send":
+      // the cron will pick it up this tick. Without the timestamp the
+      // "ready" column could never contain a card; every mapping collapsed
+      // to "sent".
+      return nextSendAt && new Date(nextSendAt).getTime() <= Date.now()
+        ? "ready"
+        : "sent";
     case "replied":
       return "replied";
     default:

@@ -44,6 +44,16 @@ describe("outreach status registry", () => {
     expect(resolveDbEnrollmentStatus("replied")).toBe("replied");
   });
 
+  it("an active enrollment past its delay is ready, not sent", () => {
+    // Without the timestamp the "Ready to send" kanban column could never
+    // contain a card: every active enrollment collapsed to "sent".
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(resolveDbEnrollmentStatus("active", past)).toBe("ready");
+    expect(resolveDbEnrollmentStatus("active", future)).toBe("sent");
+    expect(resolveDbEnrollmentStatus("active", null)).toBe("sent");
+  });
+
   it("each status defines label, description and tone", () => {
     for (const def of Object.values(OUTREACH_STATUS)) {
       expect(def.label.length).toBeGreaterThan(0);
