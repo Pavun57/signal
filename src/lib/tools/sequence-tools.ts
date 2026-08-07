@@ -496,7 +496,10 @@ export const draftEmailsForSequence = tool({
               stepNumber: step.step_number,
               totalSteps,
               condition: step.condition,
-              isFinal: step.step_number === totalSteps,
+              // Last of SEVERAL steps. In a 1-step sequence the only email
+              // is first contact, and flagging it final made the composer
+              // write a breakup for a thread that never existed.
+              isFinal: totalSteps > 1 && step.step_number === totalSteps,
             },
             campaign: {
               name: campaign.name,

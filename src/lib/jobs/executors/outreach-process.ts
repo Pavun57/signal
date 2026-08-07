@@ -419,7 +419,10 @@ async function pickAndDraft(
           stepNumber: 1,
           totalSteps: totalSteps ?? 1,
           condition: (step1.condition as string) ?? "always",
-          isFinal: (totalSteps ?? 1) === 1,
+          // This path only ever drafts step 1, and step 1 is first contact
+          // even when it is the sequence's only step. The old `totalSteps
+          // === 1` flag produced breakup emails for people never emailed.
+          isFinal: false,
         },
         campaign: {
           name: (campaign?.name as string) ?? "Campaign",

@@ -118,7 +118,9 @@ export async function POST(request: Request) {
   let stepNumber = 1;
   let totalSteps = 1;
   let condition = "always";
-  let isFinal = true;
+  // Ad-hoc drafts (no sequence) are first contact. The old default of true
+  // regenerated them as breakup emails for threads that never existed.
+  let isFinal = false;
   let previousSubject: string | null = null;
 
   if (draft.sequence_step_id && draft.sequence_id) {
@@ -137,7 +139,9 @@ export async function POST(request: Request) {
       .select("*", { count: "exact", head: true })
       .eq("sequence_id", draft.sequence_id);
     totalSteps = count ?? 1;
-    isFinal = stepNumber === totalSteps;
+    // Only a step with real predecessors is a breakup; the sole step of a
+    // 1-step sequence is first contact.
+    isFinal = totalSteps > 1 && stepNumber === totalSteps;
 
     // A follow-up regenerates with the subject it actually follows up on.
     if (stepNumber > 1 && draft.enrollment_id) {
