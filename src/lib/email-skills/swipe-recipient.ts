@@ -38,11 +38,27 @@ export function pickRecipient(
   judgedLabels: string[],
 ): RealRecipient | null {
   if (candidates.length === 0) return null;
-  const seen = new Set(judgedLabels);
   const ordered = [...candidates].sort(
     (a, b) => Number(b.enriched) - Number(a.enriched),
   );
-  return ordered.find((c) => !seen.has(recipientLabel(c))) ?? ordered[0]!;
+  // Occurrence counts, not a seen-set: with a set, once every label had
+  // appeared the fallback pinned the SAME first candidate for every later
+  // batch instead of wrapping around. Fewest-drafted-to wins each time.
+  const counts = new Map<string, number>();
+  for (const label of judgedLabels) {
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  let best = ordered[0]!;
+  let bestCount = Number.POSITIVE_INFINITY;
+  for (const c of ordered) {
+    const n = counts.get(recipientLabel(c)) ?? 0;
+    if (n < bestCount) {
+      best = c;
+      bestCount = n;
+      if (n === 0) break;
+    }
+  }
+  return best;
 }
 
 interface SignalSource {
@@ -119,9 +135,20 @@ export async function loadRecipientCandidates(
         "person:people(id, name, title, enrichment_status, enrichment_data, organization:organizations!organization_id(name))",
       )
       .eq("campaign_id", campaignId)
-      .neq("status", "rejected")
+      // campaign_people.status was dropped in the 20260420 migration; the
+      // old .neq("status","rejected") filter errored on every call and the
+      // swallowed error meant this path NEVER activated: every "real
+      // recipient" batch was silently an invented persona. Opt-outs are
+      // the surviving exclusion that matches the intent.
+      .not("outreach_status", "in", '("unsubscribed","complained","bounced")')
       .limit(200);
-    if (error || !data) return [];
+    if (error) {
+      // Still fall back to invented personas, but never silently: the
+      // silent [] is exactly how the dropped-column bug hid for weeks.
+      console.error("[swipe] recipient candidates load failed:", error);
+      return [];
+    }
+    if (!data) return [];
     return data
       .map((row) =>
         candidateFromRow(row as Parameters<typeof candidateFromRow>[0]),

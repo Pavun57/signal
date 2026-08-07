@@ -59,6 +59,10 @@ function emitDrafts(
     mode: "opening" | "append" | "replace";
     drafts: unknown[];
     persona: { label: string; real?: boolean } | null;
+    /** The run scope these drafts were generated for. The client refuses
+     * parts whose scope doesn't match the active run, so an in-flight batch
+     * can't append to a different scope's deck. */
+    campaignId?: string | null;
   },
 ) {
   writer?.write({ type: "data-voice-drafts", data, transient: true });
@@ -106,6 +110,7 @@ export const startVoiceRun = tool({
       mode: "opening",
       drafts: result.drafts,
       persona: result.persona,
+      campaignId: ctx.voiceRun.campaignId ?? null,
     });
     return {
       ok: true,
@@ -194,6 +199,7 @@ export const rewriteVoiceDrafts = tool({
       mode: instruction ? "replace" : "append",
       drafts: result.drafts,
       persona: result.persona,
+      campaignId: ctx.voiceRun.campaignId ?? null,
     });
     return {
       ok: true,

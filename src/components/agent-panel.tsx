@@ -85,7 +85,6 @@ function getSuggestions(pathname: string, campaignId: string | null): string[] {
   if (pathname === "/settings") {
     return [
       "Help me configure my email settings",
-      "Show me my API usage costs",
       "Connect my Gmail for outreach",
       "What's my current sending setup?",
     ];
@@ -214,6 +213,10 @@ function AgentPanelInner({
         if (autoContinuesRef.current < MAX_AUTO_CONTINUES) {
           autoContinuesRef.current += 1;
           setContinueTick((tick) => tick + 1);
+          // The continuation is about to stream: telling the deck the turn
+          // is done here flashed a retryable "came back without drafts"
+          // error while the drafts were still on their way.
+          return;
         }
       }
       // After the turn settles: if the deck was waiting on drafts that never
