@@ -99,8 +99,8 @@ function settingsRow(overrides: Record<string, unknown> = {}) {
 
 // Await order inside sendApprovedDraft:
 // 0 step select · 1 draft select · 2 settings select (resolveSenderConfig) ·
-// 3 suppression select · 4 send-gate person select · 5 claim update ·
-// 6 daily-cap count
+// 3 suppression select · 4 recipient-status select (campaign_people) ·
+// 5 send-gate person select · 6 claim update · 7 daily-cap count
 // then send, then bookkeeping (insert, updates, next-step select, enrollment)
 /** A contact the data-quality gate lets through: verified email, known employer. */
 function gatePasses() {
@@ -122,6 +122,7 @@ function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
     { data: draft },
     { data: settings },
     { data: null }, // suppression check: not suppressed
+    { data: { outreach_status: "sent" } }, // recipient status: no reply yet
     // The send gate reads the contact before claiming the draft.
     gatePasses(),
   ];
@@ -246,7 +247,7 @@ describe("sendApprovedDraft claim semantics", () => {
       }),
     );
 
-    const claim = calls[5]; // 3 suppression check, 4 send-gate person read
+    const claim = calls[6]; // 3 suppression, 4 recipient status, 5 gate read
     expect(claim.table).toBe("email_drafts");
     expect(claim.ops).toContainEqual({
       name: "update",
@@ -259,7 +260,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
 
     // The sent_emails row records the RFC Message-ID and the real address.
-    const insert = calls[7]; // 4 gate read, 6 cap count (also sent_emails)
+    const insert = calls[8]; // 5 gate read, 7 cap count (also sent_emails)
     expect(insert.table).toBe("sent_emails");
     expect(insert.ops).toContainEqual({
       name: "insert",
@@ -270,6 +271,63 @@ describe("sendApprovedDraft claim semantics", () => {
         }),
       ],
     });
+  });
+
+  it("refuses to send when the recipient already replied", async () => {
+    // The followups cron checks replied status before calling in, but
+    // send-now, the hero's Send all, and the agent tools did not: a reply
+    // landing between approval and click kept the follow-up going out.
+    const { client, calls } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      { data: settingsRow() },
+      { data: null }, // not suppressed
+      { data: { outreach_status: "replied" } }, // recipient status
+      {}, // refuse() bookkeeping
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("replied"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
+    // Refused before the gate read and the claim: no verification credits
+    // spent, and the only write is the refusal record on the draft.
+    expect(calls.map((c) => c.table)).toEqual([
+      "sequence_steps",
+      "email_drafts",
+      "user_settings",
+      "outreach_suppressions",
+      "campaign_people",
+      "email_drafts",
+    ]);
+    expect(calls[5].ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ last_error_kind: "blocked" })],
+    });
+  });
+
+  it("defers when the recipient status cannot be checked", async () => {
+    // Fail closed, same contract as the suppression list: "could not check
+    // whether they replied" must never become "send anyway".
+    const { client } = fakeSupabase([
+      { data: { id: "step_1" } },
+      { data: draft },
+      { data: settingsRow() },
+      { data: null },
+      { data: null, error: { message: "connection reset" } },
+      {}, // refuse() bookkeeping
+    ]);
+
+    const result = await sendApprovedDraft(client, enrollment);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("recipient"),
+    });
+    expect(sendGmailMock).not.toHaveBeenCalled();
   });
 
   it("never downgrades a terminal outreach_status when stamping the send", async () => {
@@ -292,7 +350,13 @@ describe("sendApprovedDraft claim semantics", () => {
 
     await sendApprovedDraft(client, enrollment);
 
-    const cpUpdate = calls.find((c) => c.table === "campaign_people");
+    // The pre-send recipient-status read also hits campaign_people; assert
+    // on the call that carries the update.
+    const cpUpdate = calls.find(
+      (c) =>
+        c.table === "campaign_people" &&
+        c.ops.some((op) => op.name === "update"),
+    );
     expect(cpUpdate).toBeDefined();
     expect(cpUpdate!.ops).toContainEqual({
       name: "update",
@@ -339,6 +403,7 @@ describe("sendApprovedDraft claim semantics", () => {
         }),
       },
       { data: null }, // suppression check: not suppressed
+      { data: { outreach_status: "sent" } }, // recipient status
       gatePasses(), // send-gate person read
       { data: { id: draft.id } }, // claim won
       { count: 5 }, // already sent 5 today
@@ -353,7 +418,7 @@ describe("sendApprovedDraft claim semantics", () => {
     });
     expect(sendGmailMock).not.toHaveBeenCalled();
     // The capped draft must go back to "draft" so tomorrow's cron sends it.
-    const release = calls[7];
+    const release = calls[8];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",
@@ -422,7 +487,7 @@ describe("sendApprovedDraft claim semantics", () => {
       ok: false,
       reason: "SMTP 421 try again later",
     });
-    const release = calls[7];
+    const release = calls[8];
     expect(release.table).toBe("email_drafts");
     expect(release.ops).toContainEqual({
       name: "update",

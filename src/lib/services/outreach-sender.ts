@@ -256,6 +256,43 @@ export async function claimAndSendDraft(
     }
   }
 
+  // Recipient status: a prospect who replied, bounced, complained, or
+  // unsubscribed is out of the pipeline, whatever path the send came from.
+  // The followups cron checks this before calling in, but send-now, the
+  // hero's Send all, and the agent tools did not: a reply landing between
+  // approval and click kept the follow-up going out mid-conversation.
+  // Checked before the claim and the gate read so it spends nothing.
+  if (draft.campaign_people_id) {
+    const { data: cp, error: cpError } = await supabase
+      .from("campaign_people")
+      .select("outreach_status")
+      .eq("id", draft.campaign_people_id)
+      .maybeSingle();
+    // Fail closed, same contract as the suppression list: "could not check
+    // whether they replied" must not become "send anyway".
+    if (cpError) {
+      return refuse(
+        supabase,
+        draft.id,
+        "deferred",
+        "Could not check the recipient's status; will retry.",
+      );
+    }
+    const terminal = ["replied", "bounced", "complained", "unsubscribed"];
+    if (cp && terminal.includes(cp.outreach_status as string)) {
+      const why =
+        cp.outreach_status === "replied"
+          ? "they replied: this conversation is live, follow-ups stop"
+          : `their status is ${cp.outreach_status}`;
+      return refuse(
+        supabase,
+        draft.id,
+        "blocked",
+        `Not sending to ${draft.to_email}: ${why}.`,
+      );
+    }
+  }
+
   // Send window: cron-driven paths wait for the window; interactive paths
   // (send-now click, agent send confirmed in chat) pass bypassSendWindow —
   // an explicit human "send" beats a schedule preference.
