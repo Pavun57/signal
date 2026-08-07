@@ -160,7 +160,14 @@ export const createSequence = tool({
       campaign_people_id: c.id,
       person_id: c.person_id,
       current_step: 1,
-      status: triggerSignalId ? "waiting" : "queued",
+      // Who consumes each status decides who gets it, and this was exactly
+      // inverted. "queued" is consumed only by handleSignalTrigger, so it
+      // belongs to signal-triggered sequences (they wait for the fire);
+      // "waiting" is what the followups sweep rescues once a draft is
+      // approved, so it belongs to plain sequences. The old mapping made
+      // plain sequences dead (queued, nothing ever read it) and let signal
+      // sequences send on mere approval, before their signal ever fired.
+      status: triggerSignalId ? "queued" : "waiting",
       waiting_since: new Date().toISOString(),
     }));
 
@@ -472,6 +479,39 @@ export const draftEmailsForSequence = tool({
         let previousSubject: string | null = null;
 
         for (const step of steps) {
+          // Re-run guard, matching pickAndDraft: without it a retried call
+          // inserted a second pending draft per (enrollment, step), and two
+          // approved rows then broke sendApprovedDraft's .single() so the
+          // whole sequence could never send. Skipping before composing also
+          // spends nothing on the LLM for work that already exists.
+          const { data: existingDraft, error: existingErr } = await supabase
+            .from("email_drafts")
+            .select("id, subject")
+            .eq("enrollment_id", enrollment.id)
+            .eq("sequence_step_id", step.id)
+            .maybeSingle();
+          if (existingErr) {
+            stepResults.push({
+              personId: enrollment.person_id,
+              stepNumber: step.step_number,
+              skipped: false,
+              error: `could not check for an existing draft: ${existingErr.message}`,
+            });
+            continue;
+          }
+          if (existingDraft) {
+            // Threading still works for freshly-drafted later steps.
+            previousSubject =
+              (existingDraft.subject as string) ?? previousSubject;
+            stepResults.push({
+              personId: enrollment.person_id,
+              stepNumber: step.step_number,
+              skipped: true,
+              reason: "draft already exists for this step",
+            });
+            continue;
+          }
+
           const composed = await composeEmail({
             voice,
             contact: {

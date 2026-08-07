@@ -9,6 +9,12 @@ export const maxDuration = 60;
 
 interface Body {
   draftId?: string;
+  /**
+   * false = respect enrollment.next_send_at (bulk callers like the hero's
+   * Send all). Absent/true = the human clicked Send now on THIS draft,
+   * which is an explicit override of the schedule.
+   */
+  ignoreSchedule?: boolean;
 }
 
 export async function POST(request: Request) {
@@ -90,7 +96,7 @@ export async function POST(request: Request) {
   const { data: enrollment } = await supabase
     .from("sequence_enrollments")
     .select(
-      "id, sequence_id, person_id, campaign_people_id, current_step, sequence:sequences!inner(user_id)",
+      "id, sequence_id, person_id, campaign_people_id, current_step, next_send_at, sequence:sequences!inner(user_id)",
     )
     .eq("id", draft.enrollment_id)
     .single();
@@ -131,10 +137,31 @@ export async function POST(request: Request) {
     );
   }
 
+  // Bulk callers pass ignoreSchedule:false so a follow-up cannot go out
+  // seconds after its predecessor: the loop advances the enrollment
+  // mid-iteration, and this fresh read is what catches it. A single-draft
+  // click keeps its human-override semantics.
+  if (
+    body.ignoreSchedule === false &&
+    enrollment.next_send_at &&
+    new Date(enrollment.next_send_at as string).getTime() > Date.now()
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        blocker: "not_due",
+        error: `This step is scheduled for ${enrollment.next_send_at} and will send then.`,
+      },
+      { status: 409 },
+    );
+  }
+
   // An explicit send-now click is a human decision — it beats the schedule
-  // preference, so the send window is bypassed.
+  // preference, so the send window is bypassed. The schedule gate above
+  // already ran, so sendApprovedDraft's own check is bypassed too.
   const result = await sendApprovedDraft(supabase, enrollment, {
     bypassSendWindow: true,
+    ignoreSchedule: true,
   });
 
   if (!result.ok) {

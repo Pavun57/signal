@@ -46,12 +46,24 @@ export function ReadyToSendHero({ drafts, onRefresh }: ReadyToSendHeroProps) {
       let deferred = 0;
       const failures: string[] = [];
 
-      for (const draft of drafts) {
+      // Earliest steps first, so a later step never even reaches the server
+      // ahead of its predecessor in this pass. The server holds the real
+      // guard (ignoreSchedule:false below); this ordering keeps the pass
+      // productive instead of deferring drafts the guard would have allowed
+      // a moment later.
+      const ordered = [...drafts].sort(
+        (a, b) => (a.step_number ?? 1) - (b.step_number ?? 1),
+      );
+
+      for (const draft of ordered) {
         try {
           const res = await apiFetch("/api/outreach/send-now", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ draftId: draft.id }),
+            // Bulk send is not a per-draft human override: steps that are
+            // not due yet stay on their schedule instead of arriving
+            // seconds after the email they follow up on.
+            body: JSON.stringify({ draftId: draft.id, ignoreSchedule: false }),
           });
           if (res.ok) {
             sent++;
@@ -61,7 +73,8 @@ export function ReadyToSendHero({ drafts, onRefresh }: ReadyToSendHeroProps) {
             blocker?: string;
             error?: string;
           } | null;
-          if (body?.blocker === "step_mismatch") deferred++;
+          if (body?.blocker === "step_mismatch" || body?.blocker === "not_due")
+            deferred++;
           else failures.push(body?.error ?? `HTTP ${res.status}`);
         } catch {
           failures.push("could not reach the server");
@@ -73,7 +86,7 @@ export function ReadyToSendHero({ drafts, onRefresh }: ReadyToSendHeroProps) {
       }
       if (deferred > 0) {
         toast.info(
-          `${deferred} belong${deferred === 1 ? "s" : ""} to a later step and will send when that step comes due.`,
+          `${deferred} ${deferred === 1 ? "is" : "are"} not due yet and will send on schedule.`,
         );
       }
       if (failures.length > 0) {

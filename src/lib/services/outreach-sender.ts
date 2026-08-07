@@ -26,6 +26,12 @@ export interface EnrollmentForSend {
   person_id: string;
   campaign_people_id: string;
   current_step: number;
+  /**
+   * When the current step is due. Callers that load it (the due-enrollment
+   * cron, send-now) pass it through so sendApprovedDraft can hold the
+   * schedule; absent means "no schedule recorded" and the send proceeds.
+   */
+  next_send_at?: string | null;
 }
 
 /** The columns the send core needs from an email_drafts row. */
@@ -792,21 +798,36 @@ export async function draftIsCurrentStep(
 ): Promise<{ current: true } | { current: false; reason: string }> {
   if (!draft.enrollment_id) return { current: true };
 
-  const { data: enrollment } = await supabase
+  const { data: enrollment, error: enrollmentError } = await supabase
     .from("sequence_enrollments")
     .select("sequence_id, current_step")
     .eq("id", draft.enrollment_id)
     .maybeSingle();
 
+  // Fail closed on errors: "could not check the step" must not become
+  // "send it anyway". Genuinely missing rows keep their permissive
+  // semantics (an orphaned draft is a data-shape choice, not a failure).
+  if (enrollmentError) {
+    return {
+      current: false,
+      reason: `Could not verify the enrollment's current step (${enrollmentError.message}); try again.`,
+    };
+  }
   if (!enrollment) return { current: true };
 
-  const { data: step } = await supabase
+  const { data: step, error: stepError } = await supabase
     .from("sequence_steps")
     .select("id")
     .eq("sequence_id", enrollment.sequence_id as string)
     .eq("step_number", enrollment.current_step as number)
     .maybeSingle();
 
+  if (stepError) {
+    return {
+      current: false,
+      reason: `Could not verify the enrollment's current step (${stepError.message}); try again.`,
+    };
+  }
   if (!step) return { current: true };
 
   if (step.id !== draft.sequence_step_id) {
@@ -826,14 +847,30 @@ export async function draftIsCurrentStep(
  *
  * On success: sends via claimAndSendDraft (claim, sent_emails row,
  * outreach_status), then advances the enrollment to the next step (or marks
- * it completed). Ignores enrollment.next_send_at — callers that need to
- * respect delays must check before calling.
+ * it completed). Respects enrollment.next_send_at when the caller supplies
+ * it; opts.ignoreSchedule is the explicit human override (a single-draft
+ * "Send now" click), never a bulk or cron default.
  */
 export async function sendApprovedDraft(
   supabase: SupabaseClient,
   enrollment: EnrollmentForSend,
-  opts?: { bypassSendWindow?: boolean },
+  opts?: { bypassSendWindow?: boolean; ignoreSchedule?: boolean },
 ): Promise<SendResult> {
+  // The old contract ("ignores next_send_at, callers must check") was held
+  // by one caller out of four: the hero's Send all delivered a follow-up
+  // seconds after its predecessor because the loop advanced the enrollment
+  // mid-iteration and nothing re-checked the schedule.
+  if (
+    !opts?.ignoreSchedule &&
+    enrollment.next_send_at &&
+    new Date(enrollment.next_send_at).getTime() > Date.now()
+  ) {
+    return {
+      ok: false,
+      reason: `This step is not due until ${enrollment.next_send_at}; it will send on schedule.`,
+    };
+  }
+
   const { data: step } = await supabase
     .from("sequence_steps")
     .select("id")

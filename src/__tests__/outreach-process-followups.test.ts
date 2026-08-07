@@ -44,6 +44,8 @@ function fakeSupabase(responses: Array<{ data?: unknown; error?: unknown }>) {
       "select",
       "eq",
       "in",
+      "not",
+      "is",
       "lte",
       "update",
       "insert",
@@ -76,6 +78,9 @@ const waitingEnrollment = {
   person_id: "per_1",
   campaign_people_id: "cp_1",
   current_step: 1,
+  next_send_at: null,
+  // The sweep joins the sequence to exclude signal-triggered ones.
+  sequences: { trigger_signal_id: null },
 };
 
 beforeEach(() => {
@@ -85,10 +90,10 @@ beforeEach(() => {
 
 describe("followups handler: approved waiting enrollments", () => {
   it("sends a waiting enrollment whose current-step draft is approved", async () => {
-    const { client } = fakeSupabase([
+    const { client, calls } = fakeSupabase([
       { data: [] }, // active enrollments due
-      { data: [waitingEnrollment] }, // waiting enrollments
-      { data: [{ enrollment_id: "enr_w1" }] }, // approved-draft check
+      { data: [{ enrollment_id: "enr_w1" }] }, // approved drafts (drives the sweep)
+      { data: [waitingEnrollment] }, // waiting enrollments for those drafts
       { data: { id: "step_1", condition: "always" } }, // step
       { data: { outreach_status: "not_contacted" } }, // campaign_people
     ]);
@@ -107,13 +112,23 @@ describe("followups handler: approved waiting enrollments", () => {
       expect.objectContaining({ id: "enr_w1" }),
     );
     expect(body.sent).toBe(1);
+    // Signal-triggered sequences are excluded: approval alone must not
+    // launch them, only their signal firing may.
+    const waitingScan = calls.find(
+      (c) =>
+        c.table === "sequence_enrollments" &&
+        c.ops.some((op) => op.name === "in"),
+    );
+    expect(waitingScan?.ops).toContainEqual({
+      name: "is",
+      args: ["sequences.trigger_signal_id", null],
+    });
   });
 
   it("does not send a waiting enrollment whose draft is still pending review", async () => {
     const { client } = fakeSupabase([
       { data: [] }, // active due
-      { data: [waitingEnrollment] }, // waiting
-      { data: [] }, // no approved drafts
+      { data: [] }, // no approved drafts: sweep never loads enrollments
     ]);
     getAdminClientMock.mockReturnValue(client);
 
@@ -126,8 +141,8 @@ describe("followups handler: approved waiting enrollments", () => {
   it("surfaces send-failure reasons instead of discarding them", async () => {
     const { client } = fakeSupabase([
       { data: [] },
-      { data: [waitingEnrollment] },
       { data: [{ enrollment_id: "enr_w1" }] },
+      { data: [waitingEnrollment] },
       { data: { id: "step_1", condition: "always" } },
       { data: { outreach_status: "not_contacted" } },
     ]);

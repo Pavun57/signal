@@ -1011,6 +1011,17 @@ export const discardDraft = tool({
   execute: async ({ draftId }) => {
     const supabase = await createClient();
 
+    // Enrollment context read BEFORE the discard, while the row still
+    // matters: discarding a sequence draft used to leave its enrollment
+    // active on a step with no draft, so the followups cron failed "No
+    // approved draft ready for this step" every 15 minutes forever and the
+    // rest of the sequence silently never sent.
+    const { data: draft } = await supabase
+      .from("email_drafts")
+      .select("id, enrollment_id, sequence_step_id")
+      .eq("id", draftId)
+      .maybeSingle();
+
     const { error } = await supabase
       .from("email_drafts")
       .update({
@@ -1021,6 +1032,33 @@ export const discardDraft = tool({
       .eq("status", "draft");
 
     if (error) return { error: error.message };
+
+    if (draft?.enrollment_id) {
+      const stepCheck = await draftIsCurrentStep(supabase, draft);
+      if (stepCheck.current) {
+        const { error: completeErr } = await supabase
+          .from("sequence_enrollments")
+          .update({
+            status: "completed",
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", draft.enrollment_id);
+        if (completeErr) {
+          return {
+            draftId,
+            status: "discarded",
+            warning: `This was the enrollment's current step and the enrollment could not be completed (${completeErr.message}). Until it is, the sequence will retry an empty step forever: tell the user, and either regenerate a draft for this step or complete the enrollment.`,
+          };
+        }
+        return {
+          draftId,
+          status: "discarded",
+          enrollmentStatus: "completed",
+          note: "This was the enrollment's current step, so the enrollment is now completed and its remaining steps will not send. Re-enroll the contact or create a new sequence if outreach should continue.",
+        };
+      }
+    }
+
     return { draftId, status: "discarded" };
   },
 });
