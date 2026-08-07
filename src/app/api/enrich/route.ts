@@ -144,7 +144,7 @@ export async function POST(request: Request) {
     });
   }
 
-  const result = await enrichPerson(supabase, personId, person);
+  const result = await enrichPerson(supabase, personId, person, user.id);
 
   return Response.json({
     contactId: personId,

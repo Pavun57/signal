@@ -417,7 +417,13 @@ async function pickAndDraft(
         contact: {
           name: (person.name as string) ?? null,
           title: (person.title as string) ?? null,
-          email: (person.work_email as string) ?? "unknown@example.com", // placeholder; saveDraft re-reads from DB
+          // The prompt renders this line verbatim; a fabricated placeholder
+          // address was a lie of the class that produced the breakup-email
+          // bug. saveDraft re-reads the address from the DB for sending.
+          email:
+            (person.work_email as string) ??
+            (person.personal_email as string) ??
+            "",
           enrichmentData:
             (person.enrichment_data as Record<string, unknown>) ?? null,
         },

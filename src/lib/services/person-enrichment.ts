@@ -42,6 +42,9 @@ export async function enrichPerson(
   supabase: SupabaseClient,
   personId: string,
   person: PersonForEnrichment,
+  // Attribution: without it every per-person enrichment spend lands with
+  // user_id NULL, which the cost center's RLS can never show.
+  userId?: string | null,
 ): Promise<PersonEnrichmentResult> {
   const contactName = person.name || "Unknown";
   const companyName = person.organization?.name || null;
@@ -49,168 +52,173 @@ export async function enrichPerson(
     ? `Enrich person: ${contactName} (${companyName})`
     : `Enrich person: ${contactName}`;
 
-  return withAction(actionLabel, async () => {
-    await supabase
-      .from("people")
-      .update({ enrichment_status: "in_progress" })
-      .eq("id", personId);
+  return withAction(
+    actionLabel,
+    async () => {
+      await supabase
+        .from("people")
+        .update({ enrichment_status: "in_progress" })
+        .eq("id", personId);
 
-    const enrichmentData: Record<string, unknown> = {};
-    const errors: string[] = [];
-    const promises: Promise<void>[] = [];
+      const enrichmentData: Record<string, unknown> = {};
+      const errors: string[] = [];
+      const promises: Promise<void>[] = [];
 
-    if (person.linkedin_url) {
-      promises.push(
-        (async () => {
-          try {
-            const linkedin = new LinkedinService();
-            const scrapeResult = await linkedin.scrapeProfile(
-              person.linkedin_url!,
-            );
-            enrichmentData.linkedin = {
-              profileInfo: scrapeResult.profile || null,
-              posts: scrapeResult.posts.slice(0, 10),
-            };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "Unknown error";
-            console.error(`[enrich] LinkedIn scrape failed: ${msg}`);
-            errors.push(`LinkedIn: ${msg}`);
-          }
-        })(),
-      );
-    }
+      if (person.linkedin_url) {
+        promises.push(
+          (async () => {
+            try {
+              const linkedin = new LinkedinService();
+              const scrapeResult = await linkedin.scrapeProfile(
+                person.linkedin_url!,
+              );
+              enrichmentData.linkedin = {
+                profileInfo: scrapeResult.profile || null,
+                posts: scrapeResult.posts.slice(0, 10),
+              };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Unknown error";
+              console.error(`[enrich] LinkedIn scrape failed: ${msg}`);
+              errors.push(`LinkedIn: ${msg}`);
+            }
+          })(),
+        );
+      }
 
-    if (person.twitter_url) {
-      promises.push(
-        (async () => {
-          try {
-            const x = new XService();
-            const result = await x.enrichTwitterProfile(person.twitter_url!);
-            enrichmentData.twitter = {
-              user: result.user,
-              tweets: result.tweets.slice(0, 10),
-            };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : "Unknown error";
-            console.error(`[enrich] Twitter enrich failed: ${msg}`);
-            errors.push(`Twitter: ${msg}`);
-          }
-        })(),
-      );
-    }
+      if (person.twitter_url) {
+        promises.push(
+          (async () => {
+            try {
+              const x = new XService();
+              const result = await x.enrichTwitterProfile(person.twitter_url!);
+              enrichmentData.twitter = {
+                user: result.user,
+                tweets: result.tweets.slice(0, 10),
+              };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Unknown error";
+              console.error(`[enrich] Twitter enrich failed: ${msg}`);
+              errors.push(`Twitter: ${msg}`);
+            }
+          })(),
+        );
+      }
 
-    if (contactName !== "Unknown") {
-      const exa = new ExaService();
+      if (contactName !== "Unknown") {
+        const exa = new ExaService();
 
-      const contactTitle = person.title || null;
-      const queryParts = [`"${contactName}"`];
-      if (companyName) queryParts.push(`"${companyName}"`);
-      if (contactTitle) queryParts.push(contactTitle);
-      const specificQuery = queryParts.join(" ");
+        const contactTitle = person.title || null;
+        const queryParts = [`"${contactName}"`];
+        if (companyName) queryParts.push(`"${companyName}"`);
+        if (contactTitle) queryParts.push(contactTitle);
+        const specificQuery = queryParts.join(" ");
 
-      // URLs already on the company's card, so the same link doesn't appear
-      // on both the company and the contact.
-      const companyUrls = new Set<string>();
-      if (person.organization) {
-        const { data: orgRow } = await supabase
-          .from("organizations")
-          .select("enrichment_data")
-          .eq("name", person.organization.name ?? "")
-          .maybeSingle();
+        // URLs already on the company's card, so the same link doesn't appear
+        // on both the company and the contact.
+        const companyUrls = new Set<string>();
+        if (person.organization) {
+          const { data: orgRow } = await supabase
+            .from("organizations")
+            .select("enrichment_data")
+            .eq("name", person.organization.name ?? "")
+            .maybeSingle();
 
-        const orgEnrichment = orgRow?.enrichment_data as Record<
-          string,
-          unknown
-        > | null;
-        if (orgEnrichment) {
-          const searches = orgEnrichment.searches as
-            | Array<{ results: Array<{ url: string }> }>
-            | undefined;
-          if (searches) {
-            for (const s of searches) {
-              for (const r of s.results) {
-                if (r.url) companyUrls.add(r.url);
+          const orgEnrichment = orgRow?.enrichment_data as Record<
+            string,
+            unknown
+          > | null;
+          if (orgEnrichment) {
+            const searches = orgEnrichment.searches as
+              | Array<{ results: Array<{ url: string }> }>
+              | undefined;
+            if (searches) {
+              for (const s of searches) {
+                for (const r of s.results) {
+                  if (r.url) companyUrls.add(r.url);
+                }
               }
             }
           }
         }
+
+        const dedup = (
+          results: Array<{
+            title: string;
+            url: string;
+            publishedDate: string | null;
+            text: string | null;
+          }>,
+        ) => results.filter((r) => !companyUrls.has(r.url));
+
+        const search = (
+          key: "news" | "articles" | "background",
+          query: string,
+          label: string,
+          category?: "news",
+        ) =>
+          promises.push(
+            (async () => {
+              try {
+                const result = await exa.search(query, {
+                  numResults: 3,
+                  includeText: true,
+                  ...(category ? { category } : {}),
+                });
+                enrichmentData[key] = dedup(
+                  result.results.map((r) => ({
+                    title: r.title,
+                    url: r.url,
+                    publishedDate: r.publishedDate,
+                    text: r.text || null,
+                  })),
+                );
+              } catch (err) {
+                const msg =
+                  err instanceof Error ? err.message : "Unknown error";
+                errors.push(`${label}: ${msg}`);
+              }
+            })(),
+          );
+
+        search("news", `${specificQuery} news announcement`, "News", "news");
+        search(
+          "articles",
+          `${specificQuery} article talk interview podcast`,
+          "Articles",
+        );
+        search(
+          "background",
+          `${specificQuery} background bio profile`,
+          "Background",
+        );
       }
 
-      const dedup = (
-        results: Array<{
-          title: string;
-          url: string;
-          publishedDate: string | null;
-          text: string | null;
-        }>,
-      ) => results.filter((r) => !companyUrls.has(r.url));
+      // Nobody to ask: no LinkedIn, no X, and no usable name for a web search.
+      if (promises.length === 0) {
+        await supabase
+          .from("people")
+          .update({ enrichment_status: "failed" })
+          .eq("id", personId);
+        return {
+          status: "failed" as const,
+          enrichmentData: {},
+          errors: ["No enrichment sources available"],
+        };
+      }
 
-      const search = (
-        key: "news" | "articles" | "background",
-        query: string,
-        label: string,
-        category?: "news",
-      ) =>
-        promises.push(
-          (async () => {
-            try {
-              const result = await exa.search(query, {
-                numResults: 3,
-                includeText: true,
-                ...(category ? { category } : {}),
-              });
-              enrichmentData[key] = dedup(
-                result.results.map((r) => ({
-                  title: r.title,
-                  url: r.url,
-                  publishedDate: r.publishedDate,
-                  text: r.text || null,
-                })),
-              );
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : "Unknown error";
-              errors.push(`${label}: ${msg}`);
-            }
-          })(),
-        );
+      await Promise.all(promises);
 
-      search("news", `${specificQuery} news announcement`, "News", "news");
-      search(
-        "articles",
-        `${specificQuery} article talk interview podcast`,
-        "Articles",
-      );
-      search(
-        "background",
-        `${specificQuery} background bio profile`,
-        "Background",
-      );
-    }
+      const status =
+        Object.keys(enrichmentData).length > 0 ? "enriched" : "failed";
 
-    // Nobody to ask: no LinkedIn, no X, and no usable name for a web search.
-    if (promises.length === 0) {
-      await supabase
-        .from("people")
-        .update({ enrichment_status: "failed" })
-        .eq("id", personId);
+      await mergeEnrichmentData("people", personId, enrichmentData, status);
+
       return {
-        status: "failed" as const,
-        enrichmentData: {},
-        errors: ["No enrichment sources available"],
+        status,
+        enrichmentData,
+        errors: errors.length > 0 ? errors : undefined,
       };
-    }
-
-    await Promise.all(promises);
-
-    const status =
-      Object.keys(enrichmentData).length > 0 ? "enriched" : "failed";
-
-    await mergeEnrichmentData("people", personId, enrichmentData, status);
-
-    return {
-      status,
-      enrichmentData,
-      errors: errors.length > 0 ? errors : undefined,
-    };
-  });
+    },
+    userId ?? undefined,
+  );
 }

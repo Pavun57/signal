@@ -84,9 +84,13 @@ export async function loadActiveLearnings(
   const rows = (data ?? []) as Array<
     EmailLearning & { campaign_id: string | null }
   >;
+  // Timing learnings never render into the compose prompt
+  // (renderLearningsBlock drops them), so letting them occupy prompt-cap
+  // slots crowded real copy/targeting learnings out entirely.
+  const promptRows = rows.filter((r) => r.category !== "timing");
   // Campaign-scoped learnings outrank user-wide ones for the prompt cap.
   return [
-    ...rows.filter((r) => r.campaign_id !== null),
-    ...rows.filter((r) => r.campaign_id === null),
+    ...promptRows.filter((r) => r.campaign_id !== null),
+    ...promptRows.filter((r) => r.campaign_id === null),
   ].slice(0, MAX_LEARNINGS_IN_PROMPT);
 }

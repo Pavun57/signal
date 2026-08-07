@@ -83,6 +83,9 @@ export async function POST(
     classifications = await withAction(
       `Classify departments: ${org.name}`,
       () => classifyPeople(org.name, inputs),
+      // Attribution, matching find-contacts/enrich-company: without it the
+      // classification spend lands with user_id NULL.
+      user.id,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -93,6 +96,7 @@ export async function POST(
     );
   }
 
+  let failedWrites = 0;
   for (const c of classifications) {
     const { error: updErr } = await supabase
       .from("people")
@@ -103,6 +107,7 @@ export async function POST(
       })
       .eq("id", c.id);
     if (updErr) {
+      failedWrites++;
       console.error(
         `[classify-departments] update failed for ${c.id}:`,
         updErr,
@@ -110,5 +115,10 @@ export async function POST(
     }
   }
 
-  return Response.json({ classified: classifications.length });
+  // Failed writes are not classifications: reporting them as successes hid
+  // rows the user believed were classified.
+  return Response.json({
+    classified: classifications.length - failedWrites,
+    failed: failedWrites,
+  });
 }

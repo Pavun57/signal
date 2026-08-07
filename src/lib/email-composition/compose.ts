@@ -10,6 +10,10 @@ import {
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
+import {
+  estimateClaudeCostFromUsage,
+  trackUsage,
+} from "@/lib/services/cost-tracker";
 import type { VoiceProfile } from "@/lib/types/email-voice";
 
 type UserPromptInput = Parameters<typeof buildComposeUserPrompt>[0];
@@ -51,20 +55,32 @@ export async function composeEmail(
   // for free; the retries cover the rest. Measured live — without both, a fifth
   // or more of every fan-out silently loses its draft.
   const attempt = await generateWithRetry(async () => {
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
       model: anthropic(MODELS.EMAIL),
       schema: apiSafeSchema(ComposedEmailSchema),
-      system: buildEmailSystemPrompt(
-        voice ?? null,
-        factBank ?? null,
-        learnings ?? null,
-      ),
-      prompt: buildComposeUserPrompt(userPromptInput),
+      // The cache breakpoint rides ON the system message, not in call-level
+      // providerOptions: the call-level form maps to top-level auto-cache,
+      // which places the breakpoint on the LAST cacheable block — the
+      // per-contact user prompt that varies on every fan-out call. Keyed to
+      // varying content, the stable Opus system prompt never actually
+      // served from cache; every call paid the full write price.
+      messages: [
+        {
+          role: "system",
+          content: buildEmailSystemPrompt(
+            voice ?? null,
+            factBank ?? null,
+            learnings ?? null,
+          ),
+          providerOptions: {
+            anthropic: { cacheControl: { type: "ephemeral" } },
+          },
+        },
+        { role: "user", content: buildComposeUserPrompt(userPromptInput) },
+      ],
       providerOptions: {
         anthropic: {
-          // Cache the stable system prompt across the fan-out batch.
-          cacheControl: { type: "ephemeral" },
           // Opus 5 thinks by default (Opus 4.6 did not), and maxOutputTokens
           // caps thinking + visible output together — so the old 1200 budget
           // would have been eaten by reasoning and truncated the email,
@@ -81,6 +97,16 @@ export async function composeEmail(
       // would stack to 12 upstream requests per email under a 429 storm.
       maxRetries: 0,
       maxOutputTokens: 4000,
+    });
+    // K18: every composed email is an Opus call and none of it was ever
+    // cost-tracked. Attribution inherits the nearest withAction context.
+    trackUsage({
+      service: "claude",
+      operation: "compose-email",
+      tokens_input: usage.inputTokens ?? 0,
+      tokens_output: usage.outputTokens ?? 0,
+      estimated_cost_usd: estimateClaudeCostFromUsage("opus", usage),
+      metadata: { model: MODELS.EMAIL },
     });
     return object;
   }, ComposedEmailSchema);
