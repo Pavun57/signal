@@ -40,6 +40,7 @@ function fakeSupabase(
       "select",
       "eq",
       "in",
+      "not",
       "gte",
       "update",
       "insert",
@@ -267,6 +268,42 @@ describe("sendApprovedDraft claim semantics", () => {
           message_id: "<m1@sahnan.co>",
           from_email: "jay@sahnan.co",
         }),
+      ],
+    });
+  });
+
+  it("never downgrades a terminal outreach_status when stamping the send", async () => {
+    // A reply or bounce recorded between draft and send must survive the
+    // send bookkeeping. The unconditional update used to write "sent" over
+    // "replied", and applyInboundStatus's ladder compares against the
+    // sent_emails row (already "replied"), so nothing ever restored it:
+    // follow-ups kept going to a live conversation.
+    const { client, calls } = fakeSupabase([
+      ...preSendResponses(),
+      { data: { id: draft.id } }, // claim won
+      { count: 0 },
+      {}, // sent_emails insert
+      {}, // draft → sent
+      {}, // campaign_people → sent (guarded)
+      { data: null }, // no next step
+      {}, // enrollment → completed
+    ]);
+    sendGmailMock.mockResolvedValue({ messageId: "<m3@sahnan.co>" });
+
+    await sendApprovedDraft(client, enrollment);
+
+    const cpUpdate = calls.find((c) => c.table === "campaign_people");
+    expect(cpUpdate).toBeDefined();
+    expect(cpUpdate!.ops).toContainEqual({
+      name: "update",
+      args: [expect.objectContaining({ outreach_status: "sent" })],
+    });
+    expect(cpUpdate!.ops).toContainEqual({
+      name: "not",
+      args: [
+        "outreach_status",
+        "in",
+        '("replied","bounced","complained","unsubscribed")',
       ],
     });
   });

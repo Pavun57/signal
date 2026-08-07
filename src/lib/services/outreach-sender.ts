@@ -595,10 +595,20 @@ export async function claimAndSendDraft(
     .eq("id", draft.id);
 
   if (draft.campaign_people_id) {
+    // "sent" may only overwrite pre-send states. A reply or bounce recorded
+    // between draft and send must survive this bookkeeping: the tracking
+    // ladder compares against sent_emails (already terminal there), so a
+    // downgrade written here was permanent and follow-ups kept going to
+    // people mid-conversation.
     await supabase
       .from("campaign_people")
       .update({ outreach_status: "sent" })
-      .eq("id", draft.campaign_people_id);
+      .eq("id", draft.campaign_people_id)
+      .not(
+        "outreach_status",
+        "in",
+        '("replied","bounced","complained","unsubscribed")',
+      );
   }
 
   trackUsage({
