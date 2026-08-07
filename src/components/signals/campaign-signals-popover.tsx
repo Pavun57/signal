@@ -23,6 +23,7 @@ interface CampaignSignalsPopoverProps {
 interface SignalsData {
   signals: Signal[];
   enabled: Record<string, boolean>;
+  error?: string;
 }
 
 async function fetchSignalsData(campaignId: string): Promise<SignalsData> {
@@ -38,6 +39,13 @@ async function fetchSignalsData(campaignId: string): Promise<SignalsData> {
       .select("signal_id, enabled")
       .eq("campaign_id", campaignId),
   ]);
+
+  // A failed query must render as an error, not as "No signals defined."
+  // or as every toggle switched off: both misstate what is armed.
+  const firstError = signalsRes.error ?? togglesRes.error;
+  if (firstError) {
+    return { signals: [], enabled: {}, error: firstError.message };
+  }
 
   const enabled: Record<string, boolean> = {};
   for (const row of togglesRes.data ?? []) {
@@ -118,7 +126,7 @@ export function CampaignSignalsPopover({
           <Button variant="outline" size="sm" aria-label="Manage signals">
             <Zap className="mr-1.5 h-4 w-4" />
             Signals
-            {data && (
+            {data && !data.error && (
               <span className="text-muted-foreground ml-1.5 tabular-nums">
                 {enabledCount}/{signals.length}
               </span>
@@ -139,6 +147,13 @@ export function CampaignSignalsPopover({
         {!data ? (
           <div className="text-muted-foreground px-3 py-6 text-center text-sm">
             Loading...
+          </div>
+        ) : data.error ? (
+          <div
+            role="alert"
+            className="text-destructive px-3 py-6 text-center text-sm"
+          >
+            Could not load signals: {data.error}
           </div>
         ) : signals.length === 0 ? (
           <div className="text-muted-foreground px-3 py-6 text-center text-sm">

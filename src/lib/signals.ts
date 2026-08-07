@@ -14,7 +14,15 @@ export async function getActiveSignals(campaignId: string): Promise<Signal[]> {
     .eq("campaign_id", campaignId)
     .eq("enabled", true);
 
-  if (error || !data) return [];
+  // Logged rather than silently coalesced: an empty return here strips the
+  // enabled-signals block from the chat system prompt, and the prompt tells
+  // the agent to only run enrichment for listed signals, so a swallowed
+  // failure reads to the agent as "this campaign has zero signals".
+  if (error) {
+    console.error("[signals] getActiveSignals failed:", error);
+    return [];
+  }
+  if (!data) return [];
 
   return data
     .map((row: Record<string, unknown>) => row.signals as Signal | null)
