@@ -65,15 +65,41 @@ export async function applyInboundStatus(
   const newPriority = STATUS_PRIORITY[newStatus] ?? 0;
   if (newPriority <= currentPriority) return false;
 
+  // campaign_people first, sent_emails last. The re-poll ladder above
+  // compares against sent_emails.status, so that stamp is the dedupe
+  // marker: writing it first meant a crash (or a failed campaign_people
+  // write) between the two lost the reply forever. The next poll saw
+  // replied -> replied and skipped while campaign_people still said
+  // "sent" and follow-ups kept going.
+  let cpQuery = supabase
+    .from("campaign_people")
+    .update({ outreach_status: newStatus })
+    .eq("id", email.campaign_people_id);
+  if (newPriority < 6) {
+    // Sub-terminal signals (delivered/opened/clicked) must not walk a
+    // terminal campaign_people status backwards when the two tables have
+    // diverged (e.g. after a data repair).
+    cpQuery = cpQuery.not(
+      "outreach_status",
+      "in",
+      '("replied","bounced","complained","unsubscribed")',
+    );
+  }
+  const { error: cpError } = await cpQuery;
+  if (cpError) {
+    // Not stamped: the next poll's ladder still sees the old sent_emails
+    // status and retries both writes.
+    console.error(
+      "[email-tracking] campaign_people status write failed:",
+      cpError,
+    );
+    return false;
+  }
+
   await supabase
     .from("sent_emails")
     .update({ status: newStatus })
     .eq("id", email.id);
-
-  await supabase
-    .from("campaign_people")
-    .update({ outreach_status: newStatus })
-    .eq("id", email.campaign_people_id);
 
   // A bounce is the only ground truth we ever get about an address we guessed.
   // Feeding it back clears the contact's verification and, when the address was

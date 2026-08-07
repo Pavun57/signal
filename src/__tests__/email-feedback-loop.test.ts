@@ -59,6 +59,7 @@ function fakeSupabase(
       "select",
       "eq",
       "in",
+      "not",
       "gte",
       "update",
       "insert",
@@ -138,6 +139,7 @@ function sendResponses(personId: string | null): FakeResponse[] {
     { data: draftWith(personId) }, // draft select
     { data: settings() }, // sender config
     { data: null }, // suppression check: not suppressed
+    { data: { outreach_status: "sent" } }, // recipient status: no reply
     gatePasses(), // send-gate person read
     { data: { id: "draft_1" } }, // claim won
     { count: 0 }, // daily cap
@@ -184,6 +186,7 @@ describe("send_confirmed", () => {
     await claimAndSendDraft(
       fakeSupabase([
         { data: null }, // suppression check: not suppressed
+        { data: { outreach_status: "sent" } }, // recipient status: no reply
         { data: { id: "draft_1" } }, // claim won
         { count: 0 }, // daily cap
         {}, // sent_emails insert
@@ -224,7 +227,7 @@ describe("send_confirmed", () => {
       },
     };
     const responses = sendResponses("per_1");
-    responses[4] = blocked; // the send-gate person read
+    responses[5] = blocked; // the send-gate person read
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -244,7 +247,7 @@ describe("send_confirmed", () => {
       },
     };
     const responses = sendResponses("per_1");
-    responses[4] = blocked;
+    responses[5] = blocked;
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -258,7 +261,7 @@ describe("send_confirmed", () => {
     // for no rows, so treating null as "carry on" let a DB hiccup disable the
     // one gate that cannot otherwise be bypassed.
     const responses = sendResponses("per_1");
-    responses[4] = { data: null, error: { message: "connection reset" } };
+    responses[5] = { data: null, error: { message: "connection reset" } };
 
     const result = await sendApprovedDraft(fakeSupabase(responses), enrollment);
 
@@ -272,7 +275,7 @@ describe("send_confirmed", () => {
     // the old one — without this check the gate approved on the new address's
     // verdict and delivered to the very address that just hard-bounced.
     const responses = sendResponses("per_1");
-    responses[4] = {
+    responses[5] = {
       data: {
         work_email: "corrected@example.com", // person was fixed…
         work_email_source: "user_entered",
@@ -343,6 +346,7 @@ describe("send failure recording", () => {
         "select",
         "eq",
         "in",
+        "not",
         "gte",
         "insert",
         "single",
@@ -374,7 +378,7 @@ describe("send failure recording", () => {
 
   it("classifies the daily cap as deferred, not failed", async () => {
     const responses = sendResponses("per_1");
-    responses[6] = { count: 999 }; // over the cap
+    responses[7] = { count: 999 }; // over the cap
 
     const { client, updates } = observingSupabase(responses);
     const result = await sendApprovedDraft(client, enrollment);
@@ -391,7 +395,7 @@ describe("send failure recording", () => {
 
   it("classifies a stale address as blocked, with the reason kept verbatim", async () => {
     const responses = sendResponses("per_1");
-    responses[4] = {
+    responses[5] = {
       data: {
         work_email: "corrected@example.com",
         work_email_source: "user_entered",
@@ -459,6 +463,78 @@ describe("bounce feedback", () => {
     to_email: "dead@acme.com",
     campaign_id: "camp_1",
     ...over,
+  });
+
+  it("writes campaign_people before stamping sent_emails", async () => {
+    // The re-poll ladder compares against sent_emails.status, so the stamp
+    // is the dedupe marker. Stamping it first meant a crash between the two
+    // writes lost the reply forever: the next poll saw replied -> replied
+    // and skipped, while campaign_people still said "sent".
+    const order: string[] = [];
+    let i = 0;
+    const responses: FakeResponse[] = [{}, {}];
+    const client = {
+      from: (table: string) => {
+        const builder: Record<string, unknown> = {};
+        for (const name of ["select", "eq", "in", "not", "single"]) {
+          builder[name] = () => builder;
+        }
+        builder.update = () => {
+          order.push(table);
+          return builder;
+        };
+        builder.then = (
+          resolve: (v: unknown) => unknown,
+          reject: (e: unknown) => unknown,
+        ) =>
+          Promise.resolve(responses[i++] ?? { data: null, error: null }).then(
+            resolve,
+            reject,
+          );
+        return builder;
+      },
+    } as never;
+
+    const changed = await applyInboundStatus(client, tracked(), "replied");
+
+    expect(changed).toBe(true);
+    expect(order).toEqual(["campaign_people", "sent_emails"]);
+  });
+
+  it("does not stamp sent_emails when the campaign_people write fails", async () => {
+    const order: string[] = [];
+    let i = 0;
+    const responses: FakeResponse[] = [
+      { error: { message: "connection reset" } },
+    ];
+    const client = {
+      from: (table: string) => {
+        const builder: Record<string, unknown> = {};
+        for (const name of ["select", "eq", "in", "not", "single"]) {
+          builder[name] = () => builder;
+        }
+        builder.update = () => {
+          order.push(table);
+          return builder;
+        };
+        builder.then = (
+          resolve: (v: unknown) => unknown,
+          reject: (e: unknown) => unknown,
+        ) =>
+          Promise.resolve(responses[i++] ?? { data: null, error: null }).then(
+            resolve,
+            reject,
+          );
+        return builder;
+      },
+    } as never;
+
+    const changed = await applyInboundStatus(client, tracked(), "replied");
+
+    // Not stamped: the next poll's ladder still sees the old status and
+    // retries both writes.
+    expect(changed).toBe(false);
+    expect(order).toEqual(["campaign_people"]);
   });
 
   it("calls recordBounce when a send bounces", async () => {

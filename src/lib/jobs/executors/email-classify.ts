@@ -64,6 +64,53 @@ export async function classifyReplies(): Promise<{
     // later run retries, matching how email.track treats a failed body fetch.
     if (!verdict) continue;
 
+    // The suppression upsert comes BEFORE the intent stamp. The stamp is
+    // what removes the row from the scan window (.is("intent", null)), so
+    // stamping first meant a failed upsert dropped the unsubscribe forever:
+    // the row never came back into scan. In this order a failed upsert
+    // leaves the row unclassified and the next run retries both writes;
+    // the upsert itself is idempotent, so a failed stamp after a
+    // successful upsert just re-upserts next run.
+    if (shouldSuppress(verdict.intent, verdict.confidence)) {
+      // Suppress the address we SENT to, not the reply's From: a colleague
+      // answering "please stop emailing Sam" must block sam@, and a referral
+      // target must never be suppressed for being mentioned.
+      const address = sent?.to_email?.toLowerCase();
+      if (address) {
+        const { error: suppressError } = await supabase
+          .from("outreach_suppressions")
+          .upsert(
+            {
+              user_id: row.user_id,
+              person_id: row.person_id,
+              email: address,
+              reason: suppressionReason(verdict.intent) ?? "not_interested",
+              source: "classifier",
+              // Sliced to the column's check constraint: a rambling
+              // classifier must never fail the insert and silently drop an
+              // unsubscribe.
+              detail: verdict.reasoning.slice(0, 1000),
+            },
+            {
+              onConflict: "user_id,email",
+              // An unsubscribe upgrades an existing softer row
+              // (not_interested, user) so the strongest opt-out evidence is
+              // what's on record; anything weaker never overwrites what's
+              // already there.
+              ignoreDuplicates: verdict.intent !== "unsubscribe",
+            },
+          );
+        if (suppressError) {
+          console.error(
+            "[email-classify] suppression upsert failed:",
+            suppressError,
+          );
+          continue;
+        }
+        suppressed++;
+      }
+    }
+
     const { error: updateError } = await supabase
       .from("email_replies")
       .update({
@@ -78,44 +125,6 @@ export async function classifyReplies(): Promise<{
       continue;
     }
     classified++;
-
-    if (!shouldSuppress(verdict.intent, verdict.confidence)) continue;
-
-    // Suppress the address we SENT to, not the reply's From: a colleague
-    // answering "please stop emailing Sam" must block sam@, and a referral
-    // target must never be suppressed for being mentioned.
-    const address = sent?.to_email?.toLowerCase();
-    if (!address) continue;
-
-    const { error: suppressError } = await supabase
-      .from("outreach_suppressions")
-      .upsert(
-        {
-          user_id: row.user_id,
-          person_id: row.person_id,
-          email: address,
-          reason: suppressionReason(verdict.intent) ?? "not_interested",
-          source: "classifier",
-          // Sliced to the column's check constraint: a rambling classifier
-          // must never fail the insert and silently drop an unsubscribe.
-          detail: verdict.reasoning.slice(0, 1000),
-        },
-        {
-          onConflict: "user_id,email",
-          // An unsubscribe upgrades an existing softer row (not_interested,
-          // user) so the strongest opt-out evidence is what's on record;
-          // anything weaker never overwrites what's already there.
-          ignoreDuplicates: verdict.intent !== "unsubscribe",
-        },
-      );
-    if (suppressError) {
-      console.error(
-        "[email-classify] suppression upsert failed:",
-        suppressError,
-      );
-      continue;
-    }
-    suppressed++;
   }
 
   return { scanned: rows.length, classified, suppressed };
