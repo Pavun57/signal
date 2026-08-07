@@ -72,6 +72,7 @@ Step-specific guidance:
 - Step 1 (initial cold): lead with the person-specific signal, connect it to the offering in one move, close with the reasoned ask.
 - Step 2-N (follow-up, condition=no_reply or opened_no_reply): follow-ups carry 42% of all replies, so each one earns its place with ONE genuinely new angle: a different proof point, a different consequence, a question you haven't asked yet. Never "just bumping this". Shorter than the email before it.
 - Final step (breakup): one or two sentences. Acknowledge the silence without guilt-tripping, leave the door open, shortest of the sequence.
+- Never reference or imply an earlier email from the sender (a "last note", "closing the loop", going quiet, or any prior thread) unless PREVIOUS EMAIL SUBJECT appears in the context. If it is absent, nothing has been sent to this person: write as first contact, whatever the step framing says.
 
 Output format:
 - \`subject\`: 4-5 words, under ~45 chars, no caps, no special characters.
@@ -172,9 +173,16 @@ export function buildComposeUserPrompt(input: {
 }): string {
   const sections: string[] = [];
 
+  // A breakup presupposes earlier emails in the same sequence. Callers have
+  // shipped step 1 flagged final (1-step sequences; regenerate's ad-hoc
+  // default), and the model obeyed the flag over reality: it wrote "nothing
+  // back from my last note" to people who had never been emailed. Whatever
+  // the caller says, step 1 is first contact.
+  const isBreakup = input.step.isFinal && input.step.stepNumber > 1;
+
   sections.push(
     `STEP ${input.step.stepNumber} of ${input.step.totalSteps}${
-      input.step.isFinal ? " (FINAL: breakup email)" : ""
+      isBreakup ? " (FINAL: breakup email)" : ""
     }, condition: ${input.step.condition}`,
   );
 

@@ -59,6 +59,46 @@ describe("buildEmailSystemPrompt with a fact bank", () => {
   });
 });
 
+describe("buildComposeUserPrompt breakup framing", () => {
+  it("never frames step 1 as a breakup, even when the caller flags it final", () => {
+    // Regression: 1-step sequences (and regenerate's ad-hoc default) passed
+    // isFinal for step 1 of 1, so the model was told "FINAL: breakup email"
+    // and invented a prior thread ("nothing back from my last note") for
+    // contacts who had never been emailed.
+    const prompt = buildComposeUserPrompt({
+      ...baseInput,
+      step: {
+        stepNumber: 1,
+        totalSteps: 1,
+        condition: "always",
+        isFinal: true,
+      },
+    });
+    expect(prompt).toContain("STEP 1 of 1");
+    expect(prompt).not.toContain("breakup");
+  });
+
+  it("keeps breakup framing for the last of several steps", () => {
+    const prompt = buildComposeUserPrompt({
+      ...baseInput,
+      step: {
+        stepNumber: 3,
+        totalSteps: 3,
+        condition: "no_reply",
+        isFinal: true,
+      },
+    });
+    expect(prompt).toContain("STEP 3 of 3 (FINAL: breakup email)");
+  });
+});
+
+describe("email skill system prompt", () => {
+  it("forbids implying prior emails without a previous subject in context", () => {
+    const sys = buildEmailSystemPrompt(null, null);
+    expect(sys).toContain("unless PREVIOUS EMAIL SUBJECT appears");
+  });
+});
+
 describe("buildComposeUserPrompt sender fields", () => {
   it("carries offering summary and notes that were previously dropped", () => {
     const prompt = buildComposeUserPrompt(baseInput);
