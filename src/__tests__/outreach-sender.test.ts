@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { encryptSecret } from "@/lib/crypto";
-import { sendApprovedDraft } from "@/lib/services/outreach-sender";
+import {
+  advanceEnrollmentAfterSend,
+  sendApprovedDraft,
+} from "@/lib/services/outreach-sender";
 import { sendGmailMessage } from "@/lib/services/gmail-service";
 
 vi.mock("@/lib/services/gmail-service", async (importOriginal) => {
@@ -129,6 +132,26 @@ function preSendResponses(settings: Record<string, unknown> = settingsRow()) {
 }
 
 let savedKey: string | undefined;
+
+describe("advanceEnrollmentAfterSend", () => {
+  it("leaves the enrollment untouched when the step lookup fails", async () => {
+    // "The query failed" is not "there is no next step": completing the
+    // enrollment on a transient error silently ended the whole sequence.
+    const { client, calls } = fakeSupabase([
+      { data: null, error: { message: "connection reset" } },
+    ]);
+
+    await advanceEnrollmentAfterSend(client, {
+      id: "enr_1",
+      sequence_id: "seq_1",
+      current_step: 2,
+    });
+
+    expect(
+      calls.filter((c) => c.table === "sequence_enrollments"),
+    ).toHaveLength(0);
+  });
+});
 
 describe("sendApprovedDraft claim semantics", () => {
   beforeEach(() => {
