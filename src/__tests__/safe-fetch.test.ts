@@ -4,6 +4,7 @@ import {
   addressIsPublic,
   assertPublicUrl,
   BlockedUrlError,
+  pinnedLookup,
   readBodyCapped,
   safeFetch,
   type HostResolver,
@@ -140,6 +141,56 @@ describe("safeFetch redirects", () => {
       { resolveHost: publicDns },
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe("DNS pinning", () => {
+  it("answers the vetted addresses without consulting DNS again", () => {
+    // Rebinding TOCTOU: the guard resolves once and vets, but fetch used to
+    // re-resolve on connect, so a TTL-0 domain could answer a public IP to
+    // the guard and the metadata service to the connection. The pinned
+    // lookup ignores the hostname entirely.
+    const lookup = pinnedLookup(["93.184.216.34"]);
+
+    lookup("evil.example.com", { all: false }, (err, address, family) => {
+      expect(err).toBeNull();
+      expect(address).toBe("93.184.216.34");
+      expect(family).toBe(4);
+    });
+    lookup("evil.example.com", { all: true }, (err, records) => {
+      expect(err).toBeNull();
+      expect(records).toEqual([{ address: "93.184.216.34", family: 4 }]);
+    });
+  });
+
+  it("carries IPv6 family through", () => {
+    pinnedLookup(["2606:4700::1111"])("x", { all: false }, (_e, a, f) => {
+      expect(a).toBe("2606:4700::1111");
+      expect(f).toBe(6);
+    });
+  });
+
+  it("hands fetch a dispatcher pinned to the guard's own resolution", async () => {
+    // Simulated rebinding: the first resolution (the guard's) is public,
+    // any later one would be the metadata service. The dispatcher's lookup
+    // must answer the first, vetted address.
+    let resolutions = 0;
+    const rebinding: HostResolver = async () => {
+      resolutions++;
+      return resolutions === 1 ? ["93.184.216.34"] : ["169.254.169.254"];
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("ok", { status: 200 }));
+
+    await safeFetch("https://example.com/", {}, { resolveHost: rebinding });
+
+    const initArg = fetchMock.mock.calls[0][1] as {
+      dispatcher?: unknown;
+    };
+    expect(initArg.dispatcher).toBeDefined();
+    // The guard resolved exactly once; nothing re-consulted the resolver.
+    expect(resolutions).toBe(1);
   });
 });
 

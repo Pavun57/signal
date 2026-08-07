@@ -58,11 +58,16 @@ function SignalsPageContent() {
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [detailSignal, setDetailSignal] = useState<Signal | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [ownedProfileIds, setOwnedProfileIds] = useState<string[]>([]);
   const mountedRef = useRef(true);
+  // Which campaign's toggles were requested last, so a slow earlier
+  // response can never overwrite a later campaign's map.
+  const togglesRequestRef = useRef<string>("");
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
-    const [signalsRes, campaignsRes] = await Promise.all([
+    const [signalsRes, campaignsRes, profilesRes] = await Promise.all([
       supabase
         .from("signals")
         .select("*")
@@ -72,24 +77,48 @@ function SignalsPageContent() {
         .from("campaigns")
         .select("id, name, status")
         .order("updated_at", { ascending: false }),
+      // RLS scopes user_profile to the caller: these ids are what marks a
+      // signal as the user's own (created_by is a profile id).
+      supabase.from("user_profile").select("id"),
     ]);
     if (!mountedRef.current) return;
+    // A failed query must render as an error, not as a library with zero
+    // signals: the empty grid is indistinguishable from real data.
+    const firstError =
+      signalsRes.error ?? campaignsRes.error ?? profilesRes.error;
+    if (firstError) {
+      setLoadError(firstError.message);
+      setLoading(false);
+      return;
+    }
+    setLoadError(null);
     setSignals((signalsRes.data as Signal[]) ?? []);
     setCampaigns((campaignsRes.data as Campaign[]) ?? []);
+    setOwnedProfileIds((profilesRes.data ?? []).map((p) => p.id as string));
     setLoading(false);
   }, []);
 
   const fetchToggles = useCallback(async (campaignId: string) => {
+    togglesRequestRef.current = campaignId;
     if (!campaignId) {
       setEnabledMap({});
       return;
     }
     const supabase = createClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("campaign_signals")
       .select("signal_id, enabled")
       .eq("campaign_id", campaignId);
     if (!mountedRef.current) return;
+    // A stale response (user already switched campaigns) must not paint the
+    // previous campaign's toggle state under the new selection.
+    if (togglesRequestRef.current !== campaignId) return;
+    if (error) {
+      // Leave the map alone: rendering every toggle off would invite the
+      // user to "re-enable" signals that are already on.
+      toast.error(`Could not load signal toggles: ${error.message}`);
+      return;
+    }
     const map: Record<string, boolean> = {};
     for (const row of data ?? []) {
       map[(row as Record<string, unknown>).signal_id as string] = (
@@ -99,9 +128,16 @@ function SignalsPageContent() {
     setEnabledMap(map);
   }, []);
 
+  const isOwned = useCallback(
+    (signal: Signal) =>
+      !!signal.created_by && ownedProfileIds.includes(signal.created_by),
+    [ownedProfileIds],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData();
     return () => {
       mountedRef.current = false;
@@ -154,12 +190,18 @@ function SignalsPageContent() {
 
   const handleMakePublic = async (signal: Signal) => {
     const supabase = createClient();
-    const { error } = await supabase
+    // Row count checked, not just error: the RLS-filtered update returns
+    // error null with zero matched rows (e.g. created_by nulled by a
+    // deleted profile), which used to toast success while nothing changed.
+    const { data: updated, error } = await supabase
       .from("signals")
       .update({ is_public: true })
-      .eq("id", signal.id);
-    if (error) {
-      toast.error("Failed to publish signal");
+      .eq("id", signal.id)
+      .select("id");
+    if (error || !updated || updated.length === 0) {
+      toast.error(
+        "Could not publish this signal: it does not belong to one of your profiles.",
+      );
     } else {
       toast.success("Signal published to community");
       setSignals((prev) =>
@@ -263,18 +305,40 @@ function SignalsPageContent() {
               : "animate-in fade-in-0 duration-200 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
           }
         >
-          {filtered.map((signal) => (
-            <SignalCard
-              key={signal.id}
-              signal={signal}
-              variant="card"
-              enabled={enabledMap[signal.id] ?? false}
-              showToggle={!!selectedCampaignId}
-              onToggle={handleToggle}
-              onClick={setDetailSignal}
-            />
-          ))}
-          {filtered.length === 0 && (
+          {loadError && (
+            <div
+              role="alert"
+              className="col-span-full py-8 text-center text-sm"
+            >
+              <p className="text-destructive">
+                Could not load signals: {loadError}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => {
+                  setLoading(true);
+                  fetchData();
+                }}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
+          {!loadError &&
+            filtered.map((signal) => (
+              <SignalCard
+                key={signal.id}
+                signal={signal}
+                variant="card"
+                enabled={enabledMap[signal.id] ?? false}
+                showToggle={!!selectedCampaignId}
+                onToggle={handleToggle}
+                onClick={setDetailSignal}
+              />
+            ))}
+          {!loadError && filtered.length === 0 && (
             <p className="text-muted-foreground col-span-full py-8 text-center text-sm">
               No signals in this category.
             </p>
@@ -288,8 +352,15 @@ function SignalsPageContent() {
         onOpenChange={(open) => {
           if (!open) setDetailSignal(null);
         }}
-        onMakePublic={handleMakePublic}
-        onEdit={handleEdit}
+        // Edit interpolates the signal's stored text into an auto-sent
+        // agent message, and the agent holds send tools: community signals
+        // are other tenants' text, so only the user's own signals may take
+        // either path. This is the same injection surface the builtin-
+        // spoofing migration closed, still open via is_public rows.
+        onMakePublic={
+          detailSignal && isOwned(detailSignal) ? handleMakePublic : undefined
+        }
+        onEdit={detailSignal && isOwned(detailSignal) ? handleEdit : undefined}
       />
     </div>
   );

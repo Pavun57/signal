@@ -1,5 +1,6 @@
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
+import { Agent } from "undici";
 
 /**
  * Outbound HTTP for URLs the product did not choose.
@@ -113,6 +114,18 @@ export async function assertPublicUrl(
   raw: string,
   resolveHost: HostResolver = realResolver,
 ): Promise<URL> {
+  return (await vetPublicUrl(raw, resolveHost)).url;
+}
+
+/**
+ * assertPublicUrl plus the addresses it vetted, so the connection can be
+ * pinned to exactly what was checked. Kept separate because assertPublicUrl
+ * is public API with URL-only semantics.
+ */
+async function vetPublicUrl(
+  raw: string,
+  resolveHost: HostResolver = realResolver,
+): Promise<{ url: URL; addresses: string[] }> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -134,7 +147,7 @@ export async function assertPublicUrl(
         `${host} is not a publicly routable address, so it will not be fetched.`,
       );
     }
-    return url;
+    return { url, addresses: [host] };
   }
 
   // A single-label host ("localhost", "supabase-kong") is only meaningful on
@@ -164,7 +177,27 @@ export async function assertPublicUrl(
     }
   }
 
-  return url;
+  return { url, addresses };
+}
+
+/**
+ * A dns.lookup-compatible function that answers with a fixed address list
+ * and never consults DNS. This closes the rebinding TOCTOU: the guard vets
+ * the addresses it resolved, but fetch performs its OWN lookup, so a TTL-0
+ * domain could answer a public IP to the guard and 169.254.169.254 to the
+ * connection. Pinning the vetted addresses onto the connection makes the
+ * checked address the connected address, while TLS SNI and certificate
+ * validation still run against the hostname in the URL.
+ */
+export function pinnedLookup(addresses: string[]): LookupFunction {
+  return (_hostname, options, callback) => {
+    const records = addresses.map((address) => ({
+      address,
+      family: isIP(address) === 6 ? 6 : 4,
+    }));
+    if (options?.all) callback(null, records);
+    else callback(null, records[0].address, records[0].family);
+  };
 }
 
 /**
@@ -223,15 +256,22 @@ export async function safeFetch(
   const { timeoutMs, maxRedirects } = { ...DEFAULTS, ...options };
   const resolveHost = options.resolveHost ?? realResolver;
 
-  let target = await assertPublicUrl(rawUrl, resolveHost);
+  let { url: target, addresses } = await vetPublicUrl(rawUrl, resolveHost);
   const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
+    // The connection is pinned to the vetted addresses (see pinnedLookup);
+    // the short-lived Agent is not closed here because the caller may still
+    // be streaming the body, and its idle sockets time out on their own.
+    const dispatcher = new Agent({
+      connect: { lookup: pinnedLookup(addresses) },
+    });
     const response = await fetch(target, {
       ...init,
       signal,
       redirect: "manual",
-    });
+      dispatcher,
+    } as RequestInit);
 
     const location = response.headers.get("location");
     const isRedirect =
@@ -248,10 +288,12 @@ export async function safeFetch(
     // Resolved against the current URL so a relative Location works, then
     // vetted again: passing the first check buys the destination nothing.
     response.body?.cancel().catch(() => {});
-    target = await assertPublicUrl(
+    const next = await vetPublicUrl(
       new URL(location, target).toString(),
       resolveHost,
     );
+    target = next.url;
+    addresses = next.addresses;
   }
 
   throw new BlockedUrlError(
