@@ -1,4 +1,8 @@
 import { getAdminClient } from "@/lib/supabase/admin";
+import {
+  advanceEnrollmentForDraft,
+  draftIsCurrentStep,
+} from "@/lib/services/outreach-sender";
 
 /**
  * Draft cleanup (recurring job, daily).
@@ -31,37 +35,78 @@ export async function cleanupEmails(): Promise<{
   let recoveredSent = 0;
   let recoveredDraft = 0;
 
-  const { data: stuck } = await supabase
+  const { data: stuck, error: stuckError } = await supabase
     .from("email_drafts")
-    .select("id")
+    .select("id, enrollment_id, campaign_people_id, sequence_step_id")
     .eq("status", "queued")
     .lt("updated_at", dayAgo);
+  if (stuckError) throw new Error(`stuck-draft scan: ${stuckError.message}`);
 
   if (stuck && stuck.length > 0) {
     const ids = stuck.map((d) => d.id);
-    const { data: sentRows } = await supabase
+    const { data: sentRows, error: sentError } = await supabase
       .from("sent_emails")
       .select("draft_id")
       .in("draft_id", ids);
+    // Fail loudly. A failed lookup used to read as "no sent_emails rows",
+    // classifying EVERY stuck draft as never-sent and resetting it to
+    // "draft": the next cron then re-sent emails that had already been
+    // delivered to real prospects.
+    if (sentError) throw new Error(`sent_emails lookup: ${sentError.message}`);
     const sentIds = new Set((sentRows ?? []).map((r) => r.draft_id));
 
-    const wasSent = ids.filter((id) => sentIds.has(id));
-    const neverSent = ids.filter((id) => !sentIds.has(id));
+    const wasSent = stuck.filter((d) => sentIds.has(d.id));
+    const neverSent = stuck.filter((d) => !sentIds.has(d.id));
     const now = new Date().toISOString();
 
     if (wasSent.length > 0) {
       await supabase
         .from("email_drafts")
         .update({ status: "sent", updated_at: now })
-        .in("id", wasSent)
+        .in(
+          "id",
+          wasSent.map((d) => d.id),
+        )
         .eq("status", "queued");
       recoveredSent = wasSent.length;
+
+      // Finishing the bookkeeping means finishing ALL of it. Marking the
+      // draft sent while leaving the enrollment pinned to that step made
+      // every 15-minute followups run fail "No approved draft ready for
+      // this step" forever, and the contact's status never left "queued".
+      for (const d of wasSent) {
+        // Only advance an enrollment still waiting on THIS draft's step:
+        // if it moved on already, the send's own bookkeeping won the race.
+        const stepCheck = await draftIsCurrentStep(supabase, d);
+        if (stepCheck.current) {
+          await advanceEnrollmentForDraft(
+            supabase,
+            d.enrollment_id as string | null,
+          );
+        }
+        if (d.campaign_people_id) {
+          await supabase
+            .from("campaign_people")
+            .update({ outreach_status: "sent" })
+            .eq("id", d.campaign_people_id)
+            // Same monotonic rule as the sender: a reply or bounce recorded
+            // since the crash must survive this late bookkeeping.
+            .not(
+              "outreach_status",
+              "in",
+              '("replied","bounced","complained","unsubscribed")',
+            );
+        }
+      }
     }
     if (neverSent.length > 0) {
       await supabase
         .from("email_drafts")
         .update({ status: "draft", updated_at: now })
-        .in("id", neverSent)
+        .in(
+          "id",
+          neverSent.map((d) => d.id),
+        )
         .eq("status", "queued");
       recoveredDraft = neverSent.length;
     }

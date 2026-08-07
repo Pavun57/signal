@@ -682,12 +682,23 @@ export async function advanceEnrollmentAfterSend(
   const now = new Date().toISOString();
   const nextStep = enrollment.current_step + 1;
 
-  const { data: nextStepRow } = await supabase
+  const { data: nextStepRow, error: nextStepError } = await supabase
     .from("sequence_steps")
     .select("delay_days, delay_hours")
     .eq("sequence_id", enrollment.sequence_id)
     .eq("step_number", nextStep)
-    .single();
+    .maybeSingle();
+
+  // "The query failed" is not "there is no next step". Completing the
+  // enrollment on a transient error silently ended the sequence; leaving it
+  // untouched lets the next cron run retry the advance.
+  if (nextStepError) {
+    console.error(
+      "[outreach-sender] next-step lookup failed; enrollment left for retry:",
+      nextStepError,
+    );
+    return;
+  }
 
   if (!nextStepRow) {
     await supabase
