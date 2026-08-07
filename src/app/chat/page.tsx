@@ -45,6 +45,7 @@ export default function ChatPage() {
   const router = useRouter();
   const [chats, setChats] = useState<ChatSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listFailed, setListFailed] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [input, setInput] = useState("");
   const mountedRef = useRef(true);
@@ -55,12 +56,18 @@ export default function ChatPage() {
     listChats(supabase, 50)
       .then((data) => {
         if (mountedRef.current) {
-          setChats(data);
+          // null = query failed: "your history is gone" must never render
+          // as "you have no history".
+          if (data === null) setListFailed(true);
+          else setChats(data);
           setLoading(false);
         }
       })
       .catch(() => {
-        if (mountedRef.current) setLoading(false);
+        if (mountedRef.current) {
+          setListFailed(true);
+          setLoading(false);
+        }
       });
     return () => {
       mountedRef.current = false;
@@ -100,7 +107,15 @@ export default function ChatPage() {
             </div>
           )}
 
-          {!loading && chats.length === 0 && (
+          {!loading && listFailed && (
+            <div className="text-center" role="alert">
+              <p className="text-destructive text-sm">
+                Could not load your chat history. Reload to try again.
+              </p>
+            </div>
+          )}
+
+          {!loading && !listFailed && chats.length === 0 && (
             <div className="text-center">
               <p className="text-muted-foreground text-sm">
                 No chats yet. Start one using the box below.

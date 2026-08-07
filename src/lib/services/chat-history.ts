@@ -39,7 +39,19 @@ export async function saveChat(
   messages: UIMessage[],
   campaignId?: string,
 ): Promise<void> {
-  const title = generateTitle(messages);
+  // Keep an existing title. The server-side save runs on EVERY turn, and
+  // regenerating from the first user message clobbered the LLM title that
+  // /api/chat/summarize had written: titles flipped back to the raw prompt
+  // mid-session and stayed reverted if the session ended without the
+  // tab-hide re-summarize. The auto title is only for brand-new chats.
+  const { data: existing } = await supabase
+    .from("chats")
+    .select("title")
+    .eq("id", chatId)
+    .maybeSingle();
+  const title = existing?.title?.trim()
+    ? (existing.title as string)
+    : generateTitle(messages);
 
   const { error } = await supabase.from("chats").upsert(
     {
@@ -56,28 +68,33 @@ export async function saveChat(
   if (error) console.error("[chat-history] save failed:", error.message);
 }
 
-export async function loadChat(
-  supabase: SupabaseClient,
-  chatId: string,
-): Promise<{
+export interface LoadedChat {
   id: string;
   title: string;
   campaign_id: string | null;
   messages: UIMessage[];
-} | null> {
+}
+
+/**
+ * "Query failed" and "no such chat" are DIFFERENT answers and must never
+ * be conflated: rendering a load failure as a fresh empty chat meant the
+ * very next send overwrote the stored history with only the new turn.
+ * ok:false = do not render, and above all do not save.
+ */
+export async function loadChat(
+  supabase: SupabaseClient,
+  chatId: string,
+): Promise<
+  { ok: true; chat: LoadedChat | null } | { ok: false; error: string }
+> {
   const { data, error } = await supabase
     .from("chats")
     .select("id, title, campaign_id, messages")
     .eq("id", chatId)
-    .single();
+    .maybeSingle();
 
-  if (error || !data) return null;
-  return data as {
-    id: string;
-    title: string;
-    campaign_id: string | null;
-    messages: UIMessage[];
-  };
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, chat: (data as LoadedChat | null) ?? null };
 }
 
 export async function loadCampaignChat(
@@ -99,15 +116,21 @@ export async function loadCampaignChat(
 export async function listChats(
   supabase: SupabaseClient,
   limit = 30,
-): Promise<ChatSummary[]> {
+): Promise<ChatSummary[] | null> {
   const { data, error } = await supabase
     .from("chats")
     .select("id, title, campaign_id, updated_at")
     .order("updated_at", { ascending: false })
     .limit(limit);
 
-  if (error || !data) return [];
-  return data as ChatSummary[];
+  // null = the query failed; [] = genuinely no chats. The list page renders
+  // them differently, because "your history is gone" must never look like
+  // "you have no history".
+  if (error) {
+    console.error("[chat-history] listChats failed:", error.message);
+    return null;
+  }
+  return (data as ChatSummary[]) ?? [];
 }
 
 export async function deleteChat(
