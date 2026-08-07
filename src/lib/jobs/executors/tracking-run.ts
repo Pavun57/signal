@@ -315,8 +315,13 @@ export async function runTrackingConfig(trackingConfigId: string) {
         Boolean(typedConfig.auto_send) && verdict.confidence === "high";
 
       // Enqueue the outreach job; /api/jobs/* auth guards the outbox path.
-      // Fire-and-forget: don't block the tracking run on the dispatch.
-      void enqueueJob({
+      // AWAITED: this insert is the entire product promise of a threshold
+      // crossing. Fire-and-forget inside a serverless function let Vercel
+      // freeze the instance before the insert reached Supabase, so the
+      // company was stamped ready-to-contact and the outreach silently
+      // never happened. If the enqueue fails the run fails loudly and the
+      // job system retries.
+      await enqueueJob({
         type: "outreach.process",
         payload: {
           type: "signal",
@@ -331,8 +336,6 @@ export async function runTrackingConfig(trackingConfigId: string) {
         // Queue fairness: attribute the outreach job to the campaign owner
         // instead of the shared '<system>' partition.
         userId: typedConfig.campaign.user_id ?? null,
-      }).catch((err) => {
-        console.error("[tracking] Failed to enqueue outreach:", err);
       });
     }
 

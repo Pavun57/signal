@@ -98,7 +98,20 @@ export async function completeJob(job: JobRow): Promise<void> {
         completed_at: new Date().toISOString(),
         locked_until: null,
       };
-  await getAdminClient().from("jobs").update(values).eq("id", job.id);
+  // Logged, not thrown: a throw here would route through the caller's
+  // failJob and re-arm a job that actually finished, guaranteeing a
+  // duplicate execution. A stuck 'running' row is reaped by the next
+  // claim_jobs lease sweep, so visibility is what matters.
+  const { error } = await getAdminClient()
+    .from("jobs")
+    .update(values)
+    .eq("id", job.id);
+  if (error) {
+    console.error(
+      `[jobs] completeJob write failed for ${job.type} (${job.id}); the lease sweep will reap it:`,
+      error,
+    );
+  }
 }
 
 export async function failJob(job: JobRow, err: unknown): Promise<void> {
@@ -126,5 +139,15 @@ export async function failJob(job: JobRow, err: unknown): Promise<void> {
       last_error: message,
     };
   }
-  await getAdminClient().from("jobs").update(values).eq("id", job.id);
+  // Same contract as completeJob: log, never throw, lease sweep recovers.
+  const { error } = await getAdminClient()
+    .from("jobs")
+    .update(values)
+    .eq("id", job.id);
+  if (error) {
+    console.error(
+      `[jobs] failJob write failed for ${job.type} (${job.id}); the lease sweep will reap it:`,
+      error,
+    );
+  }
 }

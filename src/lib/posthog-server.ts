@@ -1,10 +1,11 @@
 import { PostHog } from "posthog-node";
 
-type PostHogLike = Pick<PostHog, "capture" | "identify" | "shutdown">;
+type PostHogLike = Pick<PostHog, "capture" | "identify" | "flush" | "shutdown">;
 
 const noop: PostHogLike = {
   capture: () => {},
   identify: () => {},
+  flush: async () => {},
   shutdown: async () => {},
 };
 
