@@ -73,7 +73,11 @@ export async function trackEmailReplies(): Promise<{
     .order("sent_at", { ascending: false })
     .limit(MAX_OUTSTANDING);
 
-  if (error || !emails || emails.length === 0) {
+  // A failed scan is not an empty inbox: reporting {checked: 0} on error
+  // made the job complete clean while replies went unseen. Throwing lets
+  // execute.ts mark the run failed and retry.
+  if (error) throw new Error(`sent_emails load: ${error.message}`);
+  if (!emails || emails.length === 0) {
     return { checked: 0, updated: 0, captured: 0 };
   }
 
@@ -85,10 +89,14 @@ export async function trackEmailReplies(): Promise<{
 
   // Load gmail credentials for the affected users
   const userIds = [...new Set(emails.map((e) => e.user_id))];
-  const { data: settingsRows } = await supabase
+  const { data: settingsRows, error: settingsError } = await supabase
     .from("user_settings")
     .select("user_id, gmail_address, gmail_app_password_enc")
     .in("user_id", userIds);
+  // Same contract as the scan: no credentials loaded is a failed run, not a
+  // run where every user happened to be unconfigured.
+  if (settingsError)
+    throw new Error(`user_settings load: ${settingsError.message}`);
 
   const credsByUser = new Map<
     string,

@@ -70,7 +70,7 @@ export async function backfillReplyBodies(
 
   // Candidates: a send that reached a terminal state, whose reply we either
   // never stored or stored without a body.
-  const { data: emails } = await supabase
+  const { data: emails, error: scanError } = await supabase
     .from("sent_emails")
     .select(
       "id, message_id, campaign_people_id, user_id, status, sent_at, person_id, to_email, campaign_id, " +
@@ -80,6 +80,10 @@ export async function backfillReplyBodies(
     .gte("sent_at", windowStart)
     .order("sent_at", { ascending: false })
     .limit(500);
+
+  // A failed scan must fail the run (execute.ts -> failJob), not read as
+  // "no bodies missing" and report clean.
+  if (scanError) throw new Error(`sent_emails load: ${scanError.message}`);
 
   // Typed by hand: PostgREST's inference gives up on the embed and widens the
   // whole result to an error type.
@@ -108,10 +112,12 @@ export async function backfillReplyBodies(
   }
 
   const userIds = [...byUser.keys()].slice(0, USERS_PER_PASS);
-  const { data: settingsRows } = await supabase
+  const { data: settingsRows, error: settingsError } = await supabase
     .from("user_settings")
     .select("user_id, gmail_address, gmail_app_password_enc")
     .in("user_id", userIds);
+  if (settingsError)
+    throw new Error(`user_settings load: ${settingsError.message}`);
 
   const credsByUser = new Map<
     string,
