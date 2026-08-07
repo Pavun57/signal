@@ -89,7 +89,7 @@ export default function OutreachPage() {
         .select(
           `
             id, subject, to_email, review_status, status, sent_at,
-            enrollment_id, sequence_step_id,
+            enrollment_id, sequence_id, sequence_step_id,
             sequence_enrollments(next_send_at, sequence_id),
             sequence_steps(step_number),
             sequences(name),
@@ -215,7 +215,10 @@ export default function OutreachPage() {
         step_number: number;
       } | null;
       const seq = d.sequences as unknown as { name: string } | null;
-      const sequenceId = enrollment?.sequence_id ?? null;
+      // The draft's own column, not just the enrollment embed: a draft
+      // written into a sequence before (or without) enrollment still
+      // belongs to that sequence's review queue.
+      const sequenceId = d.sequence_id ?? enrollment?.sequence_id ?? null;
       return {
         id: d.id,
         subject: d.subject ?? "",

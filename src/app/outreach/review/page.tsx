@@ -120,7 +120,7 @@ function ReviewPageInner() {
   const [drafts, setDrafts] = useState<DraftForReview[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [currentPersonIndex, setCurrentPersonIndex] = useState(0);
-  const [loading, setLoading] = useState(!!sequenceId);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [edits, setEdits] = useState<Record<string, EditState>>({});
   const [enrichingPersonIds, setEnrichingPersonIds] = useState<Set<string>>(
@@ -137,15 +137,13 @@ function ReviewPageInner() {
 
   useEffect(() => {
     mountedRef.current = true;
-    if (!sequenceId) return;
 
     const load = async () => {
       const supabase = createClient();
-      const [draftsRes, stepsRes] = await Promise.all([
-        supabase
-          .from("email_drafts")
-          .select(
-            `
+      const baseQuery = supabase
+        .from("email_drafts")
+        .select(
+          `
           id, to_email, subject, body_html, body_text, ai_reasoning,
           review_status, status, sequence_step_id, enrollment_id, person_id,
           people(
@@ -161,15 +159,23 @@ function ReviewPageInner() {
           sequence_enrollments(current_step),
           sequence_steps(step_number, delay_days, delay_hours)
         `,
-          )
-          .eq("sequence_id", sequenceId)
-          .eq("review_status", "pending")
-          .order("person_id")
-          .order("sequence_step_id"),
-        supabase
-          .from("sequence_steps")
-          .select("id")
-          .eq("sequence_id", sequenceId),
+        )
+        .eq("review_status", "pending")
+        .order("person_id")
+        .order("sequence_step_id");
+      const [draftsRes, stepsRes] = await Promise.all([
+        // Without a sequence param this is the ad-hoc queue: drafts the
+        // agent wrote outside any sequence. They are born pending like
+        // everything else, so they need a review surface too.
+        sequenceId
+          ? baseQuery.eq("sequence_id", sequenceId)
+          : baseQuery.is("sequence_id", null),
+        sequenceId
+          ? supabase
+              .from("sequence_steps")
+              .select("id")
+              .eq("sequence_id", sequenceId)
+          : null,
       ]);
 
       if (!mountedRef.current) return;
@@ -184,8 +190,8 @@ function ReviewPageInner() {
       }
 
       const rawDrafts = draftsRes.data;
-      const steps = stepsRes.data;
-      const totalSteps = steps?.length ?? 1;
+      // Ad-hoc drafts have no steps; stepsRes is null and every card is 1/1.
+      const totalSteps = stepsRes ? (stepsRes.data?.length ?? 1) : 1;
 
       const mapped: DraftForReview[] = (rawDrafts ?? []).map((d) => {
         const person = d.people as unknown as {
@@ -820,14 +826,6 @@ function ReviewPageInner() {
     );
   }
 
-  if (!sequenceId) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-muted-foreground text-sm">No sequence specified.</p>
-      </div>
-    );
-  }
-
   if (loadError) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -1138,14 +1136,20 @@ function EmailCard({
   return (
     <div className="border-border bg-background rounded-lg border p-4 shadow-sm">
       <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="bg-primary/10 text-primary inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums">
-            {draft.step_number}
-          </span>
+        {draft.sequence_step_id !== null ? (
+          <div className="flex items-center gap-2">
+            <span className="bg-primary/10 text-primary inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold tabular-nums">
+              {draft.step_number}
+            </span>
+            <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
+              Step {draft.step_number} of {draft.total_steps}
+            </span>
+          </div>
+        ) : (
           <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
-            Step {draft.step_number} of {draft.total_steps}
+            One-off email
           </span>
-        </div>
+        )}
         <div className="flex items-center gap-2">
           {isSent ? (
             <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
