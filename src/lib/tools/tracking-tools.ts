@@ -223,11 +223,19 @@ export const bulkCreateTracking = tool({
     }
 
     // Check for existing tracking configs to avoid duplicates
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("tracking_configs")
       .select("organization_id")
       .eq("campaign_id", input.campaignId)
       .eq("signal_id", input.signalId);
+    // Fail closed: with an empty dedupe set, the batch insert includes
+    // already-tracked orgs and the unique index aborts the WHOLE atomic
+    // insert, so nothing gets tracked and the error is baffling.
+    if (existingError) {
+      return {
+        error: `Could not check existing tracking configs: ${existingError.message}. Try again.`,
+      };
+    }
 
     const existingOrgIds = new Set(
       (existing || []).map((e: Record<string, unknown>) => e.organization_id),
@@ -343,11 +351,19 @@ export const getTrackingConfigs = tool({
 
     // Fetch latest change for each config
     const configIds = (configs || []).map((c: Record<string, unknown>) => c.id);
-    const { data: latestChanges } = await supabase
+    const { data: latestChanges, error: changesError } = await supabase
       .from("tracking_changes")
       .select("tracking_config_id, description, change_type, detected_at")
       .in("tracking_config_id", configIds)
       .order("detected_at", { ascending: false });
+    // Logged, not silently null: a failed load otherwise reads to the agent
+    // as "no config has ever detected a change", a false factual claim.
+    if (changesError) {
+      console.error(
+        "[tracking-tools] latest-changes load failed:",
+        changesError,
+      );
+    }
 
     // Group to get latest per config
     const changeMap = new Map<string, Record<string, unknown>>();

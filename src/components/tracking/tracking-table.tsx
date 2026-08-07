@@ -40,6 +40,7 @@ export interface CompanyGroup {
   activeSignals: number;
   lastRunAt: string | null;
   latestChangeDescription: string | null;
+  latestChangeDate: string | null;
   rows: TrackingRow[];
 }
 
@@ -54,6 +55,7 @@ function formatDate(dateStr: string | null): string {
 function ExpandableSignalRow({ row }: { row: TrackingRow }) {
   const [expanded, setExpanded] = useState(false);
   const [changes, setChanges] = useState<TrackingChange[]>([]);
+  const [changesError, setChangesError] = useState<string | null>(null);
   const [loadingChanges, setLoadingChanges] = useState(false);
   const [localStatus, setLocalStatus] = useState(row.status);
   const [running, setRunning] = useState(false);
@@ -62,12 +64,15 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
     if (!expanded && changes.length === 0) {
       setLoadingChanges(true);
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("tracking_changes")
         .select("*")
         .eq("tracking_config_id", row.id)
         .order("detected_at", { ascending: false })
         .limit(20);
+      // A failed load must not render as "No changes recorded yet."
+      if (error) setChangesError(error.message);
+      else setChangesError(null);
       setChanges((data as TrackingChange[]) ?? []);
       setLoadingChanges(false);
     }
@@ -191,6 +196,11 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
       {expanded && (
         <tr>
           <td colSpan={8} className="bg-muted/30 border-b px-6 py-3">
+            {changesError && (
+              <p role="alert" className="text-destructive px-3 py-2 text-xs">
+                Could not load changes: {changesError}
+              </p>
+            )}
             {loadingChanges ? (
               <p className="text-muted-foreground text-xs">Loading...</p>
             ) : (
@@ -205,6 +215,7 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
 
 function ExpandableCompanyRow({ group }: { group: CompanyGroup }) {
   const [expanded, setExpanded] = useState(false);
+  const [changesError, setChangesError] = useState<string | null>(null);
   const [changesByConfig, setChangesByConfig] = useState<
     Record<string, TrackingChange[]>
   >({});
@@ -215,18 +226,24 @@ function ExpandableCompanyRow({ group }: { group: CompanyGroup }) {
       setLoadingChanges(true);
       const supabase = createClient();
       const configIds = group.rows.map((r) => r.id);
-      const { data } = await supabase
+      // A wider window with a per-config cap below: one global limit meant
+      // a single chatty config could crowd every other config's timeline
+      // out of the 50-row window entirely.
+      const { data, error } = await supabase
         .from("tracking_changes")
         .select("*")
         .in("tracking_config_id", configIds)
         .order("detected_at", { ascending: false })
-        .limit(50);
+        .limit(200);
+      if (error) setChangesError(error.message);
+      else setChangesError(null);
 
+      const PER_CONFIG_CAP = 20;
       const grouped: Record<string, TrackingChange[]> = {};
       for (const change of (data as TrackingChange[]) ?? []) {
         const cid = change.tracking_config_id;
         if (!grouped[cid]) grouped[cid] = [];
-        grouped[cid].push(change);
+        if (grouped[cid].length < PER_CONFIG_CAP) grouped[cid].push(change);
       }
       setChangesByConfig(grouped);
       setLoadingChanges(false);
@@ -267,6 +284,11 @@ function ExpandableCompanyRow({ group }: { group: CompanyGroup }) {
       {expanded && (
         <tr>
           <td colSpan={8} className="bg-muted/30 border-b px-6 py-3">
+            {changesError && (
+              <p role="alert" className="text-destructive px-3 py-2 text-xs">
+                Could not load changes: {changesError}
+              </p>
+            )}
             {loadingChanges ? (
               <p className="text-muted-foreground text-xs">Loading...</p>
             ) : (
@@ -315,6 +337,7 @@ export function TrackingTable({
           activeSignals: 0,
           lastRunAt: null,
           latestChangeDescription: null,
+          latestChangeDate: null,
           rows: [],
         });
       }
@@ -328,12 +351,15 @@ export function TrackingTable({
       ) {
         group.lastRunAt = row.lastRunAt;
       }
+      // Compared against the group's own latest CHANGE date: comparing to
+      // lastRunAt (possibly overwritten this very iteration) let an older
+      // change win over a newer one.
       if (
         row.latestChangeDate &&
-        (!group.latestChangeDescription ||
-          (group.latestChangeDescription &&
-            row.latestChangeDate > (group.lastRunAt ?? "")))
+        (!group.latestChangeDate ||
+          row.latestChangeDate > group.latestChangeDate)
       ) {
+        group.latestChangeDate = row.latestChangeDate;
         group.latestChangeDescription = row.latestChangeDescription;
       }
       // Promote readiness: ready > monitoring > not_ready
@@ -368,7 +394,7 @@ export function TrackingTable({
           <tbody>
             {groups.map((group) => (
               <ExpandableCompanyRow
-                key={group.organizationName}
+                key={group.organizationDomain || group.organizationName}
                 group={group}
               />
             ))}
