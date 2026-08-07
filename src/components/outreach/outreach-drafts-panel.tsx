@@ -301,7 +301,12 @@ export function OutreachDraftsPanel({
                               </span>
                             )}
 
-                          {key === "needs_review" && group.sequence_id && (
+                          {/* No sequence_id guard: ad-hoc drafts (agent
+                              writeEmail with no enrollment) review at
+                              /outreach/review without a sequence param.
+                              Guarding here left them pending with no UI
+                              anywhere able to approve them. */}
+                          {key === "needs_review" && (
                             <ReviewButton sequenceId={group.sequence_id} />
                           )}
 
