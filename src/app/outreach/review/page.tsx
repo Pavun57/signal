@@ -22,20 +22,12 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import type { CampaignContact, EnrichmentData } from "@/lib/types/campaign";
 import { apiFetch } from "@/lib/api-fetch";
-import { htmlToPlain } from "@/lib/email/html-to-plain";
+import { htmlToPlain, plainToHtml } from "@/lib/email/html-to-plain";
 
-// Moved to src/lib/email/html-to-plain.ts so the read-only activity view can
-// share it. Deliberately the LOSSY variant: this feeds a textarea that
+// Both halves of the editor round-trip live in src/lib/email/html-to-plain.ts.
+// htmlToPlain is deliberately the LOSSY variant: this feeds a textarea that
 // plainToHtml re-serialises on save, so a link-preserving version here would
 // write "text (url)" back into the body as literal text.
-
-function plainToHtml(text: string): string {
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  return paragraphs.map((p) => `<p>${p.replace(/\n/g, "<br>")}</p>`).join("");
-}
 
 interface DraftForReview {
   id: string;
@@ -366,14 +358,20 @@ function ReviewPageInner() {
           const subjectChanged = edit.subject !== d.subject;
           const bodyChanged = edit.bodyText !== baseBody;
           if (!subjectChanged && !bodyChanged) return;
+          // Only what actually changed is written. The payload used to
+          // include the body unconditionally, so a subject-only tweak
+          // pushed the untouched body through the lossy htmlToPlain ->
+          // plainToHtml round-trip and silently stripped every link the
+          // composer had written.
+          const patch: Record<string, string> = { updated_at: now };
+          if (subjectChanged) patch.subject = edit.subject;
+          if (bodyChanged) {
+            patch.body_html = plainToHtml(edit.bodyText);
+            patch.body_text = edit.bodyText;
+          }
           const { error } = await supabase
             .from("email_drafts")
-            .update({
-              subject: edit.subject,
-              body_html: plainToHtml(edit.bodyText),
-              body_text: edit.bodyText,
-              updated_at: now,
-            })
+            .update(patch)
             .eq("id", d.id);
           if (error)
             throw new Error(`Could not save your edit: ${error.message}`);
@@ -554,14 +552,17 @@ function ReviewPageInner() {
           const subjectChanged = edit.subject !== draft.subject;
           const bodyChanged = edit.bodyText !== baseBody;
           if (subjectChanged || bodyChanged) {
+            // Same partial-payload rule as the approve path: an untouched
+            // body must never round-trip through the lossy serialiser.
+            const patch: Record<string, string> = { updated_at: now };
+            if (subjectChanged) patch.subject = edit.subject;
+            if (bodyChanged) {
+              patch.body_html = plainToHtml(edit.bodyText);
+              patch.body_text = edit.bodyText;
+            }
             const { error: editErr } = await supabase
               .from("email_drafts")
-              .update({
-                subject: edit.subject,
-                body_html: plainToHtml(edit.bodyText),
-                body_text: edit.bodyText,
-                updated_at: now,
-              })
+              .update(patch)
               .eq("id", draftId);
             if (editErr) {
               toast.error(editErr.message);

@@ -481,12 +481,20 @@ export function CompaniesList({
     if (error) throw new Error(error.message);
 
     if (oldEmail) {
-      await supabase
+      // Surfaced, not fire-and-forget: a silently failed retarget leaves
+      // pending drafts addressed to the old email, and the send gate then
+      // refuses them with "regenerate the draft" for an address the user
+      // believes they already fixed.
+      const { error: draftsError } = await supabase
         .from("email_drafts")
         .update({ to_email: next, updated_at: now })
         .eq("person_id", contact.person_id)
         .eq("status", "draft")
         .eq("to_email", oldEmail);
+      if (draftsError)
+        throw new Error(
+          `Saved the contact, but pending drafts still use ${oldEmail}: ${draftsError.message}`,
+        );
     }
 
     onDataChanged();
