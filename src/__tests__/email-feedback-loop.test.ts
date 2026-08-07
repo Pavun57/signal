@@ -465,6 +465,78 @@ describe("bounce feedback", () => {
     ...over,
   });
 
+  it("writes campaign_people before stamping sent_emails", async () => {
+    // The re-poll ladder compares against sent_emails.status, so the stamp
+    // is the dedupe marker. Stamping it first meant a crash between the two
+    // writes lost the reply forever: the next poll saw replied -> replied
+    // and skipped, while campaign_people still said "sent".
+    const order: string[] = [];
+    let i = 0;
+    const responses: FakeResponse[] = [{}, {}];
+    const client = {
+      from: (table: string) => {
+        const builder: Record<string, unknown> = {};
+        for (const name of ["select", "eq", "in", "not", "single"]) {
+          builder[name] = () => builder;
+        }
+        builder.update = () => {
+          order.push(table);
+          return builder;
+        };
+        builder.then = (
+          resolve: (v: unknown) => unknown,
+          reject: (e: unknown) => unknown,
+        ) =>
+          Promise.resolve(responses[i++] ?? { data: null, error: null }).then(
+            resolve,
+            reject,
+          );
+        return builder;
+      },
+    } as never;
+
+    const changed = await applyInboundStatus(client, tracked(), "replied");
+
+    expect(changed).toBe(true);
+    expect(order).toEqual(["campaign_people", "sent_emails"]);
+  });
+
+  it("does not stamp sent_emails when the campaign_people write fails", async () => {
+    const order: string[] = [];
+    let i = 0;
+    const responses: FakeResponse[] = [
+      { error: { message: "connection reset" } },
+    ];
+    const client = {
+      from: (table: string) => {
+        const builder: Record<string, unknown> = {};
+        for (const name of ["select", "eq", "in", "not", "single"]) {
+          builder[name] = () => builder;
+        }
+        builder.update = () => {
+          order.push(table);
+          return builder;
+        };
+        builder.then = (
+          resolve: (v: unknown) => unknown,
+          reject: (e: unknown) => unknown,
+        ) =>
+          Promise.resolve(responses[i++] ?? { data: null, error: null }).then(
+            resolve,
+            reject,
+          );
+        return builder;
+      },
+    } as never;
+
+    const changed = await applyInboundStatus(client, tracked(), "replied");
+
+    // Not stamped: the next poll's ladder still sees the old status and
+    // retries both writes.
+    expect(changed).toBe(false);
+    expect(order).toEqual(["campaign_people"]);
+  });
+
   it("calls recordBounce when a send bounces", async () => {
     const changed = await applyInboundStatus(
       fakeSupabase([{}, {}]),
