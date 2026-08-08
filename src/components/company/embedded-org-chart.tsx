@@ -59,7 +59,7 @@ export function EmbeddedOrgChart({
   async function refresh() {
     setRefreshing(true);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/companies/${organizationId}/classify-departments`,
         { method: "POST" },
       );
@@ -150,7 +150,7 @@ export function EmbeddedOrgChart({
               const url = campaignId
                 ? `/api/people/${personId}/from-company?campaignId=${campaignId}&organizationId=${organizationId}`
                 : `/api/people/${personId}/from-company?organizationId=${organizationId}`;
-              const res = await fetch(url, { method: "DELETE" });
+              const res = await apiFetch(url, { method: "DELETE" });
               if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
                 throw new Error(err.error ?? `HTTP ${res.status}`);
@@ -189,7 +189,7 @@ export function EmbeddedOrgChart({
             const url = campaignId
               ? `/api/people/${personId}/from-company?campaignId=${campaignId}&organizationId=${organizationId}`
               : `/api/people/${personId}/from-company?organizationId=${organizationId}`;
-            const res = await fetch(url, { method: "DELETE" });
+            const res = await apiFetch(url, { method: "DELETE" });
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
               throw new Error(err.error ?? `HTTP ${res.status}`);

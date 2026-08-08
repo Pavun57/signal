@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 import { formatRelative } from "@/components/ui/relative-time";
 
 import { SettingsSection } from "@/components/settings/settings-section";
@@ -131,6 +132,7 @@ export function CostCenter() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<CostData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const mountedRef = useRef(true);
 
@@ -149,16 +151,27 @@ export function CostCenter() {
     const url =
       `/api/settings/costs?period=${period}&page=${page}&pageSize=${PAGE_SIZE}` +
       (refreshNonce > 0 ? `&_=${refreshNonce}` : "");
-    fetch(url, { cache: "no-store" })
-      .then((r) => r.json())
+    // apiFetch, and res.ok checked: a raw fetch's 401 body ({error}) parsed
+    // fine, was stored as CostData, and the render then crashed iterating
+    // data.byService (undefined), taking the whole settings page to the root
+    // error boundary instead of showing an error.
+    apiFetch(url, { cache: "no-store" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((d) => {
         if (mountedRef.current) {
           setData(d);
+          setLoadError(null);
           setLoading(false);
         }
       })
-      .catch(() => {
-        if (mountedRef.current) setLoading(false);
+      .catch((err) => {
+        if (mountedRef.current) {
+          setLoadError(err instanceof Error ? err.message : "load failed");
+          setLoading(false);
+        }
       });
   }, [period, page, refreshNonce]);
 
@@ -204,6 +217,10 @@ export function CostCenter() {
     <SettingsSection title="Usage" actions={actions}>
       {loading ? (
         <p className="text-muted-foreground text-sm">Loading cost data...</p>
+      ) : loadError ? (
+        <p role="alert" className="text-destructive text-sm">
+          Could not load cost data: {loadError}. Refresh to retry.
+        </p>
       ) : !data || (data.totalCost === 0 && data.byService.length === 0) ? (
         <p className="text-muted-foreground text-sm">
           No API usage recorded yet. Costs will appear here as you use chat,

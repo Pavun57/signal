@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 import { Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
@@ -22,7 +23,7 @@ export function ClassifyButton({
   async function run() {
     setBusy(true);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/companies/${companyId}/classify-departments`,
         { method: "POST" },
       );
