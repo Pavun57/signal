@@ -230,21 +230,49 @@ async function learnForUser(
   const aggregates = computeAggregates(outcomes);
 
   // ── timing stats rewrite (always, guardrails or not) ─────────────────────
+  // Upsert-then-prune, not delete-then-insert: the old order had a window
+  // where the grid was empty, and an insert failure after a successful
+  // delete wiped the user's timing data for a whole week while the run
+  // reported clean success. Upserting keys on the table's primary key
+  // (user_id, weekday, day_part), so a failure leaves last week's grid
+  // intact; the prune then drops only buckets absent from this week's set.
   const statRows = timingStatsRows(userId, aggregates);
-  const { error: deleteError } = await supabase
-    .from("outreach_timing_stats")
-    .delete()
-    .eq("user_id", userId);
-  if (deleteError) {
-    console.error("[outreach-learn] timing stats delete failed:", deleteError);
-  } else if (statRows.length > 0) {
-    const { error: insertError } = await supabase
+  const rewriteAt = new Date().toISOString();
+  if (statRows.length > 0) {
+    const { error: upsertError } = await supabase
       .from("outreach_timing_stats")
-      .insert(statRows);
-    if (insertError) {
+      .upsert(
+        statRows.map((r) => ({ ...r, updated_at: rewriteAt })),
+        { onConflict: "user_id,weekday,day_part" },
+      );
+    if (upsertError) {
       console.error(
-        "[outreach-learn] timing stats insert failed:",
-        insertError,
+        "[outreach-learn] timing stats upsert failed (previous grid kept):",
+        upsertError,
+      );
+    } else {
+      const { error: pruneError } = await supabase
+        .from("outreach_timing_stats")
+        .delete()
+        .eq("user_id", userId)
+        .lt("updated_at", rewriteAt);
+      if (pruneError) {
+        console.error(
+          "[outreach-learn] timing stats prune failed:",
+          pruneError,
+        );
+      }
+    }
+  } else {
+    // No sends in the window at all: an empty grid is the truth.
+    const { error: deleteError } = await supabase
+      .from("outreach_timing_stats")
+      .delete()
+      .eq("user_id", userId);
+    if (deleteError) {
+      console.error(
+        "[outreach-learn] timing stats delete failed:",
+        deleteError,
       );
     }
   }

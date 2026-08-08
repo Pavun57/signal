@@ -183,10 +183,18 @@ export const getOutreachPerformance = tool({
     const intentBySend = new Map<string, ReplyIntent>();
     const bounced = new Set<string>();
     for (const ids of chunk(sends.map((s) => s.id as string))) {
-      const { data: replies } = await supabase
+      const { data: replies, error: repliesError } = await supabase
         .from("email_replies")
         .select("sent_email_id, kind, intent")
         .in("sent_email_id", ids);
+      // A failed replies fetch is not zero replies: reporting 0% reply rate
+      // off a swallowed error has the agent telling the user "nothing is
+      // converting" as a fabricated conclusion.
+      if (repliesError) {
+        return {
+          error: `Failed to load replies: ${repliesError.message}. No performance numbers were computed: retry.`,
+        };
+      }
       for (const r of replies ?? []) {
         const sendId = r.sent_email_id as string;
         if (r.kind === "bounce") {
@@ -208,10 +216,18 @@ export const getOutreachPerformance = tool({
     ] as string[];
     const signalNames = new Map<string, string>();
     if (sequenceIds.length > 0) {
-      const { data: seqs } = await supabase
+      const { data: seqs, error: seqsError } = await supabase
         .from("sequences")
         .select("id, signals(name)")
         .in("id", sequenceIds);
+      // Same rule: an empty signal breakdown from a swallowed error reads as
+      // "no signal is converting", which is a claim about the data, not about
+      // the outage.
+      if (seqsError) {
+        return {
+          error: `Failed to load signal names: ${seqsError.message}. No performance numbers were computed: retry.`,
+        };
+      }
       for (const seq of seqs ?? []) {
         const signal = Array.isArray(seq.signals)
           ? seq.signals[0]
