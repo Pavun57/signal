@@ -67,6 +67,8 @@ export async function runTrackingConfig(trackingConfigId: string) {
         domain: orgDomain,
         name: orgName,
         campaignId: config.campaign_id,
+        // Person-level configs (e.g. social-engagement) need the contact.
+        personId: config.person_id ?? undefined,
         useAdmin: true,
       });
 
@@ -102,33 +104,56 @@ export async function runTrackingConfig(trackingConfigId: string) {
     const hash = hashSnapshot(snapshot);
 
     // ── Compare to previous snapshot ───────────────────────────────────
-    const { data: prevSnapshots } = await getAdminClient()
+    const { data: prevSnapshots, error: prevError } = await getAdminClient()
       .from("tracking_snapshots")
       .select("snapshot_data, snapshot_hash")
       .eq("tracking_config_id", trackingConfigId)
       .order("captured_at", { ascending: false })
       .limit(1);
+    // A failed read is not "no previous snapshot": treating it as one
+    // inserted the CURRENT snapshot as a fresh baseline and permanently
+    // swallowed whatever change actually happened. Fail the run; the job
+    // system retries.
+    if (prevError) {
+      throw new Error(`previous-snapshot read failed: ${prevError.message}`);
+    }
 
     const prevSnapshot = prevSnapshots?.[0] ?? null;
     const hasChanged = !prevSnapshot || prevSnapshot.snapshot_hash !== hash;
 
     // ── Store new snapshot (always, for the timeline) ──────────────────
-    await getAdminClient().from("tracking_snapshots").insert({
-      tracking_config_id: trackingConfigId,
-      snapshot_data: snapshot,
-      snapshot_hash: hash,
-    });
+    // Checked: a silently failed insert left the stale snapshot as the
+    // diff baseline, so the same change re-fired every run (duplicate
+    // timeline rows, repeat LLM spend, repeat outreach enqueues). Failing
+    // here, BEFORE any change is recorded, makes the retry clean.
+    const { error: snapshotError } = await getAdminClient()
+      .from("tracking_snapshots")
+      .insert({
+        tracking_config_id: trackingConfigId,
+        snapshot_data: snapshot,
+        snapshot_hash: hash,
+      });
+    if (snapshotError) {
+      throw new Error(`snapshot insert failed: ${snapshotError.message}`);
+    }
 
     // ── Store signal_result with tracking_config_id ────────────────────
-    await getAdminClient().from("signal_results").insert({
-      signal_id: config.signal_id,
-      campaign_id: config.campaign_id,
-      organization_id: config.organization_id,
-      person_id: config.person_id,
-      tracking_config_id: trackingConfigId,
-      output: rawOutput,
-      status: "success",
-    });
+    const { error: resultError } = await getAdminClient()
+      .from("signal_results")
+      .insert({
+        signal_id: config.signal_id,
+        campaign_id: config.campaign_id,
+        organization_id: config.organization_id,
+        person_id: config.person_id,
+        tracking_config_id: trackingConfigId,
+        output: rawOutput,
+        status: "success",
+      });
+    // The next run's baseline (and the recipe history step) read this row;
+    // a silent miss re-baselines the signal.
+    if (resultError) {
+      throw new Error(`signal_result insert failed: ${resultError.message}`);
+    }
 
     // ── Update last_run_at ─────────────────────────────────────────────
     await getAdminClient()

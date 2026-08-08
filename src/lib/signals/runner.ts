@@ -5,6 +5,11 @@ import { MODELS } from "@/lib/ai/models";
 import { createClient } from "@/lib/supabase/server";
 import { withTimeout } from "@/lib/utils/timeout";
 import { structuralDiff } from "./diff";
+import { llmTimeout } from "@/lib/utils/timeout";
+import {
+  estimateClaudeCostFromUsage,
+  trackUsage,
+} from "@/lib/services/cost-tracker";
 import { jsonSchemaToZod } from "./json-schema-to-zod";
 import { resolveArgs, resolvePath, renderTemplate } from "./paths";
 
@@ -37,6 +42,7 @@ export async function runRecipe(
     const result = await executeStep(step, scope, {
       signalId: context.signalId,
       organizationId: context.organizationId,
+      campaignId: context.campaignId,
       supabase,
     });
     steps[step.id] = result;
@@ -60,6 +66,7 @@ async function executeStep(
   env: {
     signalId: string;
     organizationId: string;
+    campaignId: string;
     supabase: Awaited<ReturnType<typeof createClient>>;
   },
 ): Promise<unknown> {
@@ -155,18 +162,36 @@ async function executeStep(
       }
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - (step.maxAgeDays ?? 90));
-      const { data } = await env.supabase
+      // Campaign-scoped: builtin signals are shared rows and organizations
+      // are a global pool, so signal + org alone could match another
+      // tenant's result under the admin client.
+      let historyQuery = env.supabase
         .from("signal_results")
         .select("output, ran_at")
         .eq("signal_id", env.signalId)
-        .eq("organization_id", env.organizationId)
+        .eq("organization_id", env.organizationId);
+      if (isUuid(env.campaignId)) {
+        historyQuery = historyQuery.eq("campaign_id", env.campaignId);
+      }
+      const { data, error } = await historyQuery
         .gte("ran_at", cutoff.toISOString())
         .order("ran_at", { ascending: false })
         .limit(1)
         .maybeSingle();
+      // A failed read is not "no baseline": that lie becomes a fabricated
+      // first-observation diff downstream.
+      if (error) {
+        return { present: false, value: null, reason: "history read failed" };
+      }
       if (!data) return { present: false, value: null };
       const output = data.output as Record<string, unknown>;
-      const value = step.path ? resolvePath(output, step.path) : output;
+      // Writers store the data payload directly; some legacy rows carry a
+      // full SignalOutput wrapper, and older recipe paths address the
+      // payload as "data.x". Try the row as-is, then wrapped.
+      const value = step.path
+        ? (resolvePath(output, step.path) ??
+          resolvePath({ data: output }, step.path))
+        : output;
       return { present: true, value, ran_at: data.ran_at };
     }
     case "diff": {
@@ -179,10 +204,24 @@ async function executeStep(
       if (typeof source !== "string" || !source.trim()) {
         return null;
       }
-      const { object } = await generateObject({
+      // llmTimeout + trackUsage, matching every other generateObject site:
+      // this was the one call that could hang a tracking run indefinitely
+      // and whose spend was invisible in the cost center.
+      const { object, usage } = await generateObject({
+        abortSignal: llmTimeout(),
         model: anthropic(step.model ?? MODELS.LIGHT),
         schema: apiSafeJsonSchema(step.schema),
         prompt: `${step.prompt}\n\n---\n\n${source.slice(0, 30_000)}`,
+      });
+      trackUsage({
+        service: "claude",
+        operation: "signal-extract-json",
+        tokens_input: usage.inputTokens ?? 0,
+        tokens_output: usage.outputTokens ?? 0,
+        // step.model overrides are rare; the light tier is the default and
+        // close enough for attribution.
+        estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+        metadata: { signalId: env.signalId, step: step.id },
       });
       return object;
     }

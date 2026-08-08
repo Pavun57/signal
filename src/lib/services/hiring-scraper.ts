@@ -86,6 +86,9 @@ export async function scrapeHiringData(
   organizationId: string,
   domain: string,
   maxJobs: number = 20,
+  // Cron callers pass the admin client so the enrichment persist actually
+  // writes (the default session client is anon under /api/jobs).
+  client?: Parameters<typeof mergeEnrichmentData>[4],
 ): Promise<HiringScrapeResult> {
   const cleanDomain = domain.replace(/^https?:\/\//, "").replace(/\/+$/, "");
 
@@ -103,7 +106,7 @@ export async function scrapeHiringData(
     if (atsJobs !== null) {
       const url = careersUrl ?? board.boardUrl;
       const trimmed = atsJobs.slice(0, maxJobs);
-      await saveHiring(organizationId, url, trimmed);
+      await saveHiring(organizationId, url, trimmed, client);
       return { careersUrl: url, jobs: trimmed, totalJobs: atsJobs.length };
     }
   }
@@ -118,14 +121,19 @@ export async function scrapeHiringData(
       const jobs = await extractJobsFromText(careersUrl, content, maxJobs);
       if (jobs !== null) {
         const trimmed = jobs.slice(0, maxJobs);
-        await saveHiring(organizationId, careersUrl, trimmed);
+        await saveHiring(organizationId, careersUrl, trimmed, client);
         return { careersUrl, jobs: trimmed, totalJobs: jobs.length };
       }
     }
   }
 
   // Tier 4: full browser session, the old path, now the exception.
-  return scrapeHiringDataWithBrowser(organizationId, cleanDomain, maxJobs);
+  return scrapeHiringDataWithBrowser(
+    organizationId,
+    cleanDomain,
+    maxJobs,
+    client,
+  );
 }
 
 /**
@@ -150,10 +158,15 @@ async function saveHiring(
   organizationId: string,
   careersUrl: string | null,
   jobs: Job[],
+  client?: Parameters<typeof mergeEnrichmentData>[4],
 ): Promise<void> {
-  await mergeEnrichmentData("organizations", organizationId, {
-    hiring: { careersUrl, jobs, scrapedAt: new Date().toISOString() },
-  });
+  await mergeEnrichmentData(
+    "organizations",
+    organizationId,
+    { hiring: { careersUrl, jobs, scrapedAt: new Date().toISOString() } },
+    "enriched",
+    client,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +547,7 @@ async function scrapeHiringDataWithBrowser(
   organizationId: string,
   cleanDomain: string,
   maxJobs: number,
+  client?: Parameters<typeof mergeEnrichmentData>[4],
 ): Promise<HiringScrapeResult> {
   const apiKey = process.env.BROWSERBASE_API_KEY;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;
@@ -608,13 +622,19 @@ async function scrapeHiringDataWithBrowser(
     }
 
     if (!careersUrl) {
-      await mergeEnrichmentData("organizations", organizationId, {
-        hiring: {
-          careersUrl: null,
-          jobs: [],
-          scrapedAt: new Date().toISOString(),
+      await mergeEnrichmentData(
+        "organizations",
+        organizationId,
+        {
+          hiring: {
+            careersUrl: null,
+            jobs: [],
+            scrapedAt: new Date().toISOString(),
+          },
         },
-      });
+        "enriched",
+        client,
+      );
       return { careersUrl: null, jobs: [], totalJobs: 0 };
     }
 
@@ -634,13 +654,19 @@ async function scrapeHiringDataWithBrowser(
     const trimmed = jobs.slice(0, maxJobs);
 
     // Step 4: Save hiring data to the organization
-    await mergeEnrichmentData("organizations", organizationId, {
-      hiring: {
-        careersUrl,
-        jobs: trimmed,
-        scrapedAt: new Date().toISOString(),
+    await mergeEnrichmentData(
+      "organizations",
+      organizationId,
+      {
+        hiring: {
+          careersUrl,
+          jobs: trimmed,
+          scrapedAt: new Date().toISOString(),
+        },
       },
-    });
+      "enriched",
+      client,
+    );
 
     return { careersUrl, jobs: trimmed, totalJobs: jobs.length };
   } finally {

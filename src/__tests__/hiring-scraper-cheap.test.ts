@@ -152,6 +152,9 @@ describe("scrapeHiringData cheap-first tiers", () => {
             jobs: out.jobs,
           }),
         }),
+        "enriched",
+        // No client threaded on the agent-tool path; the cron passes admin.
+        undefined,
       );
       // ATS hit must never reach the heavier tiers.
       expect(webExtractMock).not.toHaveBeenCalled();
