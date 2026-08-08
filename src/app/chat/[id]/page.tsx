@@ -195,19 +195,48 @@ export default function ChatPage() {
     null,
   );
   const [initialTitle, setInitialTitle] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    loadChat(createClient(), chatId).then((chat) => {
+    loadChat(createClient(), chatId).then((result) => {
       if (cancelled) return;
-      setInitialMessages(chat?.messages ?? []);
-      const title = (chat as { title?: string | null } | null)?.title ?? null;
-      setInitialTitle(title);
+      // A failed load must never render as a fresh empty chat: the next
+      // send would overwrite the stored history with only the new turn.
+      // Refusing to mount ChatView is what makes the destruction
+      // impossible; there is no save path until a load succeeded.
+      if (!result.ok) {
+        setLoadFailed(result.error);
+        return;
+      }
+      setInitialMessages(result.chat?.messages ?? []);
+      setInitialTitle(result.chat?.title ?? null);
     });
     return () => {
       cancelled = true;
     };
-  }, [chatId]);
+  }, [chatId, loadAttempt]);
+
+  if (loadFailed !== null) {
+    return (
+      <div className="bg-background flex min-h-0 flex-1 flex-col items-center justify-center gap-3">
+        <div role="alert" className="text-destructive text-sm">
+          Could not load this chat: {loadFailed}
+        </div>
+        <button
+          type="button"
+          className="text-muted-foreground hover:text-foreground text-sm underline underline-offset-2"
+          onClick={() => {
+            setLoadFailed(null);
+            setLoadAttempt((n) => n + 1);
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (initialMessages === null) {
     return (

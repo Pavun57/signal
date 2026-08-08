@@ -6,7 +6,6 @@ import {
   streamText,
   stepCountIs,
   type UIMessage,
-  type ModelMessage,
 } from "ai";
 
 import { MODELS } from "@/lib/ai/models";
@@ -22,6 +21,7 @@ import { buildSystemPrompt } from "@/lib/system-prompt";
 import { allTools } from "@/lib/tools";
 import { saveChat } from "@/lib/services/chat-history";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { trimMessages } from "@/lib/chat/trim-messages";
 
 // Full-pipeline agent runs (enrich → score → find contacts) regularly exceed
 // two minutes; at 120 and again at 300 the platform killed the function
@@ -43,42 +43,9 @@ const TURN_TIME_BUDGET_MS = 600_000;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// ── Token budget ───────────────────────────────────────────────────────────
-// Chat context is capped aggressively: once cache_control is applied to the
-// last message, kept history reads at ~10% cost, but keeping less of it in
-// the first place still saves cache-creation cost and keeps latency down.
-// ~50k tokens of history is plenty for a sales-research sidekick.
-const MAX_INPUT_CHARS = 150_000; // ~50k tokens at ~3 chars/token
-
-/**
- * Trim messages from the front (oldest) to fit within the character budget.
- * Always keeps the first message (initial user context) and the last N messages.
- */
-function trimMessages(messages: ModelMessage[]): ModelMessage[] {
-  let totalChars = 0;
-  for (const msg of messages) {
-    totalChars += JSON.stringify(msg).length;
-  }
-
-  if (totalChars <= MAX_INPUT_CHARS) return messages;
-
-  // Keep first message + trim from the middle, keeping recent messages
-  const first = messages[0];
-  const rest = messages.slice(1);
-
-  // Walk backwards from the end, accumulating messages that fit
-  const kept: ModelMessage[] = [];
-  let budget = MAX_INPUT_CHARS - JSON.stringify(first).length;
-
-  for (let i = rest.length - 1; i >= 0; i--) {
-    const size = JSON.stringify(rest[i]).length;
-    if (budget - size < 0) break;
-    budget -= size;
-    kept.unshift(rest[i]);
-  }
-
-  return [first, ...kept];
-}
+// Token budget: history is trimmed via lib/chat/trim-messages (capped
+// aggressively; ~50k tokens is plenty for a sales-research sidekick, and
+// the trim repairs tool-call boundaries so the suffix stays API-valid).
 
 export async function POST(request: Request) {
   const ctx = await getSupabaseAndUser();
