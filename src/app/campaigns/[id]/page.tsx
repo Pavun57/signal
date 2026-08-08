@@ -6,6 +6,7 @@ import { RotateCw, Sparkles } from "lucide-react";
 
 import { CampaignHeader } from "@/components/campaign/campaign-header";
 import { CampaignStats } from "@/components/campaign/campaign-stats";
+import { isContactedStatus } from "@/lib/outreach-status";
 import { CompaniesList } from "@/components/campaign/companies-list";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -237,14 +238,8 @@ export default function CampaignDetailPage() {
           enrichedDelta += 1;
         }
         const prevOutreach = prevOutreachStatuses.current.get(c.id);
-        const isContacted =
-          c.outreach_status === "sent" ||
-          c.outreach_status === "opened" ||
-          c.outreach_status === "replied";
-        const wasContacted =
-          prevOutreach === "sent" ||
-          prevOutreach === "opened" ||
-          prevOutreach === "replied";
+        const isContacted = isContactedStatus(c.outreach_status);
+        const wasContacted = isContactedStatus(prevOutreach);
         if (!wasContacted && isContacted) contactedDelta += 1;
       }
 
@@ -332,11 +327,8 @@ export default function CampaignDetailPage() {
   };
 
   const replyRate = useMemo(() => {
-    const contacted = contacts.filter(
-      (c) =>
-        c.outreach_status === "sent" ||
-        c.outreach_status === "opened" ||
-        c.outreach_status === "replied",
+    const contacted = contacts.filter((c) =>
+      isContactedStatus(c.outreach_status),
     ).length;
     const replied = contacts.filter(
       (c) => c.outreach_status === "replied",

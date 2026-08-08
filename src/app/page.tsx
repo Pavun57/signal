@@ -52,6 +52,10 @@ interface DashboardData {
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [range, setRange] = useState("30d");
+  // The range the rendered data actually belongs to. Kept separately from
+  // `range` so a failed refetch cannot label stale 30d numbers as the 90d the
+  // user just asked for.
+  const [loadedRange, setLoadedRange] = useState("30d");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +67,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
+      setLoadedRange(r);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("[dashboard] Failed to fetch:", err);
@@ -125,11 +130,21 @@ export default function DashboardPage() {
           </p>
         </div>
 
+        {/* A failed refetch used to render silently: the old numbers stayed
+            up under the newly selected range's label, wrong data presented as
+            the requested range with no way to tell. */}
+        {error && (
+          <p role="alert" className="text-destructive text-sm">
+            Could not refresh the dashboard: {error}. Showing the last loaded
+            data instead.
+          </p>
+        )}
+
         <StatCards totals={data.totals} />
 
         <OutreachChart
           timeSeries={data.timeSeries}
-          range={range}
+          range={loadedRange}
           onRangeChange={handleRangeChange}
         />
 
