@@ -286,7 +286,9 @@ export const draftSequenceEmails = tool({
         "(2) optionally call getCompanyDetail(organizationId) if you need deep company context; " +
         "(3) call writeEmail with the personalized content, passing sequenceId, sequenceStepId, enrollmentId, and ai_reasoning; " +
         "(4) then move on to the next contact. Do NOT preload enrichment for all contacts up front. " +
-        "Step 1 is the initial cold email. Follow-ups reference the prior email and add urgency. The final step is a polite breakup. " +
+        (steps.length > 1
+          ? "Step 1 is the initial cold email. Follow-ups reference the prior email and add urgency. The final step is a polite breakup. "
+          : "This is a single-step sequence: its only email is first contact. Never frame it as a follow-up or breakup, and never imply prior emails. ") +
         `After all drafts are created, tell the user to review them at /outreach/review?sequence=${sequenceId}`,
     };
   },

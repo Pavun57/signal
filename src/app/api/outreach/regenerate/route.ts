@@ -177,7 +177,7 @@ export async function POST(request: Request) {
       email:
         (person.work_email as string) ??
         (person.personal_email as string) ??
-        "unknown@example.com",
+        "", // no address on file: never render a fabricated one into the prompt
       enrichmentData:
         (person.enrichment_data as Record<string, unknown>) ?? null,
     },

@@ -14,6 +14,12 @@ export const PRICING = {
   claude_sonnet_output: 15.0,
   claude_sonnet_cache_read: 0.3,
   claude_sonnet_cache_write: 3.75,
+  // Claude Opus 5 (per million tokens) -- the email composer's model.
+  // Cache read is 0.1x input, 5-minute cache write is 1.25x input.
+  claude_opus_input: 5.0,
+  claude_opus_output: 25.0,
+  claude_opus_cache_read: 0.5,
+  claude_opus_cache_write: 6.25,
   // Claude Haiku 4.5 (per million tokens)
   claude_haiku_input: 1.0,
   claude_haiku_output: 5.0,
@@ -105,7 +111,7 @@ interface UsageEntry {
   user_id?: string;
 }
 
-export type ClaudeModel = "sonnet" | "haiku";
+export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
 export interface ClaudeCostParams {
   model: ClaudeModel;
@@ -125,22 +131,30 @@ export interface ClaudeCostParams {
  */
 export function estimateClaudeCost(params: ClaudeCostParams): number {
   const { model } = params;
-  const uncachedRate =
-    model === "sonnet"
-      ? PRICING.claude_sonnet_input
-      : PRICING.claude_haiku_input;
-  const cacheReadRate =
-    model === "sonnet"
-      ? PRICING.claude_sonnet_cache_read
-      : PRICING.claude_haiku_cache_read;
-  const cacheWriteRate =
-    model === "sonnet"
-      ? PRICING.claude_sonnet_cache_write
-      : PRICING.claude_haiku_cache_write;
-  const outputRate =
-    model === "sonnet"
-      ? PRICING.claude_sonnet_output
-      : PRICING.claude_haiku_output;
+  const RATES = {
+    opus: {
+      input: PRICING.claude_opus_input,
+      cacheRead: PRICING.claude_opus_cache_read,
+      cacheWrite: PRICING.claude_opus_cache_write,
+      output: PRICING.claude_opus_output,
+    },
+    sonnet: {
+      input: PRICING.claude_sonnet_input,
+      cacheRead: PRICING.claude_sonnet_cache_read,
+      cacheWrite: PRICING.claude_sonnet_cache_write,
+      output: PRICING.claude_sonnet_output,
+    },
+    haiku: {
+      input: PRICING.claude_haiku_input,
+      cacheRead: PRICING.claude_haiku_cache_read,
+      cacheWrite: PRICING.claude_haiku_cache_write,
+      output: PRICING.claude_haiku_output,
+    },
+  }[model];
+  const uncachedRate = RATES.input;
+  const cacheReadRate = RATES.cacheRead;
+  const cacheWriteRate = RATES.cacheWrite;
+  const outputRate = RATES.output;
 
   const cacheRead = params.cacheReadTokens ?? 0;
   const cacheWrite = params.cacheCreationTokens ?? 0;
@@ -189,10 +203,22 @@ export function estimateClaudeCostFromUsage(
  * Automatically picks up action_id/action_label from the nearest `withAction`
  * context if one exists.
  */
+/**
+ * Inserts still in flight. Serverless can freeze the instance the moment a
+ * response returns, silently dropping fire-and-forget writes: long-lived
+ * paths (the job runner) await flushUsageTracking() before returning.
+ */
+const pendingInserts = new Set<Promise<void>>();
+
+/** Await every in-flight api_usage insert. Never throws. */
+export async function flushUsageTracking(): Promise<void> {
+  await Promise.allSettled([...pendingInserts]);
+}
+
 export function trackUsage(entry: UsageEntry): void {
   const ctx = actionStore.getStore();
 
-  void (async () => {
+  const insert = (async () => {
     try {
       const { error } = await getAdminClient()
         .from("api_usage")
@@ -214,4 +240,6 @@ export function trackUsage(entry: UsageEntry): void {
       console.error("[cost-tracker] unexpected error:", err);
     }
   })();
+  pendingInserts.add(insert);
+  void insert.finally(() => pendingInserts.delete(insert));
 }

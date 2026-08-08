@@ -115,7 +115,12 @@ export async function POST(req: Request) {
         if (index >= targets.length) return;
         const target = targets[index];
         try {
-          const result = await enrichPerson(supabase, target.id, target.person);
+          const result = await enrichPerson(
+            supabase,
+            target.id,
+            target.person,
+            user.id,
+          );
           if (result.status === "enriched") enriched.push(target.id);
           else
             failed.push({

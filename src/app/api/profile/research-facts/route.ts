@@ -54,7 +54,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Profile not found" }, { status: 404 });
   }
 
-  const result = await researchSender(profile as UserProfile);
+  const result = await researchSender(profile as UserProfile, user.id);
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
   }

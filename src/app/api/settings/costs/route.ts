@@ -74,6 +74,21 @@ export async function GET(request: Request) {
     fetchRealSpend(realSpendStart, nowIso),
   ]);
 
+  // A failed query must never render as $0 spend with empty tables: that
+  // is indistinguishable from a genuinely idle account.
+  const firstError =
+    totalRes.error ??
+    byServiceRes.error ??
+    byOperationRes.error ??
+    dailyRes.error ??
+    recentRes.error;
+  if (firstError) {
+    return Response.json(
+      { error: `Could not load usage data: ${firstError.message}` },
+      { status: 500 },
+    );
+  }
+
   // Aggregate total
   const totalCost = (totalRes.data ?? []).reduce(
     (sum: number, r: { estimated_cost_usd: number }) =>

@@ -2,6 +2,7 @@ import { getAdminClient } from "@/lib/supabase/admin";
 import { completeJob, failJob, type JobRow } from "@/lib/services/jobs";
 import { executors } from "@/lib/jobs/executors";
 import { getPostHogClient } from "@/lib/posthog-server";
+import { flushUsageTracking } from "@/lib/services/cost-tracker";
 
 /**
  * Runs one claimed job to completion. Only ever called by /api/jobs/run
@@ -38,7 +39,8 @@ export async function executeClaimedJob(jobId: string): Promise<void> {
   } finally {
     // Serverless: anything not awaited before the function returns may be
     // dropped when Vercel freezes the instance, and executors capture
-    // events (sends, fires) that must not vanish.
+    // events (sends, fires) and spend rows that must not vanish.
+    await flushUsageTracking();
     await getPostHogClient()
       .flush()
       .catch((err) => console.error("[jobs] posthog flush failed:", err));

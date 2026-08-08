@@ -134,6 +134,10 @@ One sentence each, written in third person. Skip anything the sources do not cle
  */
 export async function researchSender(
   profile: UserProfile,
+  // Attribution: neither caller runs inside a withAction context, so
+  // without this the research spend lands with user_id NULL and the cost
+  // center (RLS-scoped) can never show it.
+  userId?: string | null,
 ): Promise<ResearchSenderResult> {
   const urls = [
     profile.linkedin_url,
@@ -225,6 +229,7 @@ ${wrapUntrusted(body)}`;
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
       estimated_cost_usd: estimateClaudeCostFromUsage(MODEL_LABEL, usage),
+      user_id: userId ?? undefined,
       metadata: { model: MODEL_LABEL, profileId: profile.id },
     });
 

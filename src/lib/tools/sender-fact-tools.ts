@@ -73,7 +73,7 @@ export const researchSenderProfile = tool({
     const profile = await resolveProfile(supabase, input.profileId);
     if (!profile) return { error: NO_PROFILE_ERROR };
 
-    const result = await researchSender(profile);
+    const result = await researchSender(profile, userId);
     if (!result.ok) return { error: result.error };
 
     const existing = await loadSenderFacts(supabase, profile.id);
