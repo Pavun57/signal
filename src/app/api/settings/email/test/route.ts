@@ -166,7 +166,12 @@ export async function POST(request: Request) {
     }
 
     const sentAt = new Date().toISOString();
-    await supabase
+    // The real SMTP send has already happened, so a failed state write must
+    // be reported as such: swallowing it returned sent:true while
+    // test_message_id was never stored, "check" then 400s with "No test send
+    // to check", and the resend cooldown never engages, so retries keep
+    // sending real emails.
+    const { error: stateError } = await supabase
       .from("user_settings")
       .update({
         test_message_id: messageId,
@@ -180,6 +185,15 @@ export async function POST(request: Request) {
         updated_at: sentAt,
       })
       .eq("user_id", user.id);
+
+    if (stateError) {
+      return NextResponse.json(
+        {
+          error: `The test email WAS sent, but its record could not be stored (${stateError.message}). Wait for the email to arrive rather than resending.`,
+        },
+        { status: 500 },
+      );
+    }
 
     return NextResponse.json({
       sent: true,
@@ -253,7 +267,9 @@ export async function POST(request: Request) {
       snippet,
     };
 
-    await supabase
+    // A settled verdict that fails to persist re-scans IMAP on every later
+    // check, which is exactly what persisting the verdict exists to prevent.
+    const { error: verdictError } = await supabase
       .from("user_settings")
       .update({
         test_replied_at: repliedAt,
@@ -262,6 +278,11 @@ export async function POST(request: Request) {
         updated_at: new Date().toISOString(),
       })
       .eq("user_id", user.id);
+    if (verdictError) {
+      console.error(
+        `[settings/email/test] verdict write failed: ${verdictError.message}`,
+      );
+    }
 
     return NextResponse.json({
       status: hit.status,

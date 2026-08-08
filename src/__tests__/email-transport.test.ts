@@ -1,15 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { encryptSecret } from "@/lib/crypto";
 import { resolveSenderConfig } from "@/lib/services/email-transport";
 
-function fakeSupabase(row: unknown) {
+function fakeSupabase(row: unknown, error: { message: string } | null = null) {
   const builder: Record<string, unknown> = {};
   for (const name of ["select", "eq", "maybeSingle"]) {
     builder[name] = () => builder;
   }
   builder.then = (resolve: (v: unknown) => unknown) =>
-    Promise.resolve({ data: row, error: null }).then(resolve);
+    Promise.resolve(
+      error ? { data: null, error } : { data: row, error: null },
+    ).then(resolve);
   return { from: () => builder } as never;
 }
 
@@ -99,5 +101,24 @@ describe("resolveSenderConfig", () => {
       "user_1",
     );
     expect(result).toMatchObject({ dailyLimit: 30 });
+  });
+});
+
+describe("resolveSenderConfig when the settings read fails", () => {
+  it("reports a retryable failure, not an unconfigured mailbox", async () => {
+    // "Email is not configured. Go to Settings" for a DB blip sends a fully
+    // connected user to re-do setup (and reset their warmup clock), and the
+    // followups cron records the same misleading reason for every send.
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await resolveSenderConfig(
+      fakeSupabase(null, { message: "connection reset by peer" }),
+      "user_1",
+    );
+
+    expect("error" in result && result.error).toContain("connection reset");
+    expect("error" in result && result.error).toMatch(/retry/i);
+    expect("error" in result && result.error).not.toMatch(/not configured/i);
+    quiet.mockRestore();
   });
 });

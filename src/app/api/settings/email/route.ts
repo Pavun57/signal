@@ -17,13 +17,26 @@ export async function GET() {
 
   const { supabase, user } = ctx;
 
-  const { data: settings } = await supabase
+  const { data: settings, error: settingsError } = await supabase
     .from("user_settings")
     .select(
       "gmail_address, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope, auto_adjust_send_window",
     )
     .eq("user_id", user.id)
     .maybeSingle();
+
+  // A failed read is not "not connected". Returning is_configured:false here
+  // rendered every transient failure as a disconnected mailbox, inviting the
+  // user to "reconnect" and reset the warmup clock; it also defeats the
+  // tenant-hardening migration's explicit fail-safe, which counts on a
+  // column-grant problem surfacing as a visible error.
+  if (settingsError) {
+    console.error("[settings/email] read failed:", settingsError.message);
+    return NextResponse.json(
+      { error: `Could not load email settings: ${settingsError.message}` },
+      { status: 500 },
+    );
+  }
 
   const dailyLimit = settings?.daily_send_limit ?? 30;
 
@@ -83,12 +96,22 @@ export async function POST(request: Request) {
     }
 
     // Preserve the warmup-ramp clock when re-connecting the same address
-    // (e.g. after rotating the app password).
-    const { data: existing } = await supabase
+    // (e.g. after rotating the app password). A failed read must abort:
+    // proceeding treats the account as brand new and silently resets the
+    // clock, cutting the daily send capacity back to day one.
+    const { data: existing, error: existingError } = await supabase
       .from("user_settings")
       .select("gmail_address, gmail_connected_at")
       .eq("user_id", user.id)
       .maybeSingle();
+    if (existingError) {
+      return NextResponse.json(
+        {
+          error: `Could not load existing settings, so nothing was changed: ${existingError.message}. Retry.`,
+        },
+        { status: 500 },
+      );
+    }
     const connectedAt =
       existing?.gmail_address === address && existing?.gmail_connected_at
         ? existing.gmail_connected_at
