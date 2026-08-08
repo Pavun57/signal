@@ -1,4 +1,5 @@
 import { getSupabaseAndUser } from "@/lib/supabase/server";
+import { CONTACTED_STATUSES, isContactedStatus } from "@/lib/outreach-status";
 
 /**
  * Dashboard aggregates.
@@ -49,13 +50,7 @@ export async function GET(request: Request) {
       // A send that bounced still left. Excluding it shrank the denominator
       // every rate is measured against, and would have made the new bounce
       // card move the wrong way.
-      .in("outreach_status", [
-        "sent",
-        "opened",
-        "replied",
-        "bounced",
-        "complained",
-      ]),
+      .in("outreach_status", [...CONTACTED_STATUSES]),
     supabase
       .from("campaign_people")
       .select("*", { count: "exact", head: true })
@@ -65,18 +60,23 @@ export async function GET(request: Request) {
       .select("*", { count: "exact", head: true })
       .eq("outreach_status", "bounced"),
 
-    // Time-series from outreach_events (capped to prevent memory issues)
+    // Time-series from outreach_events (capped to prevent memory issues).
+    // Descending, so when the window holds more rows than the cap the cap
+    // truncates the OLDEST days: ascending kept the head and silently dropped
+    // the most recent days from the chart, and with range=all froze it at the
+    // first 10000 events ever. The grouping below is order-independent and
+    // the output is re-sorted ascending.
     dateFilter
       ? supabase
           .from("outreach_events")
           .select("status, created_at")
           .gte("created_at", dateFilter)
-          .order("created_at", { ascending: true })
+          .order("created_at", { ascending: false })
           .limit(10000)
       : supabase
           .from("outreach_events")
           .select("status, created_at")
-          .order("created_at", { ascending: true })
+          .order("created_at", { ascending: false })
           .limit(10000),
 
     // Campaign list
@@ -88,6 +88,25 @@ export async function GET(request: Request) {
       .select("campaign_id, outreach_status")
       .limit(10000),
   ]);
+
+  // A failed query is not a zero. `count ?? 0` rendered every failure as an
+  // empty-but-healthy dashboard, which is the K22 class this route sat in.
+  const failed = [
+    leadsRes,
+    sentRes,
+    repliedRes,
+    bouncedRes,
+    timeSeriesRes,
+    campaignsRes,
+    allPeopleRes,
+  ].find((r) => r.error);
+  if (failed?.error) {
+    console.error("[dashboard] query failed:", failed.error.message);
+    return Response.json(
+      { error: `Dashboard query failed: ${failed.error.message}` },
+      { status: 500 },
+    );
+  }
 
   const totals = {
     leads: leadsRes.count ?? 0,
@@ -125,12 +144,7 @@ export async function GET(request: Request) {
     }
     const stats = campaignMap.get(row.campaign_id)!;
     stats.leads++;
-    if (
-      ["sent", "opened", "replied", "bounced", "complained"].includes(
-        row.outreach_status,
-      )
-    )
-      stats.sent++;
+    if (isContactedStatus(row.outreach_status)) stats.sent++;
     if (row.outreach_status === "replied") stats.replied++;
   }
 

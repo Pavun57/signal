@@ -1,4 +1,5 @@
 import { StatCard } from "@/components/ui/stat-card";
+import { isContactedStatus } from "@/lib/outreach-status";
 import type { CampaignCompany, CampaignContact } from "@/lib/types/campaign";
 
 interface CampaignStatsProps {
@@ -15,11 +16,11 @@ export function CampaignStats({ companies, contacts }: CampaignStatsProps) {
   const enrichedCount = contacts.filter(
     (c) => c.enrichment_status === "enriched",
   ).length;
-  const contactedCount = contacts.filter(
-    (c) =>
-      c.outreach_status === "sent" ||
-      c.outreach_status === "opened" ||
-      c.outreach_status === "replied",
+  // Shared bucket: bounced/complained count as contacted, or a bounce
+  // silently shrinks the reply-rate denominator and this card disagrees with
+  // the dashboard, which was already fixed for exactly this.
+  const contactedCount = contacts.filter((c) =>
+    isContactedStatus(c.outreach_status),
   ).length;
   const repliedCount = contacts.filter(
     (c) => c.outreach_status === "replied",
