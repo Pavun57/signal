@@ -1,6 +1,9 @@
 import { ExaService } from "@/lib/services/exa-service";
 import { GooglePlacesService } from "@/lib/services/google-places-service";
-import { isDirectoryDomain } from "@/lib/services/directory-domains";
+import {
+  isDirectoryDomain,
+  isPlatformDomain,
+} from "@/lib/services/directory-domains";
 import { normalizeDomain } from "@/lib/services/knowledge-base";
 
 /**
@@ -96,7 +99,15 @@ function usableDomain(rawUrl: string): string | null {
     return null;
   }
   const domain = normalizeDomain(host);
-  if (!domain || isDirectoryDomain(domain)) return null;
+  // A site-builder apex (business.site, wixsite.com, ...) is not one
+  // company's own domain: the sub-label that identified the business is
+  // already gone by the time normalizeDomain collapses it. Returning one
+  // here dedupes every business hosted on that builder into a single org,
+  // which is the merge disaster PLATFORM_DOMAINS exists to prevent, and
+  // both resolver call paths bypass the manual-URL path's guard.
+  if (!domain || isDirectoryDomain(domain) || isPlatformDomain(domain)) {
+    return null;
+  }
   return domain;
 }
 

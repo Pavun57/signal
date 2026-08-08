@@ -1080,7 +1080,11 @@ export const fetchSitemap = tool({
         if (result.success && result.data.links) {
           const sameDomainLinks = result.data.links.filter((link) => {
             try {
-              return new URL(link).hostname.endsWith(domain);
+              // Dot boundary required: bare endsWith let "notacme.com" pass
+              // as "acme.com", so a partner or competitor site linked from
+              // the homepage was scraped as the company's own pages.
+              const host = new URL(link).hostname;
+              return host === domain || host.endsWith(`.${domain}`);
             } catch {
               return false;
             }
@@ -1395,7 +1399,16 @@ async function enrichCompanyById(
   const extractor = new WebExtractionService();
   const errors: string[] = [];
 
-  const companyUrl = org.url || (org.domain ? `https://${org.domain}` : null);
+  // organizations.url is stored verbatim from LLM extraction, so "acme.com"
+  // without a scheme is a routine value. new URL() throws on it, which used
+  // to fail the entire company enrichment with an unactionable "Invalid URL".
+  const storedUrl = (org.url as string | null) || null;
+  const schemedUrl =
+    storedUrl && !/^https?:\/\//i.test(storedUrl)
+      ? `https://${storedUrl}`
+      : storedUrl;
+  const companyUrl =
+    schemedUrl || (org.domain ? `https://${org.domain}` : null);
 
   const contextParts: string[] = [];
   if (org.industry) contextParts.push(org.industry as string);
@@ -1404,8 +1417,16 @@ async function enrichCompanyById(
   const domainHint = org.domain ? ` ${org.domain}` : "";
   const specificName = `"${org.name}"${domainHint}${context}`;
 
-  const companyDomain =
-    org.domain || (companyUrl ? new URL(companyUrl).hostname : null);
+  let companyDomain = (org.domain as string | null) || null;
+  if (!companyDomain && companyUrl) {
+    try {
+      companyDomain = new URL(companyUrl).hostname;
+    } catch {
+      // A malformed stored URL degrades to name-based queries rather than
+      // failing the whole enrichment.
+      companyDomain = null;
+    }
+  }
 
   const productQuery = companyDomain
     ? `${org.name} products services`

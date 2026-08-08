@@ -102,11 +102,6 @@ export async function POST(request: Request) {
     }
   }
 
-  // Resolve active signal slugs for this campaign
-  const activeSlugs = campaignId
-    ? await getActiveSignalSlugs(campaignId)
-    : null; // null = run all (no campaign context)
-
   // companyId is a campaign_organizations link ID -- resolve the organization.
   // Join through campaigns.user_id so we can also verify ownership when
   // campaignId wasn't explicitly supplied.
@@ -148,12 +143,22 @@ export async function POST(request: Request) {
   const org = link.organization as unknown as Record<string, unknown>;
   const orgId = link.organization_id;
 
+  // When the body carried no campaignId, the link's parent campaign IS the
+  // campaign context: the comment above always promised this derivation, but
+  // link.campaign_id was fetched and never used, so callers without an
+  // explicit campaignId ran all four signal searches (spending Exa/Places on
+  // signals the campaign disabled) and skipped contact discovery entirely.
+  const effectiveCampaignId = campaignId ?? (link.campaign_id as string);
+  const activeSlugs = effectiveCampaignId
+    ? await getActiveSignalSlugs(effectiveCampaignId)
+    : null; // null = run all (no campaign context)
+
   return enrichOrganization(
     org,
     orgId,
     activeSlugs,
     user.id,
-    campaignId,
+    effectiveCampaignId,
     companyId,
   );
 }

@@ -95,6 +95,32 @@ vi.mock("@/lib/supabase/server", () => {
   };
 });
 
+/**
+ * The admin client, sharing the same fixture tables. The merge's emptiness
+ * check and final delete run through it: the orgs_delete RLS policy requires
+ * a campaign link the merge has just moved away, so the user-scoped delete
+ * matched zero rows on every install. Deletes are recorded so a test can
+ * assert which client performed them.
+ */
+const adminOps: Array<{ kind: string; table: string }> = [];
+vi.mock("@/lib/supabase/admin", () => ({
+  getAdminClient: () =>
+    createSupabaseFake({
+      tables: {
+        organizations: () => state.organizations,
+        campaign_organizations: () => state.campaign_organizations,
+        campaign_people: () => state.campaign_people,
+        people: () => state.people,
+        signal_results: () => state.signal_results,
+        tracking_configs: () => state.tracking_configs,
+      },
+      onQuery: (q) => {
+        if (q.kind !== "select")
+          adminOps.push({ kind: q.kind, table: q.table });
+      },
+    }),
+}));
+
 import { PATCH } from "@/app/api/companies/[id]/website/route";
 
 function patch(body: Record<string, unknown>, id = ORG) {
@@ -129,6 +155,7 @@ beforeEach(() => {
   state.tracking_configs = [];
   state.failWritesOn = null;
   state.mutating = null;
+  adminOps.length = 0;
 });
 
 /** The organization row as it stands now, so writes are observable. */
@@ -297,5 +324,43 @@ describe("PATCH /api/companies/[id]/website", () => {
       expect(state.people[0].organization_id).toBe(ORG);
       expect(org(ORG)).toBeDefined();
     });
+  });
+});
+
+describe("the merge's final delete", () => {
+  it("runs through the admin client, which is the only one that can do it", async () => {
+    // The orgs_delete policy requires a campaign_organizations link from the
+    // caller's campaign to the row, and the merge has just moved every such
+    // link to the twin: the user-scoped DELETE matched zero rows and returned
+    // no error, so every merge on every install left an orphaned domain-less
+    // duplicate and reported "The old entry was kept: 0 row(s) still point at
+    // it."
+    state.organizations.push({
+      id: TWIN,
+      name: "Cedar Lodge Nursing Home",
+      domain: "cedarlodge.co.uk",
+      url: "https://cedarlodge.co.uk",
+    });
+    resolveOrganizationDomain.mockResolvedValue({
+      domain: "cedarlodge.co.uk",
+      url: "https://cedarlodge.co.uk",
+      source: "google_places",
+      evidence: "Google Places lists Cedar Lodge Nursing Home",
+    });
+
+    const res = await patch({ resolve: true });
+    const body = (await res.json()) as {
+      merged?: boolean;
+      deletedOld?: boolean;
+    };
+
+    expect(body.merged).toBe(true);
+    expect(body.deletedOld).toBe(true);
+    expect(org(ORG)).toBeUndefined();
+    expect(
+      adminOps.filter(
+        (op) => op.kind === "delete" && op.table === "organizations",
+      ),
+    ).toHaveLength(1);
   });
 });
