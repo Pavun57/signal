@@ -510,6 +510,25 @@ async function enrichContactById(
     personId = link.person_id;
   }
 
+  // Ownership, same test as every sibling path into this code. `people` is a
+  // shared pool, and this function writes to it (enrichment_data, title,
+  // discoveredEmail via findEmailForPerson): without the gate, any user could
+  // enrich, and mint a company-domain address for, any person UUID on the
+  // instance. Worded as absence rather than refusal so the error does not
+  // confirm which guessed UUIDs are real contacts.
+  const session = await toolSession();
+  if (!session) {
+    throw new Error(
+      "No authenticated session available in tool context. Ask the user to sign in.",
+    );
+  }
+  if (!(await callerHoldsPerson(session.supabase, session.userId, personId))) {
+    throw new Error(
+      `No person found for ID ${personId}. Pass the person ID ` +
+        `(people.id, the person_id field on getContacts rows), not a campaign-people link ID.`,
+    );
+  }
+
   // Check recency -- skip if recently enriched
   const recent = await isRecentlyEnriched("people", personId);
   if (recent) {

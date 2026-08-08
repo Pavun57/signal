@@ -117,6 +117,21 @@ vi.mock("@/lib/supabase/server", () => ({
   ),
 }));
 
+/**
+ * The ownership gate. `people` is a shared pool and enrichContactById writes
+ * to it, so it carries the same session + callerHoldsPerson test as every
+ * sibling path.
+ */
+let sessionPresent = true;
+let callerHolds = true;
+vi.mock("@/lib/tools/ownership", () => ({
+  toolSession: vi.fn(async () =>
+    sessionPresent ? { supabase: {}, userId: "u1" } : null,
+  ),
+  callerHoldsPerson: vi.fn(async () => callerHolds),
+  notFound: (what: string) => ({ error: `${what} not found.` }),
+}));
+
 import {
   enrichContact,
   summarizeContactEnrichment,
@@ -124,6 +139,8 @@ import {
 
 beforeEach(() => {
   seed();
+  sessionPresent = true;
+  callerHolds = true;
 });
 
 describe("summarizeContactEnrichment", () => {
@@ -241,5 +258,29 @@ describe("title write-back", () => {
     await enrichContact.execute!({ contactId: PERSON_ID }, {} as never);
 
     expect(bioUpdate()?.title).toBe("Product Support");
+  });
+});
+
+describe("ownership", () => {
+  it("refuses without an authenticated session", async () => {
+    // enrichContactById writes to the shared people pool and can mint a
+    // company-domain email via findEmailForPerson, so it carries the same
+    // gate as /api/find-email and the sibling tools.
+    sessionPresent = false;
+
+    await expect(
+      enrichContact.execute!({ contactId: PERSON_ID }, {} as never),
+    ).rejects.toThrow(/sign in/i);
+  });
+
+  it("refuses a person the caller does not hold, worded as absence", async () => {
+    callerHolds = false;
+    updates.length = 0;
+
+    await expect(
+      enrichContact.execute!({ contactId: PERSON_ID }, {} as never),
+    ).rejects.toThrow(/No person found/);
+    // and nothing was written to the row
+    expect(updates).toHaveLength(0);
   });
 });

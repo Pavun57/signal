@@ -369,17 +369,26 @@ export async function recordVerifiedEmail(
     email: string;
     source: Exclude<EmailSource, "pattern_derived">;
   },
-): Promise<void> {
+  // Reports what happened rather than resolving void: every early return here
+  // used to be indistinguishable from success, so the record-verified route
+  // answered ok:true while a user-confirmed address was silently dropped.
+  // `reason` is a semantic skip (nothing failed); `error` is a failure the
+  // caller should surface.
+): Promise<{ recorded: boolean; reason?: string; error?: string }> {
   const { personId, email, source } = args;
   const local = localPart(email);
   if (isRolePrefix(local)) {
     console.warn(
       `[recordVerifiedEmail] skipping role-prefix address for person ${personId}: ${email}`,
     );
-    return;
+    return {
+      recorded: false,
+      reason:
+        "role-prefix address (info@, sales@, ...): not recorded as a personal work email",
+    };
   }
 
-  const { data: person } = await supabase
+  const { data: person, error: readError } = await supabase
     .from("people")
     .select(
       "organization_id, work_email, work_email_source, work_email_confidence",
@@ -387,7 +396,13 @@ export async function recordVerifiedEmail(
     .eq("id", personId)
     .maybeSingle();
 
-  if (!person) return;
+  if (readError) {
+    console.error(
+      `[recordVerifiedEmail] person lookup failed for ${personId}: ${readError.message}`,
+    );
+    return { recorded: false, error: readError.message };
+  }
+  if (!person) return { recorded: false, reason: "person_not_found" };
 
   const newEmail = email.toLowerCase();
   const sameEmail = person.work_email?.toLowerCase() === newEmail;
@@ -405,10 +420,13 @@ export async function recordVerifiedEmail(
       finalSource = existingSource;
     }
   } else if (incomingWeight < existingWeight) {
-    return;
+    return {
+      recorded: false,
+      reason: `kept the existing address: its source (${existingSource}) outranks ${source}`,
+    };
   }
 
-  await supabase
+  const { error: writeError } = await supabase
     .from("people")
     .update({
       work_email: newEmail,
@@ -427,9 +445,18 @@ export async function recordVerifiedEmail(
     })
     .eq("id", personId);
 
+  if (writeError) {
+    console.error(
+      `[recordVerifiedEmail] write failed for ${personId}: ${writeError.message}`,
+    );
+    return { recorded: false, error: writeError.message };
+  }
+
   if (person.organization_id) {
     await recomputeOrgPattern(supabase, person.organization_id);
   }
+
+  return { recorded: true };
 }
 
 /**

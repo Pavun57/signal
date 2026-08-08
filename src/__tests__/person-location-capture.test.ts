@@ -101,6 +101,14 @@ vi.mock("@/lib/supabase/server", () => ({
   ),
 }));
 
+// enrichContact now carries the same ownership gate as its siblings; this
+// suite is about location write-back, so the caller always holds the person.
+vi.mock("@/lib/tools/ownership", () => ({
+  toolSession: vi.fn(async () => ({ supabase: {}, userId: "u1" })),
+  callerHoldsPerson: vi.fn(async () => true),
+  notFound: (what: string) => ({ error: `${what} not found.` }),
+}));
+
 import { findOrCreatePerson } from "@/lib/services/knowledge-base";
 import { enrichContact } from "@/lib/tools/enrichment-tools";
 

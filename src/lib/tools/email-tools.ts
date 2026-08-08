@@ -181,11 +181,26 @@ export async function findEmailForPerson(
   let domain: string | null = null;
   let orgIsCatchAll: boolean | null = null;
   if (person.organization_id) {
-    const { data: org } = await supabase
+    const { data: org, error: orgError } = await supabase
       .from("organizations")
       .select("domain, name, is_catch_all")
       .eq("id", person.organization_id)
       .single();
+    // A discarded error here nulls the domain, which gates the org pattern,
+    // the paid finder, the inferred pattern and the blind guess: the whole
+    // waterfall silently degrades to a domainless Exa query, and "not found"
+    // is presented as a clean answer for a contact whose org has a perfectly
+    // good domain. Fail closed and say it is retryable.
+    if (orgError) {
+      console.error(
+        `[findEmail] company lookup failed for person ${personId}: ${orgError.message}`,
+      );
+      return {
+        email: null,
+        reason: `Could not load the contact's company (${orgError.message}), so the email search was not run. Retry.`,
+        personId,
+      };
+    }
     domain = org?.domain ?? null;
     orgIsCatchAll = org?.is_catch_all ?? null;
   }
@@ -406,12 +421,7 @@ export async function findEmailForPerson(
         verification: "deliverable",
         verifiedBy: provider.id,
       });
-      await recordNegatives(
-        supabase,
-        personId,
-        person.enrichment_data,
-        rejected,
-      );
+      await recordNegatives(supabase, personId, rejected);
       // A confirmed address is also pattern evidence for everyone else at the
       // org — this is what finally bootstraps the pattern flywheel, which
       // cannot start from guesses alone.
@@ -446,7 +456,7 @@ export async function findEmailForPerson(
     if (!fallback) fallback = { candidate, result };
   }
 
-  await recordNegatives(supabase, personId, person.enrichment_data, rejected);
+  await recordNegatives(supabase, personId, rejected);
 
   if (!fallback) {
     // If the address we already held is among the rejected, do not leave it
@@ -574,18 +584,35 @@ function hasPositiveEvidence(
  * the same thing twice. Written straight to enrichment_data rather than via
  * mergeEnrichmentData because that helper also flips enrichment_status to
  * "enriched", which a failed email lookup has not earned.
+ *
+ * Reads the row fresh rather than accepting a snapshot: the caller's copy of
+ * enrichment_data predates the Exa search and up to three provider
+ * verifications, a multi-second window, and spreading a stale base silently
+ * clobbered anything a concurrent enrichment run merged in the meantime.
  */
 async function recordNegatives(
   supabase: Awaited<ReturnType<typeof createClient>>,
   personId: string,
-  existing: unknown,
   rejected: string[],
 ): Promise<void> {
   if (rejected.length === 0) return;
-  const base = (existing as Record<string, unknown>) ?? {};
+  const { data: fresh, error: readError } = await supabase
+    .from("people")
+    .select("enrichment_data")
+    .eq("id", personId)
+    .single();
+  if (readError) {
+    // Best-effort cache: losing it costs a repeat verification later, while
+    // writing over an unreadable row could cost real enrichment data.
+    console.error(
+      `[findEmail] could not read enrichment before recording negatives for ${personId}: ${readError.message}`,
+    );
+    return;
+  }
+  const base = (fresh?.enrichment_data as Record<string, unknown>) ?? {};
   const priorRaw = base.rejectedEmails;
   const prior = Array.isArray(priorRaw) ? (priorRaw as string[]) : [];
-  await supabase
+  const { error: writeError } = await supabase
     .from("people")
     .update({
       enrichment_data: {
@@ -594,6 +621,11 @@ async function recordNegatives(
       },
     })
     .eq("id", personId);
+  if (writeError) {
+    console.error(
+      `[findEmail] could not record rejected addresses for ${personId}: ${writeError.message}`,
+    );
+  }
 }
 
 /** Scrapes candidate addresses for a person out of Exa result text. */
@@ -724,13 +756,13 @@ export const findEmail = tool({
 
 export const findEmails = tool({
   description:
-    "Batch-discover email addresses for multiple contacts. Skips contacts that already have emails, and contacts not confirmed to work at their company. Returns found, not-found and skipped lists.",
+    "Batch-discover email addresses for multiple contacts. Returns found, not-found and skipped lists. Contacts with a stored address are returned in found with their existing source, not newly discovered. Contacts not confirmed to work at their company are skipped. Discovery is free: it stores unverified suggestions, and verification is paid for just-in-time when a draft is actually sent.",
   inputSchema: z.object({
     personIds: z
       .array(z.string().uuid())
       .max(25)
       .describe(
-        "Array of person IDs (max 25 per call). Each unresolved contact can cost a provider find plus up to 3 verifications, so batch size is a spend bound. Call again for the next batch.",
+        "Array of person IDs (max 25 per call). Call again for the next batch.",
       ),
   }),
   execute: async ({ personIds }) => {
@@ -747,10 +779,26 @@ export const findEmails = tool({
     }
     const { supabase, userId } = session;
 
-    const { data: rows } = await supabase
+    const { data: rows, error: rowsError } = await supabase
       .from("people")
       .select("id, affiliation_confidence")
       .in("id", personIds);
+
+    // On a failed query the confidence map is empty, so every contact would
+    // fall below the send threshold and land in `skipped` under a fabricated
+    // "not confirmed to work at this company" explanation, which the agent
+    // then relays to the user as a confident data-quality verdict.
+    if (rowsError) {
+      console.error(
+        `[findEmails] affiliation lookup failed: ${rowsError.message}`,
+      );
+      return {
+        found: [],
+        notFound: [],
+        skipped: [],
+        summary: `Could not check which contacts are confirmed at their company (${rowsError.message}). No lookups were run: retry the call.`,
+      };
+    }
 
     const confidence = new Map<string, number | null>(
       (
@@ -761,7 +809,10 @@ export const findEmails = tool({
       ).map((r) => [r.id, r.affiliation_confidence]),
     );
 
-    const found: Array<{ personId: string; email: string }> = [];
+    // `source` says where each address came from: "existing"/stored sources
+    // mean the contact already had it, so "Found N of M" is not N discoveries.
+    const found: Array<{ personId: string; email: string; source?: string }> =
+      [];
     const notFound: string[] = [];
     const skipped: string[] = [];
 
@@ -787,7 +838,7 @@ export const findEmails = tool({
       try {
         const result = await findEmailForPerson(personId);
         if (result.email) {
-          found.push({ personId, email: result.email });
+          found.push({ personId, email: result.email, source: result.source });
         } else {
           notFound.push(personId);
         }
