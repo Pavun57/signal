@@ -115,9 +115,12 @@ export interface JudgedDraft {
   body: string;
   axes: DraftAxes;
   kept: boolean;
-  /** The fictional persona this draft addressed, as the deck labelled it.
+  /** The persona this draft addressed, as the deck labelled it.
    * Optional: runs recorded before personas existed have none. */
   personaLabel?: string;
+  /** True when the recipient was a REAL campaign contact, not an invented
+   * persona. Optional: older runs never recorded it. */
+  personaReal?: boolean;
   /** Phrases the user highlighted on this draft, with what they said. */
   notes?: { phrase: string; note: string }[];
 }
@@ -201,7 +204,9 @@ function renderTranscript(t: SwipeTranscript): string {
     for (const d of judged) {
       // Which persona each judgement was against, so the model can avoid
       // reusing personas and never mistakes a persona detail for a voice rule.
-      const to = d.personaLabel ? ` (to ${d.personaLabel})` : "";
+      const to = d.personaLabel
+        ? ` (to ${d.personaLabel}${d.personaReal ? ", a REAL campaign contact" : ""})`
+        : "";
       lines.push(
         `- [${d.kept ? "KEPT" : "PASSED"}]${to} ${JSON.stringify(d.axes)} subject: ${d.subject}`,
       );
@@ -416,7 +421,7 @@ A highlighted phrase with a note is the strongest signal available: they pointed
 ## Writing the emails themselves
 
 - 30-90 words. These are cold emails; the user is judging voice, not admiring length.
-- Reference the campaign's real offering and audience, and ground each draft in the invented persona's situation and signals.
+- Reference the campaign's real offering and audience, and ground each draft in the recipient's situation and signals AS GIVEN in the recipient block. When the recipient is REAL, the no-fabrication rule in their block outranks every variation and grounding instruction here: a detail not listed for them does not exist.
 - Plain text with real line breaks. No HTML, no markdown, no placeholders like [Name]. Write it as it would send.
 - No emojis.
 
@@ -456,7 +461,7 @@ You have four kinds, and they are not equally reliable:
 3. **What they kept**: strong on aggregate, weak individually. Four kept drafts that all open on the signal is a rule. One kept draft that happens to be 40 words is not.
 4. **What they passed**: the weakest. A pass means something in it was wrong, not that everything in it was. Only write a "never" rule when the same trait was rejected repeatedly AND never appears in anything they kept.
 
-The recipients in the judged drafts were fictional personas invented for practice. Write rules about the user's voice only; never a rule about any persona, their company, or their situation.
+__RECIPIENTS_NOTE__
 
 That ranking is about evidence, not about intent. What they pasted is the truest picture of how they write today; what they typed is the truest picture of what they want changed. So where a typed instruction contradicts everything else, follow the instruction: they are correcting themselves, not describing themselves. Someone who keeps three warm drafts and then types "stop being so friendly" has told you the drafts were the best of a bad set.
 
@@ -477,8 +482,15 @@ If a block of rules they are already writing with appears, this is a change and 
 export function buildSkillSystem(
   campaign: SwipeCampaign | null,
   context: SwipeSenderContext = {},
+  hadRealRecipients = false,
 ): string {
-  return `${SKILL_SYSTEM}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderSender(
+  // The old static sentence flatly asserted every judged recipient was
+  // fictional, which was untrue for runs addressed to real campaign
+  // contacts and licensed the model to treat real details as inventions.
+  const recipientsNote = hadRealRecipients
+    ? "Some or all recipients in the judged drafts were REAL campaign contacts (marked in the transcript); the rest were fictional practice personas. Either way, write rules about the user's voice only; never a rule about any recipient, their company, or their situation."
+    : "The recipients in the judged drafts were fictional personas invented for practice. Write rules about the user's voice only; never a rule about any persona, their company, or their situation.";
+  return `${SKILL_SYSTEM.replace("__RECIPIENTS_NOTE__", recipientsNote)}\n\n---\n${UNTRUSTED_NOTICE}\n\n${renderSender(
     context.sender,
   )}\n\n${campaignBlock(campaign)}`;
 }

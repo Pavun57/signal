@@ -204,9 +204,12 @@ export function VoiceSwipe({
             body: card.body,
             axes: card.axes,
             kept: liked,
-            // Which invented persona this judgement was against, so the next
-            // batch never reuses it and no persona detail reads as a rule.
+            // Which persona this judgement was against, so the next batch
+            // never reuses it and no persona detail reads as a rule.
             personaLabel: card.personaLabel ?? undefined,
+            // Real-contact judgements must stay distinguishable: the skill
+            // prompt asserts personas were fictional unless told otherwise.
+            personaReal: card.personaReal ?? undefined,
           },
         ],
         queue: r.queue.filter((d) => d.id !== card.id),

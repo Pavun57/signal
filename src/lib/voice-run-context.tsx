@@ -88,6 +88,7 @@ const VoiceRunContext = createContext<VoiceRunContextValue>({
 });
 
 interface DraftsPart {
+  campaignId?: string | null;
   mode: "opening" | "append" | "replace";
   drafts: Omit<RunDraft, "id" | "personaLabel">[];
   /** Who the batch is written to: a real campaign contact, or an invented
@@ -248,6 +249,15 @@ export function VoiceRunProvider({ children }: { children: ReactNode }) {
       if (part.type === "data-voice-drafts") {
         const data = part.data as DraftsPart | undefined;
         if (!current || !data?.drafts?.length) return;
+        // Same scope check as data-voice-skill: an in-flight batch generated
+        // for one scope must not append to whichever run is active when it
+        // lands. Parts without a campaignId (older emitters) pass through.
+        if (
+          data.campaignId !== undefined &&
+          (current.campaignId ?? null) !== (data.campaignId ?? null)
+        ) {
+          return;
+        }
         // Stamped per draft, not per run: the persona rotates every batch,
         // and a queue holding two batches must label each card with the
         // persona its drafts were actually written to.

@@ -249,6 +249,16 @@ export async function generateVoiceBatch(
   }
   // Real recipient: the server stamps the label so the model cannot misname
   // anyone. Invented: the label comes from the returned persona as before.
+  // The schema keeps persona optional for the real-recipient path, so the
+  // invented path has to enforce it here: a batch without its persona
+  // renders unlabeled cards whose judgements can't be rotated against.
+  if (!recipient && !result.value.persona) {
+    return {
+      ok: false,
+      error:
+        "The model returned drafts without the invented persona; try another batch.",
+    };
+  }
   const label = recipient
     ? recipientLabel(recipient)
     : result.value.persona
@@ -285,7 +295,11 @@ async function writeSkill(
         abortSignal: llmTimeout(),
         model: anthropic(MODELS.EMAIL),
         schema: apiSafeSchema(SkillSchema),
-        system: buildSkillSystem(campaign, senderContext),
+        system: buildSkillSystem(
+          campaign,
+          senderContext,
+          input.transcript.judged.some((d) => d.personaReal === true),
+        ),
         prompt: buildSkillPrompt(input.transcript),
         providerOptions: { anthropic: { effort: "medium" } },
         maxRetries: 0,
@@ -364,11 +378,20 @@ export async function refineVoiceProfile(
   // RLS scopes the table to the signed-in user, so scope is the only filter
   // needed. `.is` rather than `.eq`, because the default voice's campaign_id
   // is NULL and `eq(null)` matches nothing.
-  const { data } = await (
+  const { data, error: savedError } = await (
     input.campaignId
       ? saved.eq("campaign_id", input.campaignId)
       : saved.is("campaign_id", null)
   ).maybeSingle();
+
+  // A failed read is not "no saved voice": that false claim sent the agent
+  // off to rebuild a voice the user already has.
+  if (savedError) {
+    return {
+      ok: false,
+      error: `Could not load the saved voice: ${savedError.message}. Try again.`,
+    };
+  }
 
   const existing = data as SavedVoice | null;
   if (!existing?.instructions?.trim()) {
