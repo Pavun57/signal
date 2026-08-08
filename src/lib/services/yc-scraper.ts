@@ -103,11 +103,25 @@ async function scrapeDirectoryListing(filters: YCFilters): Promise<{
     await page.waitForTimeout(3000);
 
     // Scroll to load all lazy-loaded companies.
-    // Keep scrolling until no new cards appear for 2 consecutive passes.
+    // Keep scrolling until no new cards appear for 2 consecutive passes,
+    // bounded hard: with a broad or empty filter the directory
+    // infinite-scrolls thousands of cards, stableRounds resets on every
+    // count increase, and the loop used to run until Vercel froze the
+    // function mid-loop; the finally block never ran and the Browserbase
+    // concurrency slot leaked, stalling every later sessions.create.
+    const MAX_SCROLL_ROUNDS = 40;
+    const SCROLL_DEADLINE_MS = 90_000;
+    const scrollStart = Date.now();
     let previousCount = 0;
     let stableRounds = 0;
+    let rounds = 0;
 
-    while (stableRounds < 2) {
+    while (
+      stableRounds < 2 &&
+      rounds < MAX_SCROLL_ROUNDS &&
+      Date.now() - scrollStart < SCROLL_DEADLINE_MS
+    ) {
+      rounds++;
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       await page.waitForTimeout(1500);
 
@@ -310,11 +324,15 @@ async function scrapeCompanyDetails(
           );
           const teamSize = teamMatch ? teamMatch[1] : null;
 
-          // Hiring
+          // Hiring. The selector must not match YC's site-wide chrome: every
+          // page carries a global "Startup Jobs" nav link whose href contains
+          // /jobs, so a bare [href*="jobs"] marked essentially every company
+          // as hiring. A company that IS hiring links its own listings at
+          // workatastartup.com/companies/<slug>.
           const isHiring =
             !!document.querySelector(
-              '[href*="jobs"], [href*="careers"], [class*="hiring"]',
-            ) || /currently hiring/i.test(bodyText);
+              'a[href*="workatastartup.com/companies"]',
+            ) || /currently hiring|is hiring/i.test(bodyText);
 
           // Founders
           const founders: Array<{
