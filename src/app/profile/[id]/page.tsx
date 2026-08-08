@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { Loader2, Sparkles, X } from "lucide-react";
@@ -555,7 +556,7 @@ function FactBankSection({
     setResearchNote(null);
     setResearchError(null);
     try {
-      const res = await fetch("/api/profile/research-facts", {
+      const res = await apiFetch("/api/profile/research-facts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profileId }),

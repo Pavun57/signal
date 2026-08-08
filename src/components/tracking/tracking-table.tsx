@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 import {
   ChevronDown,
   ChevronRight,
@@ -101,7 +102,9 @@ function ExpandableSignalRow({ row }: { row: TrackingRow }) {
   const runNow = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setRunning(true);
-    const res = await fetch(`/api/tracking/${row.id}/run`, { method: "POST" });
+    const res = await apiFetch(`/api/tracking/${row.id}/run`, {
+      method: "POST",
+    });
     setRunning(false);
     if (res.ok) {
       toast.success("Check queued: results land within a minute or two");

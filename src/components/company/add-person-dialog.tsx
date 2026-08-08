@@ -55,7 +55,7 @@ export function AddPersonDialog({
       setSearching(true);
       try {
         const url = `/api/people/orphans${query ? `?q=${encodeURIComponent(query)}` : ""}`;
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const { people } = (await res.json()) as { people: OrphanRow[] };
         if (seq !== searchSeqRef.current) return;
