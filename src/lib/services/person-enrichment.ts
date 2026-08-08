@@ -28,13 +28,14 @@ export interface PersonEnrichmentResult {
 export const PERSON_ENRICH_COLUMNS =
   // !organization_id disambiguates: people carries a second FK to
   // organizations (affiliation_detached_from), so unhinted embeds error.
-  "name, title, linkedin_url, twitter_url, organization:organizations!organization_id(name)";
+  "name, title, linkedin_url, twitter_url, organization_id, organization:organizations!organization_id(name)";
 
 export interface PersonForEnrichment {
   name: string;
   title: string | null;
   linkedin_url: string | null;
   twitter_url: string | null;
+  organization_id?: string | null;
   organization: { name?: string } | null;
 }
 
@@ -115,13 +116,24 @@ export async function enrichPerson(
 
         // URLs already on the company's card, so the same link doesn't appear
         // on both the company and the contact.
+        //
+        // Keyed by the organization id the row already carries, not the name:
+        // same-named org rows are an expected state (dedup is domain-only),
+        // and a name lookup errors on maybeSingle the moment a second "Acme"
+        // exists, silently skipping dedup, or worse, reading a namesake org's
+        // enrichment.
         const companyUrls = new Set<string>();
-        if (person.organization) {
-          const { data: orgRow } = await supabase
+        if (person.organization_id) {
+          const { data: orgRow, error: orgReadError } = await supabase
             .from("organizations")
             .select("enrichment_data")
-            .eq("name", person.organization.name ?? "")
+            .eq("id", person.organization_id)
             .maybeSingle();
+          if (orgReadError) {
+            console.error(
+              `[enrich] company-URL dedup read failed for org ${person.organization_id}: ${orgReadError.message}`,
+            );
+          }
 
           const orgEnrichment = orgRow?.enrichment_data as Record<
             string,
