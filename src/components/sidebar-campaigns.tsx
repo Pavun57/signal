@@ -37,6 +37,7 @@ export function SidebarCampaigns({
 }: SidebarCampaignsProps) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -52,6 +53,12 @@ export function SidebarCampaigns({
       if (mountedRef.current) {
         if (!error && data) {
           setCampaigns(data);
+          setLoadFailed(false);
+        } else if (error) {
+          // Keep any list we already have (this is a 10s poll), but never
+          // render a first-load failure as the "Speak to agent to get
+          // started" empty state.
+          setLoadFailed(true);
         }
         setLoading(false);
       }
@@ -80,7 +87,15 @@ export function SidebarCampaigns({
             </SidebarMenuItem>
           )}
 
-          {!loading && campaigns.length === 0 && (
+          {!loading && loadFailed && campaigns.length === 0 && (
+            <SidebarMenuItem>
+              <SidebarMenuButton disabled className="text-destructive">
+                <span className="text-xs">Campaigns failed to load</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
+
+          {!loading && !loadFailed && campaigns.length === 0 && (
             <SidebarMenuItem>
               <SidebarMenuButton
                 onClick={() => onSelectCampaign(null)}

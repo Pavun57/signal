@@ -28,6 +28,7 @@ interface CampaignRow {
 export default function CampaignsIndexPage() {
   const [campaigns, setCampaigns] = useState<CampaignRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
@@ -36,13 +37,20 @@ export default function CampaignsIndexPage() {
 
     const fetchCampaigns = async () => {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("campaigns")
         .select("id, name, status, created_at")
         .order("updated_at", { ascending: false });
 
       if (mountedRef.current) {
-        setCampaigns(data ?? []);
+        // A failed load is not "No campaigns yet": that empty state invites
+        // creating a duplicate.
+        if (error) {
+          setLoadError(error.message);
+        } else {
+          setLoadError(null);
+          setCampaigns(data ?? []);
+        }
         setLoading(false);
       }
     };
@@ -93,6 +101,11 @@ export default function CampaignsIndexPage() {
             <div className="bg-muted/40 h-9 w-full animate-pulse rounded" />
             <div className="bg-muted/40 h-9 w-full animate-pulse rounded" />
           </div>
+        ) : loadError ? (
+          <p role="alert" className="text-destructive text-sm">
+            Could not load campaigns: {loadError}. Your campaigns are likely
+            still there: reload rather than creating a new one.
+          </p>
         ) : campaigns.length === 0 ? (
           <p className="text-muted-foreground text-sm">
             No campaigns yet. Start one from the chat or the Overview page.

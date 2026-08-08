@@ -65,6 +65,7 @@ export function LearningsSection() {
   const [timing, setTiming] = useState<TimingRow[]>([]);
   const [suppressions, setSuppressions] = useState<SuppressionRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const mountedRef = useRef(true);
@@ -72,14 +73,22 @@ export function LearningsSection() {
   const load = useCallback(async () => {
     try {
       const res = await apiFetch("/api/learnings");
-      if (!res.ok || !mountedRef.current) return;
+      if (!mountedRef.current) return;
+      // A failed load must not render as the "Nothing yet" empty state.
+      if (!res.ok) {
+        setLoadError(`HTTP ${res.status}`);
+        return;
+      }
       const data = await res.json();
       if (!mountedRef.current) return;
+      setLoadError(null);
       setLearnings(data.learnings ?? []);
       setTiming(data.timing ?? []);
       setSuppressions(data.suppressions ?? []);
-    } catch {
-      // Silent: the section simply stays empty on a load failure.
+    } catch (err) {
+      if (mountedRef.current) {
+        setLoadError(err instanceof Error ? err.message : "load failed");
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -144,6 +153,16 @@ export function LearningsSection() {
           <Loader2 className="size-4 animate-spin" />
           Loading learnings...
         </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="border-border bg-card rounded-xl border px-5 py-6 md:px-6">
+        <p role="alert" className="text-destructive text-sm">
+          Could not load learnings: {loadError}. Reload to retry.
+        </p>
       </div>
     );
   }

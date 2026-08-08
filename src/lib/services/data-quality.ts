@@ -80,17 +80,30 @@ export async function runDataQualityAudit(
 ): Promise<DataQualityReport> {
   const findings: DataQualityFinding[] = [];
 
-  const { data: orgs } = await supabase
+  // An audit run on a failed query is worse than no audit: an empty list
+  // reports a clean bill of health with zero findings, which is a claim
+  // about the data, not about the outage.
+  const { data: orgs, error: orgsError } = await supabase
     .from("organizations")
     .select("id, name, domain")
     .limit(MAX_ROWS);
+  if (orgsError) {
+    throw new Error(
+      `Data-quality audit could not load organizations: ${orgsError.message}. No audit was run: retry.`,
+    );
+  }
 
-  const { data: people } = await supabase
+  const { data: people, error: peopleError } = await supabase
     .from("people")
     .select(
       "id, name, title, linkedin_url, organization_id, work_email, work_email_source, work_email_confidence, work_email_verification, affiliation_source, affiliation_confidence",
     )
     .limit(MAX_ROWS);
+  if (peopleError) {
+    throw new Error(
+      `Data-quality audit could not load people: ${peopleError.message}. No audit was run: retry.`,
+    );
+  }
 
   const orgList = orgs ?? [];
   const peopleList = people ?? [];
