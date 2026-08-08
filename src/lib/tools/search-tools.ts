@@ -3,6 +3,7 @@ import { generateObject, tool } from "ai";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
 import { MODELS } from "@/lib/ai/models";
+import { llmTimeout } from "@/lib/utils/timeout";
 import { createClient } from "@/lib/supabase/server";
 import {
   callerHoldsOrganization,
@@ -572,6 +573,8 @@ export const discoverCompanies = tool({
       .join("\n\n");
 
     const { object: extracted, usage } = await generateObject({
+      // K17: without a timeout a hung extraction pins the whole tool call.
+      abortSignal: llmTimeout(),
       model: anthropic(MODELS.LIGHT),
       schema: apiSafeSchema(
         z.object({
@@ -773,25 +776,51 @@ export const searchYCCompanies = tool({
     const supabase = await createClient();
 
     // ── Step 1: Check cache ──────────────────────────────────────────────
-    let cacheQuery = supabase
-      .from("organizations")
-      .select("*")
-      .eq("source", "yc_directory");
+    // The cache stores only what it can filter on (batch, industry). A
+    // request carrying region, teamSize, isHiring, or a query MUST scrape:
+    // the old path matched every cached row for the batch regardless of the
+    // finer filters, auto-linked the non-matching companies to the campaign,
+    // and reported them as matches. And a partial cache must not
+    // short-circuit either: one cached row for a batch used to suppress the
+    // scrape for a 30-company request with no hint more exist.
+    const cacheable =
+      !input.region &&
+      !input.teamSize &&
+      input.isHiring === undefined &&
+      !input.query;
 
-    if (input.batch) {
-      cacheQuery = cacheQuery.eq(
-        "enrichment_data->yc->>batch",
-        input.batch.toUpperCase(),
-      );
+    interface CachedOrg {
+      id: string;
+      name: string;
+      domain: string | null;
+      url: string | null;
+      industry: string | null;
+      location: string | null;
+      description: string | null;
+      enrichment_data: Record<string, unknown> | null;
     }
-    if (input.industry) {
-      cacheQuery = cacheQuery.ilike("industry", `%${input.industry}%`);
+    let cachedOrgs: CachedOrg[] = [];
+    if (cacheable) {
+      let cacheQuery = supabase
+        .from("organizations")
+        .select("*")
+        .eq("source", "yc_directory");
+
+      if (input.batch) {
+        cacheQuery = cacheQuery.eq(
+          "enrichment_data->yc->>batch",
+          input.batch.toUpperCase(),
+        );
+      }
+      if (input.industry) {
+        cacheQuery = cacheQuery.ilike("industry", `%${input.industry}%`);
+      }
+
+      const { data: cached } = await cacheQuery.limit(input.maxResults);
+      cachedOrgs = (cached || []) as CachedOrg[];
     }
 
-    const { data: cached } = await cacheQuery.limit(input.maxResults);
-    const cachedOrgs = cached || [];
-
-    if (cachedOrgs.length > 0) {
+    if (cachedOrgs.length >= input.maxResults) {
       let newlyLinked = 0;
       if (input.campaignId) {
         const { data: existingLinks } = await supabase
