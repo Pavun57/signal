@@ -529,8 +529,21 @@ async function enrichContactById(
     );
   }
 
+  // A row stuck at in_progress has no other recovery path: the status is set
+  // before the scrape chain, and a serverless run killed mid-scrape leaves it
+  // there forever. Re-enriching is the recovery, so the recency skip must not
+  // apply: it used to return status "enriched" while the row still said
+  // in_progress, making the stuck state unfixable for 7 days.
+  const { data: statusRow } = await supabase
+    .from("people")
+    .select("enrichment_status")
+    .eq("id", personId)
+    .maybeSingle();
+  const stuckInProgress = statusRow?.enrichment_status === "in_progress";
+
   // Check recency -- skip if recently enriched
-  const recent = await isRecentlyEnriched("people", personId);
+  const recent =
+    !stuckInProgress && (await isRecentlyEnriched("people", personId));
   if (recent) {
     const { data: person } = await supabase
       .from("people")
@@ -553,7 +566,7 @@ async function enrichContactById(
       // The !organization_id hint is load-bearing: people has a second FK to
       // organizations (affiliation_detached_from), so an unhinted embed is
       // ambiguous and PostgREST rejects the whole query.
-      "name, title, location, linkedin_url, twitter_url, organization:organizations!organization_id(name)",
+      "name, title, location, linkedin_url, twitter_url, organization_id, organization:organizations!organization_id(name)",
     )
     .eq("id", personId)
     .single();
@@ -621,30 +634,36 @@ async function enrichContactById(
 
     // Collect URLs already in the company's enrichment data so we don't
     // show the same links on both the company and contact cards.
+    //
+    // Keyed by the organization id the row already carries: same-named org
+    // rows are an expected state (findOrCreateOrganization dedups by domain
+    // only), and a name lookup errors on maybeSingle the moment a second
+    // "Acme" exists, silently skipping this dedup.
     const companyUrls = new Set<string>();
-    if (person?.organization) {
-      const orgName = (person.organization as unknown as { name?: string })
-        ?.name;
-      if (orgName) {
-        const { data: orgRow } = await supabase
-          .from("organizations")
-          .select("enrichment_data")
-          .eq("name", orgName)
-          .maybeSingle();
+    if (person?.organization_id) {
+      const { data: orgRow, error: orgReadError } = await supabase
+        .from("organizations")
+        .select("enrichment_data")
+        .eq("id", person.organization_id)
+        .maybeSingle();
+      if (orgReadError) {
+        console.error(
+          `[enrichContact] company-URL dedup read failed for org ${person.organization_id}: ${orgReadError.message}`,
+        );
+      }
 
-        const orgEnrichment = orgRow?.enrichment_data as Record<
-          string,
-          unknown
-        > | null;
-        if (orgEnrichment) {
-          const searches = orgEnrichment.searches as
-            | Array<{ results: Array<{ url: string }> }>
-            | undefined;
-          if (searches) {
-            for (const s of searches) {
-              for (const r of s.results) {
-                if (r.url) companyUrls.add(r.url);
-              }
+      const orgEnrichment = orgRow?.enrichment_data as Record<
+        string,
+        unknown
+      > | null;
+      if (orgEnrichment) {
+        const searches = orgEnrichment.searches as
+          | Array<{ results: Array<{ url: string }> }>
+          | undefined;
+        if (searches) {
+          for (const s of searches) {
+            for (const r of s.results) {
+              if (r.url) companyUrls.add(r.url);
             }
           }
         }
@@ -2036,17 +2055,29 @@ export const deleteCompanies = tool({
   execute: async (input) => {
     const supabase = await createClient();
 
-    // Get organization_ids to unlink their people too
-    const { data: links } = await supabase
+    // Get organization_ids to unlink their people too. A failed read must
+    // abort: proceeding used to delete the org links anyway and leave every
+    // campaign_people row behind, contacts attached to companies the
+    // campaign no longer has, while the tool still reported deleted: N.
+    const { data: links, error: linksError } = await supabase
       .from("campaign_organizations")
       .select("organization_id, campaign_id")
       .in("id", input.companyIds);
+    if (linksError) {
+      throw new Error(`Failed to load company links: ${linksError.message}`);
+    }
 
-    if (links && links.length > 0) {
-      const campaignId = links[0].campaign_id;
-      const orgIds = links.map((l) => l.organization_id);
+    // Grouped by campaign, because nothing guarantees the batch is from one:
+    // taking links[0].campaign_id unlinked campaign B's people from campaign
+    // A whenever a batch spanned two campaigns the caller owns.
+    const orgIdsByCampaign = new Map<string, string[]>();
+    for (const l of links ?? []) {
+      const list = orgIdsByCampaign.get(l.campaign_id) ?? [];
+      list.push(l.organization_id);
+      orgIdsByCampaign.set(l.campaign_id, list);
+    }
 
-      // Get person_ids at these orgs
+    for (const [campaignId, orgIds] of orgIdsByCampaign) {
       const { data: people } = await supabase
         .from("people")
         .select("id")
@@ -2062,16 +2093,29 @@ export const deleteCompanies = tool({
       }
     }
 
-    const { error } = await supabase
+    // .select() reports what was actually removed: a delete RLS filtered to
+    // zero rows returns no error, and echoing the input length back reported
+    // deletions that never happened.
+    const { data: deletedRows, error } = await supabase
       .from("campaign_organizations")
       .delete()
-      .in("id", input.companyIds);
+      .in("id", input.companyIds)
+      .select("id");
 
     if (error) throw new Error(`Failed to unlink companies: ${error.message}`);
 
+    const deletedIds = (deletedRows ?? []).map((r) => r.id as string);
+    const notFound = input.companyIds.filter((id) => !deletedIds.includes(id));
+
     return {
-      deleted: input.companyIds.length,
-      companyIds: input.companyIds,
+      deleted: deletedIds.length,
+      companyIds: deletedIds,
+      ...(notFound.length > 0
+        ? {
+            notFound,
+            warning: `${notFound.length} link ID(s) matched nothing and were not deleted. Pass campaign-organization link IDs (the id field on getCompanies rows).`,
+          }
+        : {}),
     };
   },
 });
@@ -2132,15 +2176,25 @@ export const scoreCompany = tool({
   }),
   execute: async (input) => {
     const supabase = await createClient();
-    const { error } = await supabase
+    // .select() distinguishes "stored" from "matched nothing": a 0-row update
+    // returns no error, and agents routinely pass the organization ID here
+    // instead of the link ID, so the tool reported scores that were never
+    // persisted and prioritization silently never happened.
+    const { data: updated, error } = await supabase
       .from("campaign_organizations")
       .update({
         relevance_score: input.score,
         score_reason: input.reason,
       })
-      .eq("id", input.companyId);
+      .eq("id", input.companyId)
+      .select("id");
 
     if (error) throw new Error(`Failed to score company: ${error.message}`);
+    if (!updated || updated.length === 0) {
+      throw new Error(
+        `No campaign company found with link ID ${input.companyId}. Pass the campaign-organization link ID (the id field on getCompanies rows), not the organization ID.`,
+      );
+    }
     return {
       companyId: input.companyId,
       score: input.score,
@@ -2170,15 +2224,21 @@ export const scoreContact = tool({
   }),
   execute: async (input) => {
     const supabase = await createClient();
-    const { error } = await supabase
+    const { data: updated, error } = await supabase
       .from("campaign_people")
       .update({
         priority_score: input.score,
         score_reason: input.reason,
       })
-      .eq("id", input.contactId);
+      .eq("id", input.contactId)
+      .select("id");
 
     if (error) throw new Error(`Failed to score contact: ${error.message}`);
+    if (!updated || updated.length === 0) {
+      throw new Error(
+        `No campaign contact found with link ID ${input.contactId}. Pass the campaign-people link ID, not the person ID.`,
+      );
+    }
     return {
       contactId: input.contactId,
       score: input.score,
@@ -2202,16 +2262,26 @@ export const updateCompanyStatus = tool({
   execute: async (input) => {
     const supabase = await createClient();
 
-    const { error } = await supabase
+    const { data: updatedRows, error } = await supabase
       .from("campaign_organizations")
       .update({ status: input.status })
-      .in("id", input.companyIds);
+      .in("id", input.companyIds)
+      .select("id");
 
     if (error) throw new Error(`Failed to update companies: ${error.message}`);
 
+    const updatedIds = new Set((updatedRows ?? []).map((r) => r.id as string));
+    const notFound = input.companyIds.filter((id) => !updatedIds.has(id));
+
     return {
-      updated: input.companyIds.length,
+      updated: updatedIds.size,
       status: input.status,
+      ...(notFound.length > 0
+        ? {
+            notFound,
+            warning: `${notFound.length} link ID(s) matched nothing. Pass campaign-organization link IDs (the id field on getCompanies rows).`,
+          }
+        : {}),
     };
   },
 });
@@ -2261,26 +2331,47 @@ export const getGoogleReviews = tool({
       });
     }
 
+    let signalTracked = false;
     if (input.campaignId) {
       const supabase = await createClient();
-      const { data: signal } = await supabase
+      const { data: signal, error: signalError } = await supabase
         .from("signals")
         .select("id")
         .eq("slug", "google-reviews")
         .maybeSingle();
 
-      if (signal) {
-        await supabase.from("signal_results").insert({
-          signal_id: signal.id,
-          campaign_id: input.campaignId,
-          organization_id: input.organizationId,
-          output: result,
-          status: result.found ? "success" : "failed",
-        });
+      if (signalError) {
+        console.error(
+          `[getGoogleReviews] signal lookup failed: ${signalError.message}`,
+        );
+      } else if (!signal) {
+        // The built-ins seed lives only in the initial migration; an emptied
+        // signals table does not self-heal, and this used to drop tracking
+        // with no trace at all.
+        console.warn(
+          "[getGoogleReviews] google-reviews signal not found: the built-in signals seed is missing, so this run was not recorded in signal history",
+        );
+      } else {
+        const { error: insertError } = await supabase
+          .from("signal_results")
+          .insert({
+            signal_id: signal.id,
+            campaign_id: input.campaignId,
+            organization_id: input.organizationId,
+            output: result,
+            status: result.found ? "success" : "failed",
+          });
+        if (insertError) {
+          console.error(
+            `[getGoogleReviews] signal_results insert failed: ${insertError.message}`,
+          );
+        } else {
+          signalTracked = true;
+        }
       }
     }
 
-    return result;
+    return { ...result, ...(input.campaignId ? { signalTracked } : {}) };
   },
 });
 

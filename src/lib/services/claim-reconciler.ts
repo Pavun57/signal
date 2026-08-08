@@ -9,12 +9,57 @@ function ageMs(claim: CompanyClaim, now: Date): number | null {
   return Number.isNaN(t) ? null : now.getTime() - t;
 }
 
-/** Case-insensitive containment either way, so "Hiring: Growth Director" matches "Growth Director (Remote)". */
+/**
+ * Words that appear in claim sentences and job-posting decoration but carry no
+ * role identity. Without them stripped, "Hiring: Growth Director" and "Growth
+ * Director (Remote)" can never match: neither string contains the other once
+ * both carry extra text, and every live role read as contradicted.
+ */
+const ROLE_NOISE = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "at",
+  "for",
+  "hiring",
+  "hybrid",
+  "is",
+  "job",
+  "jr",
+  "junior",
+  "of",
+  "onsite",
+  "position",
+  "remote",
+  "role",
+  "senior",
+  "sr",
+  "the",
+  "to",
+  "we",
+]);
+
+function roleTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !ROLE_NOISE.has(t));
+}
+
+/**
+ * Does the claim name a job on the live page? Token subset rather than string
+ * containment: extractor statements are full sentences ("Acme is hiring a Head
+ * of Growth") and scraped titles carry decoration ("Head of Growth (Remote)"),
+ * so the scraped title's identity tokens all appearing in the statement is the
+ * signal, and neither string containing the other is routine for real matches.
+ */
 function matchesScrapedJob(statement: string, careers: CareersScrape): boolean {
-  const s = statement.toLowerCase();
+  const claimed = new Set(roleTokens(statement));
   return careers.jobs.some((j) => {
-    const t = j.title.toLowerCase();
-    return s.includes(t) || t.includes(s);
+    const title = roleTokens(j.title);
+    return title.length > 0 && title.every((t) => claimed.has(t));
   });
 }
 
@@ -36,9 +81,20 @@ export function reconcileClaims(
 ): CompanyClaim[] {
   const out = claims.map((c) => ({ ...c }));
 
+  // Ground truth requires a page that was actually read and actually lists
+  // jobs. careersUrl:null means no careers page was ever found, and zero
+  // scraped jobs cannot distinguish "not hiring" from "could not read the
+  // page" (Stagehand extracts nothing from some JS-heavy pages): both used to
+  // mark every true hiring claim contradicted, and the UI then asserted "The
+  // live careers page says otherwise" about a page never read.
+  const careersIsGroundTruth =
+    opts.careers !== null &&
+    opts.careers.careersUrl !== null &&
+    opts.careers.jobs.length > 0;
+
   for (const c of out) {
     if (c.type !== "hiring_role") continue;
-    if (opts.careers) {
+    if (careersIsGroundTruth && opts.careers) {
       c.status = matchesScrapedJob(c.statement, opts.careers)
         ? "verified"
         : "contradicted";

@@ -284,3 +284,40 @@ describe("ownership", () => {
     expect(updates).toHaveLength(0);
   });
 });
+
+describe("stuck in_progress recovery", () => {
+  it("re-enriches a row stuck at in_progress instead of skipping it", async () => {
+    // The status is set before the scrape chain; a serverless run killed
+    // mid-scrape leaves it there forever, and the recency skip then returned
+    // status "enriched" for 7 days while the row still said in_progress:
+    // permanent "In Progress" in the UI with no recovery path at all.
+    const { isRecentlyEnriched } =
+      await import("@/lib/services/knowledge-base");
+    vi.mocked(isRecentlyEnriched).mockResolvedValueOnce(true);
+    seed({
+      enrichment_status: "in_progress",
+      work_email: "ann@acme.com",
+    });
+
+    const result = (await enrichContact.execute!(
+      { contactId: PERSON_ID },
+      {} as never,
+    )) as { skipped?: boolean };
+
+    expect(result.skipped).toBeUndefined();
+  });
+
+  it("still skips a recently enriched row in a settled state", async () => {
+    const { isRecentlyEnriched } =
+      await import("@/lib/services/knowledge-base");
+    vi.mocked(isRecentlyEnriched).mockResolvedValueOnce(true);
+    seed({ enrichment_status: "enriched", enrichment_data: {} });
+
+    const result = (await enrichContact.execute!(
+      { contactId: PERSON_ID },
+      {} as never,
+    )) as { skipped?: boolean };
+
+    expect(result.skipped).toBe(true);
+  });
+});
