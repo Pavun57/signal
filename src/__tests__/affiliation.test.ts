@@ -30,10 +30,19 @@ let people: PersonRow[] = [];
  */
 let updateError: { message: string } | null = null;
 
+/** What the person SELECT fails with, if anything. */
+let readError: { message: string } | null = null;
+
+/** Fired as each query resolves, so a test can interleave a concurrent write. */
+let onQuery: ((query: { kind: string; filters: unknown }) => void) | null =
+  null;
+
 const client = () =>
   createSupabaseFake({
     tables: { people: () => people },
     updateError: () => updateError,
+    selectError: () => readError,
+    onQuery: (q) => onQuery?.(q),
   });
 
 /** The person under test. Always `people[0]`. */
@@ -77,6 +86,8 @@ const bystanderUntouched = () => expect(people[1]).toEqual(bystander());
 beforeEach(() => {
   seed();
   updateError = null;
+  readError = null;
+  onQuery = null;
 });
 
 // ─── recordAffiliation ────────────────────────────────────────────────────
@@ -850,5 +861,204 @@ describe("normalizeLinkedInUrl", () => {
     expect(normalizeLinkedInUrl("https://github.com/foo")).toBe(
       "https://github.com/foo",
     );
+  });
+});
+
+// ─── A failed lookup is a failure, not a missing person ───────────────────
+
+describe("when the person lookup itself fails", () => {
+  it("reports the failure instead of claiming the person does not exist", async () => {
+    // The SELECT's error used to be discarded, so any query failure read as
+    // data:null and was reported as person_not_found for a person that exists.
+    // Callers then filed the refusal under "unchanged", storing an evidence
+    // string about a write that was never even attempted.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    readError = { message: "connection reset by peer" };
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "team_page",
+      evidence: "listed on acme.com/team",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.reason).toContain("connection reset");
+    expect(result.reason).not.toBe("person_not_found");
+    spy.mockRestore();
+  });
+});
+
+// ─── Mismatch evidence lands even for people attached nowhere ─────────────
+
+describe("a rejection of a person attached nowhere", () => {
+  it("records the mismatch so the re-attach guard arms", async () => {
+    // Freshly discovered rejected candidates are created with no organization,
+    // and the old scope check refused the follow-up detach outright, so
+    // affiliation_detached_from never got set: the next run could re-judge and
+    // re-attach the same wrong person at llm_verified as if nothing had been
+    // learned.
+    seed(); // organization_id null, no source
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-a",
+      evidence: "profile names Chronicle Labs",
+    });
+
+    expect(result.written).toBe(true);
+    expect(people[0].organization_id).toBeNull();
+    expect(people[0].affiliation_detached_from).toBe("org-a");
+    expect(people[0].affiliation_source).toBe("employer_mismatch");
+    expect(people[0].affiliation_confidence).toBe(0);
+    bystanderUntouched();
+  });
+
+  it("arms the guard it just wrote", async () => {
+    seed();
+    await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-a",
+      evidence: "profile names Chronicle Labs",
+    });
+
+    const reattach = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(reattach.written).toBe(false);
+    expect(people[0].organization_id).toBeNull();
+  });
+
+  it("refuses to re-record equal evidence, flagged as not-a-contact", async () => {
+    // Same judgement, second run. Nothing new to store, and the caller must
+    // hear "they are not a contact here", not "the write was refused, keep
+    // them in the list as unchanged".
+    seed({
+      affiliation_source: "employer_mismatch",
+      affiliation_confidence: 0,
+      affiliation_detached_from: "org-a",
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: null,
+      source: "employer_mismatch",
+      detachedFrom: "org-a",
+      evidence: "profile names Chronicle Labs again",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.notAtJudgedOrg).toBe(true);
+    expect(people[0].affiliation_detached_from).toBe("org-a");
+  });
+});
+
+// ─── A refused attach can mean "they work somewhere else" ─────────────────
+
+describe("attach refusals name the person filed elsewhere", () => {
+  it("flags a cross-org refusal so discovery can exclude them", async () => {
+    // The person is filed at org-b with stronger evidence. Refusing the attach
+    // is right, but without the flag the caller cannot tell this refusal from
+    // "already here with stronger evidence" and campaign-links them anyway.
+    seed({
+      organization_id: "org-b",
+      affiliation_source: "team_page",
+      affiliation_confidence: AFFILIATION_WEIGHT.team_page,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.attachedElsewhere).toBe(true);
+    expect(people[0].organization_id).toBe("org-b");
+  });
+
+  it("does not raise the flag for a same-org refusal", async () => {
+    // Refused because the evidence HERE is already stronger: they are a
+    // contact at this company and belong in the list.
+    seed({
+      organization_id: "org-a",
+      affiliation_source: "email_domain",
+      affiliation_confidence: AFFILIATION_WEIGHT.email_domain,
+    });
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(result.written).toBe(false);
+    expect(result.attachedElsewhere).toBeUndefined();
+  });
+});
+
+// ─── The write is guarded against concurrent writers ──────────────────────
+
+describe("concurrent writers", () => {
+  it("scopes the UPDATE to the snapshot the guard evaluated", async () => {
+    // The guard compares against a read taken moments earlier. An UPDATE
+    // filtered only by id applies a decision about that snapshot to whatever
+    // the row has become since, so two racing writers can land the weaker
+    // source last. The predicate is the fix: if the row moved, the write must
+    // miss.
+    const updates: Array<{ filters: unknown }> = [];
+    onQuery = (q) => {
+      if (q.kind === "update") updates.push({ filters: q.filters });
+    };
+
+    await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "team_page",
+      evidence: "listed on acme.com/team",
+    });
+
+    expect(updates).toHaveLength(1);
+    const filters = updates[0].filters as Array<{ op: string; column: string }>;
+    const columns = filters.map((f) => f.column).sort();
+    expect(columns).toEqual(["affiliation_source", "id", "organization_id"]);
+  });
+
+  it("re-evaluates against the winner instead of clobbering it", async () => {
+    // The race from the field: two discovery runs, one lands team_page at
+    // org-b while this one is deciding to write llm_verified at org-a. Without
+    // the guard the weaker source lands last and wins.
+    seed(); // nowhere, no source
+    let raced = false;
+    onQuery = (q) => {
+      if (q.kind === "update" && !raced) {
+        raced = true;
+        people[0].organization_id = "org-b";
+        people[0].affiliation_source = "team_page";
+        people[0].affiliation_confidence = AFFILIATION_WEIGHT.team_page;
+      }
+    };
+
+    const result = await recordAffiliation(client(), {
+      personId: SUBJECT,
+      organizationId: "org-a",
+      source: "llm_verified",
+      evidence: "headline looks right",
+    });
+
+    expect(result.written).toBe(false);
+    // The concurrent stronger write survived.
+    expect(people[0].organization_id).toBe("org-b");
+    expect(people[0].affiliation_source).toBe("team_page");
   });
 });

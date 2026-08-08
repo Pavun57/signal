@@ -235,10 +235,18 @@ export async function findContactsForOrganization(
   // way to tell that the 10 skipped rows were the confirmed employees the user
   // had just asked it to add — so "add them" triggered another search instead
   // of resolving to people we already held.
-  const { data: orgPeople } = await supabase
+  const { data: orgPeople, error: orgPeopleError } = await supabase
     .from("people")
     .select("id, name, title, work_email, personal_email, linkedin_url")
     .eq("organization_id", organizationId);
+  // A failed roster read is not an empty roster. Proceeding with an empty
+  // dedup set re-fetches, re-judges and re-bills every contact we already
+  // hold, then reports them all as newly added.
+  if (orgPeopleError) {
+    return empty(
+      `Could not load the people already attached to this company (${orgPeopleError.message}), so the search was not run: without that list, every known contact would be re-fetched and re-billed as new. Retry.`,
+    );
+  }
   const alreadyLinked: ExistingContact[] = [];
   let alreadyLinkedTotal = 0;
   for (const p of orgPeople ?? []) {
@@ -259,10 +267,15 @@ export async function findContactsForOrganization(
   }
 
   if (campaignId) {
-    const { data: links } = await supabase
+    const { data: links, error: linksError } = await supabase
       .from("campaign_people")
       .select("person:people(linkedin_url)")
       .eq("campaign_id", campaignId);
+    if (linksError) {
+      return empty(
+        `Could not load the campaign's linked contacts (${linksError.message}), so the search was not run: without that list, every known contact would be re-fetched and re-billed as new. Retry.`,
+      );
+    }
     for (const l of links ?? []) {
       const url = (
         l.person as unknown as { linkedin_url: string | null } | null
@@ -314,6 +327,15 @@ export async function findContactsForOrganization(
           source: "team_page",
           evidence,
         });
+
+        // Filed under a DIFFERENT company on evidence outranking even the
+        // team page. Not a contact here, so nothing below applies to them:
+        // recording their email, linking them to the campaign, or listing
+        // them would all act on an affiliation the database just refused.
+        if (!write.written && write.attachedElsewhere) {
+          rejectedAsWrongCompany++;
+          continue;
+        }
 
         if (dp.email) {
           await recordVerifiedEmail(supabase, {
@@ -512,10 +534,16 @@ export async function findContactsForOrganization(
       // departed and dropped from the list while the person stayed attached and
       // fully sendable.
       //
-      // The one refusal that does NOT mean "leave them in the list": the person
-      // is filed under a different company, so nothing here was ever about
-      // them. They are not a contact at this company, and reporting them as an
-      // unchanged one is the same lie in a quieter voice.
+      // The refusals that do NOT mean "leave them in the list": the person is
+      // filed under a different company, so nothing here was ever about them.
+      // They are not a contact at this company, and reporting them as an
+      // unchanged one is the same lie in a quieter voice. attachedElsewhere is
+      // the attach-side flavour: the judge said verified or uncertain, but the
+      // row says they work somewhere else on stronger evidence.
+      if (!write.written && write.attachedElsewhere) {
+        rejectedAsWrongCompany++;
+        continue;
+      }
       if (!write.written && write.notAtJudgedOrg) {
         if (judged.verdict === "rejected") rejectedAsWrongCompany++;
         else departedCount++;
