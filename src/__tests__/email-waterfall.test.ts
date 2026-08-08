@@ -39,6 +39,9 @@ const state: { people: PersonRow[]; organizations: OrgRow[] } = {
   organizations: [],
 };
 
+/** What a SELECT against the named table fails with, if anything. */
+let tableErrors: Record<string, { message: string } | null> = {};
+
 function chain(table: "people" | "organizations") {
   let mode: "select" | "update" = "select";
   let single = false;
@@ -79,7 +82,17 @@ function chain(table: "people" | "organizations") {
         }
         return Promise.resolve({ data: null, error: null }).then(onF, onR);
       }
-      const matches = rows.filter((r) => preds.every((p) => p(r)));
+      const error = tableErrors[table] ?? null;
+      if (error) {
+        return Promise.resolve({ data: null, error }).then(onF, onR);
+      }
+      // Shallow copies, the way a real query returns detached rows. Handing
+      // back live references made every "snapshot" in production code
+      // secretly current, which hid exactly the class of stale-read bug the
+      // freshness test below exists to catch.
+      const matches = rows
+        .filter((r) => preds.every((p) => p(r)))
+        .map((r) => ({ ...r }));
       const data = single ? (matches[0] ?? null) : matches;
       return Promise.resolve({ data, error: null }).then(onF, onR);
     },
@@ -185,6 +198,7 @@ const row = () => state.people[0];
 beforeEach(() => {
   providerEnabled = true;
   exaResults.results = [];
+  tableErrors = {};
   recordAffiliationMock.mockClear();
   provider.findEmail.mockReset().mockResolvedValue(null);
   provider.verifyEmail
@@ -445,5 +459,55 @@ describe("candidate selection", () => {
 
     expect(result.email).toBe("known@acme.com");
     expect(provider.verifyEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("when the company lookup fails", () => {
+  it("fails closed instead of silently running a degraded waterfall", async () => {
+    // A discarded error here nulls the domain, which gates the org pattern,
+    // the paid finder, the inferred pattern and the blind guess: the whole
+    // waterfall silently degrades to a domainless Exa query, and "Could not
+    // find an email address." is presented as a clean answer for a contact
+    // whose org has a perfectly good domain.
+    seed();
+    tableErrors.organizations = { message: "connection reset by peer" };
+
+    const result = await findEmailForPerson("p1");
+
+    expect(result.email).toBeNull();
+    expect(result.reason).toContain("connection reset");
+    expect(result.reason).toMatch(/retry/i);
+    // and nothing was written to the row off the degraded run
+    expect(row().work_email).toBeNull();
+  });
+});
+
+describe("recordNegatives freshness", () => {
+  it("merges rejections against the row's current data, not the opening snapshot", async () => {
+    // The negatives write used to spread a snapshot taken at the top of
+    // findEmailForPerson -- before the Exa search and up to three provider
+    // verifications, a multi-second window. Any enrichment merged in that
+    // window was silently clobbered by the stale spread.
+    seed();
+    provider.findEmail.mockResolvedValue({
+      email: "j.doe@acme.com",
+      confidence: 0.9,
+    });
+    provider.verifyEmail.mockImplementation(async (email: string) => {
+      if (email === "j.doe@acme.com") {
+        // A concurrent enrichment run lands while we are verifying.
+        row().enrichment_data = { linkedin: { posts: [] } };
+        return { status: "undeliverable", catchAll: false };
+      }
+      return { status: "deliverable", catchAll: false };
+    });
+
+    await findEmailForPerson("p1", { verify: true });
+
+    expect(row().work_email).toBe("jane.doe@acme.com");
+    const data = row().enrichment_data as Record<string, unknown>;
+    expect(data.rejectedEmails).toEqual(["j.doe@acme.com"]);
+    // The concurrent write survived the negatives merge.
+    expect(data.linkedin).toEqual({ posts: [] });
   });
 });

@@ -43,10 +43,16 @@ interface OrgRow {
   email_pattern_updated_at: string | null;
 }
 
-function createFakeSupabase(initial: {
-  people?: Partial<PersonRow>[];
-  organizations?: Partial<OrgRow>[];
-}) {
+function createFakeSupabase(
+  initial: {
+    people?: Partial<PersonRow>[];
+    organizations?: Partial<OrgRow>[];
+  },
+  options?: {
+    updateError?: { message: string } | null;
+    selectError?: { message: string } | null;
+  },
+) {
   const tables = {
     people: (initial.people ?? []).map((p) => ({
       id: "",
@@ -108,10 +114,21 @@ function createFakeSupabase(initial: {
       then(onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) {
         const rows = tables[table] as unknown as Record<string, unknown>[];
         if (mode === "update") {
+          const error = options?.updateError ?? null;
+          if (error) {
+            return Promise.resolve({ data: null, error }).then(onF, onR);
+          }
           for (const r of rows) {
             if (preds.every((p) => p(r))) Object.assign(r, updates);
           }
           return Promise.resolve({ data: null, error: null }).then(onF, onR);
+        }
+        const selectError = options?.selectError ?? null;
+        if (selectError) {
+          return Promise.resolve({ data: null, error: selectError }).then(
+            onF,
+            onR,
+          );
         }
         const matches = rows.filter((r) => preds.every((p) => p(r)));
         const data = single ? (matches[0] ?? null) : matches;
@@ -666,5 +683,124 @@ describe("mxCheck", () => {
   it("returns false when DNS returns zero MX records", async () => {
     const resolver = vi.fn().mockResolvedValue([]);
     expect(await mxCheck("noemail.example.com", resolver)).toBe(false);
+  });
+});
+
+// ─── recordVerifiedEmail reports what it did ──────────────────────────────
+
+describe("recordVerifiedEmail return contract", () => {
+  const seedPerson = () => ({
+    people: [
+      {
+        id: "p1",
+        name: "Jane Doe",
+        organization_id: null,
+        work_email: null,
+      },
+    ],
+  });
+
+  it("says it recorded when it recorded", async () => {
+    const { client, tables } = createFakeSupabase(seedPerson());
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "p1",
+      email: "jane@acme.com",
+      source: "user_entered",
+    });
+
+    expect(result.recorded).toBe(true);
+    expect(tables.people[0].work_email).toBe("jane@acme.com");
+  });
+
+  it("reports a role-prefix skip instead of implying success", async () => {
+    // The deterministic silent-drop: a user typing info@acme.com got ok:true
+    // from the route while nothing was recorded and the org pattern never
+    // recomputed.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, tables } = createFakeSupabase(seedPerson());
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "p1",
+      email: "info@acme.com",
+      source: "user_entered",
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(result.reason).toMatch(/role-prefix/);
+    expect(result.error).toBeUndefined();
+    expect(tables.people[0].work_email).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("reports a missing person", async () => {
+    const { client } = createFakeSupabase({ people: [] });
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "ghost",
+      email: "jane@acme.com",
+      source: "user_entered",
+    });
+
+    expect(result).toEqual({ recorded: false, reason: "person_not_found" });
+  });
+
+  it("surfaces a failed write as an error, not a success", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = createFakeSupabase(seedPerson(), {
+      updateError: { message: "permission denied" },
+    });
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "p1",
+      email: "jane@acme.com",
+      source: "user_entered",
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(result.error).toContain("permission denied");
+    quiet.mockRestore();
+  });
+
+  it("surfaces a failed lookup as an error, not a missing person", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = createFakeSupabase(seedPerson(), {
+      selectError: { message: "connection reset" },
+    });
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "p1",
+      email: "jane@acme.com",
+      source: "user_entered",
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(result.error).toContain("connection reset");
+    expect(result.reason).toBeUndefined();
+    quiet.mockRestore();
+  });
+
+  it("reports a weaker-source skip by name", async () => {
+    const { client, tables } = createFakeSupabase({
+      people: [
+        {
+          id: "p1",
+          name: "Jane Doe",
+          organization_id: null,
+          work_email: "jane@acme.com",
+          work_email_source: "send_confirmed" as EmailSource,
+        },
+      ],
+    });
+
+    const result = await recordVerifiedEmail(client, {
+      personId: "p1",
+      email: "other@acme.com",
+      source: "team_page",
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(result.reason).toContain("send_confirmed");
+    expect(tables.people[0].work_email).toBe("jane@acme.com");
   });
 });

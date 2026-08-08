@@ -51,11 +51,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  await recordVerifiedEmail(supabase, {
+  const result = await recordVerifiedEmail(supabase, {
     personId,
     email,
     source: "user_entered",
   });
 
-  return NextResponse.json({ ok: true });
+  // A database failure is a 500 the client can retry. A semantic skip (role
+  // prefix, weaker source) is not an error, but reporting bare ok:true for it
+  // told the UI a user-confirmed address was recorded when nothing was.
+  if (result.error) {
+    return NextResponse.json({ error: result.error }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    recorded: result.recorded,
+    ...(result.reason ? { reason: result.reason } : {}),
+  });
 }
