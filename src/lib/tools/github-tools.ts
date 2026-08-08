@@ -97,7 +97,50 @@ async function findOrCreateGitHubPerson(profile: {
       : null;
 
   if (existing) {
-    await mergeEnrichmentData("people", existing.id, { github: githubData });
+    const existingData =
+      (existing.enrichment_data as Record<string, unknown> | null) ?? {};
+    const existingGithub =
+      (existingData.github as Record<string, unknown> | null) ?? {};
+    const hasFullProfile = !!profile.raw;
+
+    if (hasFullProfile) {
+      // A full profile refresh: new data wins over the old blob, and the
+      // enrichment lifecycle columns are correctly stamped by the merge.
+      await mergeEnrichmentData("people", existing.id, {
+        github: { ...existingGithub, ...githubData },
+      });
+    } else {
+      // A stargazer stub. mergeEnrichmentData replaces top-level keys
+      // wholesale, so passing the stub used to overwrite a stored full
+      // profile (bio, followers, top_repos) with six fields, while
+      // fetched_at looked fresh so nothing ever re-enriched. And its status
+      // default stamped enrichment_status='enriched' onto rows holding only
+      // a stub, which isRecentlyEnriched then skipped for 7 days. Keep the
+      // rich blob, record only the new signal fields, touch no lifecycle
+      // columns.
+      const { error: stubError } = await supabase
+        .from("people")
+        .update({
+          enrichment_data: {
+            ...existingData,
+            github: {
+              ...githubData,
+              ...existingGithub,
+              starred_repo:
+                profile.starred_repo ?? existingGithub.starred_repo ?? null,
+              starred_at:
+                profile.starred_at ?? existingGithub.starred_at ?? null,
+            },
+          },
+        })
+        .eq("id", existing.id);
+      if (stubError) {
+        throw new Error(
+          `Failed to record stargazer signal: ${stubError.message}`,
+        );
+      }
+    }
+
     // Fill-if-null only: a location from discovery or a manual edit wins
     // over the GitHub profile string.
     if (rawLocation) {
@@ -219,9 +262,14 @@ export const fetchGitHubStargazers = tool({
       starred_at: string;
     }> = [];
 
+    // Lower bound allows one page beyond pagesNeeded: the newest page holds
+    // totalStars % 100 entries, so ceil(count/100) pages from the end can
+    // hold fewer than `count` stargazers (150-star repo, count 100: page 2
+    // has 50, and the old bound stopped before page 1, returning half the
+    // request; at worst, one stargazer for a count of 100).
     for (
       let page = accessiblePages;
-      page >= Math.max(1, accessiblePages - pagesNeeded + 1) &&
+      page >= Math.max(1, accessiblePages - pagesNeeded) &&
       stargazers.length < input.count;
       page--
     ) {
@@ -307,33 +355,56 @@ export const fetchGitHubStargazers = tool({
       stargazers: stargazers.slice(0, 50),
     };
 
-    // 4. Store in signal_results
+    // 4. Store in signal_results. Failures are reported, not swallowed: a
+    // missing built-ins seed or a refused insert used to drop the campaign's
+    // signal history silently while the tool claimed full success.
+    let signalTracked = false;
     if (input.campaignId) {
       const supabase = await createClient();
-      const { data: signal } = await supabase
+      const { data: signal, error: signalError } = await supabase
         .from("signals")
         .select("id")
         .eq("slug", "github-stargazers")
         .maybeSingle();
 
-      if (signal) {
-        await supabase.from("signal_results").insert({
-          signal_id: signal.id,
-          campaign_id: input.campaignId,
-          organization_id: input.companyId ?? null,
-          output: {
-            repository: output.repository,
-            total_stars: output.total_stars,
-            fetched: output.fetched,
-            saved_to_db: output.saved_to_db,
-            usernames: output.usernames,
-          },
-          status: stargazers.length > 0 ? "success" : "partial",
-        });
+      if (signalError) {
+        console.error(
+          `[fetchGitHubStargazers] signal lookup failed: ${signalError.message}`,
+        );
+      } else if (!signal) {
+        console.warn(
+          "[fetchGitHubStargazers] github-stargazers signal not found: the built-in signals seed is missing, so this run was not recorded in signal history",
+        );
+      } else {
+        const { error: insertError } = await supabase
+          .from("signal_results")
+          .insert({
+            signal_id: signal.id,
+            campaign_id: input.campaignId,
+            organization_id: input.companyId ?? null,
+            output: {
+              repository: output.repository,
+              total_stars: output.total_stars,
+              fetched: output.fetched,
+              saved_to_db: output.saved_to_db,
+              usernames: output.usernames,
+            },
+            status: stargazers.length > 0 ? "success" : "partial",
+          });
+        if (insertError) {
+          console.error(
+            `[fetchGitHubStargazers] signal_results insert failed: ${insertError.message}`,
+          );
+        } else {
+          signalTracked = true;
+        }
       }
     }
 
-    return output;
+    return {
+      ...output,
+      ...(input.campaignId ? { signal_tracked: signalTracked } : {}),
+    };
   },
 });
 
@@ -388,7 +459,12 @@ export const enrichGitHubProfiles = tool({
                 pushed_at: string;
               }>
             >(
-              `/users/${username}/repos?sort=stars&direction=desc&per_page=10&type=owner`,
+              // The repos endpoint has NO 'stars' sort (only created/updated/
+              // pushed/full_name): sort=stars was silently ignored and the
+              // first 10 alphabetical repos (often toys) were stored as
+              // "top repos". Fetch a full page biased to recent activity and
+              // rank by stars client-side.
+              `/users/${username}/repos?sort=pushed&direction=desc&per_page=100&type=owner`,
             ),
           ]);
           return { profile: profileRes.data, repos: reposRes.data };
@@ -402,9 +478,10 @@ export const enrichGitHubProfiles = tool({
           const raw = result.value.profile;
           const repos = result.value.repos ?? [];
 
-          // Map repos to a clean structure
+          // Map repos to a clean structure, ranked by stars ourselves.
           const topRepos = repos
             .filter((r) => !r.fork) // skip forks
+            .sort((a, b) => b.stargazers_count - a.stargazers_count)
             .slice(0, 10)
             .map((r) => ({
               name: r.name,
