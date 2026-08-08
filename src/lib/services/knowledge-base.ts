@@ -232,8 +232,16 @@ export async function findOrCreatePerson(data: {
 
     if (orgPeople && orgPeople.length > 0) {
       const incomingNorm = stripDiacritics(data.name).toLowerCase();
+      // A conflicting LinkedIn URL means a conflicting identity: two people
+      // with the same name at the same company are still two people, and
+      // merging them lands every later update on the wrong human. Matching on
+      // name is only safe when neither side's URL contradicts it.
       const match = orgPeople.find(
-        (p) => stripDiacritics(p.name).toLowerCase() === incomingNorm,
+        (p) =>
+          stripDiacritics(p.name).toLowerCase() === incomingNorm &&
+          (!normalizedLinkedin ||
+            !p.linkedin_url ||
+            p.linkedin_url === normalizedLinkedin),
       );
       if (match) {
         // Merge in any new data (linkedin URL, email, etc.)
@@ -354,12 +362,20 @@ export async function mergeEnrichmentData(
 ): Promise<void> {
   const supabase = client ?? (await createClient());
 
-  // Fetch existing enrichment_data
-  const { data: existing } = await supabase
+  // Fetch existing enrichment_data. A failed read must abort: treating it as
+  // "no existing data" makes the additive merge destructive, replacing every
+  // accumulated key with just this run's.
+  const { data: existing, error: readError } = await supabase
     .from(table)
     .select("enrichment_data")
     .eq("id", id)
     .single();
+
+  if (readError) {
+    throw new Error(
+      `Failed to read existing enrichment for ${table}/${id}: ${readError.message}`,
+    );
+  }
 
   const existingData =
     (existing?.enrichment_data as Record<string, unknown>) || {};
@@ -378,7 +394,7 @@ export async function mergeEnrichmentData(
     }
   }
 
-  await supabase
+  const { error: writeError } = await supabase
     .from(table)
     .update({
       enrichment_data: merged,
@@ -387,6 +403,14 @@ export async function mergeEnrichmentData(
         status === "enriched" ? new Date().toISOString() : undefined,
     })
     .eq("id", id);
+
+  // Callers report "enriched" on return, so a swallowed write error here
+  // means paid API results are reported as saved and silently lost.
+  if (writeError) {
+    throw new Error(
+      `Failed to save enrichment for ${table}/${id}: ${writeError.message}`,
+    );
+  }
 }
 
 /**

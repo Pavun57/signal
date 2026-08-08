@@ -25,12 +25,24 @@ vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
   estimateClaudeCostFromUsage: () => 0,
 }));
+const extractMock = vi.fn();
 vi.mock("@/lib/services/web-extraction-service", () => ({
-  WebExtractionService: class {},
+  WebExtractionService: class {
+    extract(...args: unknown[]) {
+      return extractMock(...args);
+    }
+  },
+}));
+
+const fetchMock = vi.fn();
+vi.mock("@/lib/safe-fetch", () => ({
+  safeFetch: (...args: unknown[]) => fetchMock(...args),
+  readBodyCapped: async (r: { body: string }) => r.body,
 }));
 
 import {
   filterContactsByCompany,
+  findPeopleOnDomain,
   type CandidateContact,
   type CompanyContext,
 } from "@/lib/services/contact-filter";
@@ -355,5 +367,63 @@ describe("stale snapshots", () => {
     ]);
 
     expect(out[0].verdict).toBe("rejected");
+  });
+});
+
+describe("findPeopleOnDomain page discovery", () => {
+  const quietLogs = () => vi.spyOn(console, "log").mockImplementation(() => {});
+
+  beforeEach(() => {
+    extractMock.mockReset().mockResolvedValue({ success: false });
+    fetchMock.mockReset();
+  });
+
+  const COMMON_PATHS = [
+    "https://acme.com/team",
+    "https://acme.com/about",
+    "https://acme.com/about-us",
+    "https://acme.com/people",
+  ];
+
+  it("tries the common paths when no sitemap exists", async () => {
+    const quiet = quietLogs();
+    fetchMock.mockResolvedValue({ ok: false });
+
+    await findPeopleOnDomain("acme.com", "Acme");
+
+    expect(extractMock.mock.calls.map((c) => c[0])).toEqual(COMMON_PATHS);
+    quiet.mockRestore();
+  });
+
+  it("falls back to the common paths when the sitemap matches nothing", async () => {
+    // The sitemap-index case guarantees this: its <loc> entries are sub-sitemap
+    // files like wp-sitemap-posts-page-1.xml, which match no team keyword, so
+    // urlsToTry was empty and findPeopleOnDomain returned [] for sites that DO
+    // have team pages -- silently, on every run.
+    const quiet = quietLogs();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: `<sitemapindex><sitemap><loc>https://acme.com/wp-sitemap-posts-page-1.xml</loc></sitemap></sitemapindex>`,
+    });
+
+    await findPeopleOnDomain("acme.com", "Acme");
+
+    expect(extractMock.mock.calls.map((c) => c[0])).toEqual(COMMON_PATHS);
+    quiet.mockRestore();
+  });
+
+  it("prefers keyword-matching sitemap URLs when they exist", async () => {
+    const quiet = quietLogs();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: `<urlset><url><loc>https://acme.com/our-team</loc></url><url><loc>https://acme.com/pricing</loc></url></urlset>`,
+    });
+
+    await findPeopleOnDomain("acme.com", "Acme");
+
+    expect(extractMock.mock.calls.map((c) => c[0])).toEqual([
+      "https://acme.com/our-team",
+    ]);
+    quiet.mockRestore();
   });
 });
