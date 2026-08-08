@@ -90,12 +90,19 @@ async function handleSignalTrigger(
   // its drafts pending for the reviewer, and the send below goes through
   // sendApprovedDraft, which requires review_status = 'approved'. "paused"
   // and "completed" stay excluded, so pausing still halts a sequence.
-  const { data: sequences } = await supabase
+  const { data: sequences, error: sequencesError } = await supabase
     .from("sequences")
     .select("id, user_id")
     .eq("trigger_signal_id", payload.signalId)
     .eq("campaign_id", payload.campaignId)
     .in("status", ["draft", "active"]);
+
+  // Thrown, not coalesced to "no matching sequences": a failed read made a
+  // signal fire silently do nothing while the job completed clean. A throw
+  // routes through failJob, and the job system retries it.
+  if (sequencesError) {
+    throw new Error(`sequences load failed: ${sequencesError.message}`);
+  }
 
   if (!sequences || sequences.length === 0) {
     return { sent: 0, reason: "no matching sequences" };
@@ -126,10 +133,13 @@ async function handleSignalTrigger(
     .eq("current_step", 1);
 
   if (payload.organizationId) {
-    const { data: people } = await supabase
+    const { data: people, error: peopleError } = await supabase
       .from("people")
       .select("id")
       .eq("organization_id", payload.organizationId);
+    if (peopleError) {
+      throw new Error(`people load failed: ${peopleError.message}`);
+    }
     if (!people || people.length === 0) {
       return {
         sent: 0,
@@ -143,7 +153,10 @@ async function handleSignalTrigger(
     );
   }
 
-  const { data: enrollments } = await enrollmentQuery;
+  const { data: enrollments, error: enrollmentsError } = await enrollmentQuery;
+  if (enrollmentsError) {
+    throw new Error(`enrollments load failed: ${enrollmentsError.message}`);
+  }
 
   if (!enrollments || enrollments.length === 0) {
     return { sent: 0, drafted, reason: "no enrollments" };
@@ -648,14 +661,25 @@ async function handleFollowups(supabase: ReturnType<typeof getAdminClient>) {
       continue;
     }
 
-    // Check condition against outreach status
-    const { data: cp } = await supabase
+    // Check condition against outreach status. A failed read must SKIP this
+    // enrollment, not default to "sent": the default bypasses the replied/
+    // bounced stop checks below, which is exactly the follow-up-after-reply
+    // failure they exist to prevent. The next 15-minute run retries.
+    const { data: cp, error: cpError } = await supabase
       .from("campaign_people")
       .select("outreach_status")
       .eq("id", enrollment.campaign_people_id)
       .single();
+    if (cpError || !cp) {
+      console.error(
+        `[outreach/followups] outreach_status read failed for enrollment ${enrollment.id}:`,
+        cpError?.message ?? "no row",
+      );
+      skipped++;
+      continue;
+    }
 
-    const outreachStatus = cp?.outreach_status ?? "sent";
+    const outreachStatus = cp.outreach_status ?? "sent";
 
     // If they replied, stop the sequence
     if (outreachStatus === "replied") {

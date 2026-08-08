@@ -34,12 +34,21 @@ export async function saveDraft(
   supabase: SupabaseClient,
   input: SaveDraftInput,
 ): Promise<SaveDraftResult> {
-  const { data: person } = await supabase
+  // A failed read is not a missing person. "Person not found. Use findEmail
+  // to discover one first." is a factual claim the agent acts on: it re-runs
+  // discovery or drops the contact, when the right move was to retry.
+  const { data: person, error: personError } = await supabase
     .from("people")
     .select("id, name, work_email, personal_email")
     .eq("id", input.personId)
     .single();
 
+  if (personError && personError.code !== "PGRST116") {
+    return {
+      ok: false,
+      error: `Could not load the contact (${personError.message}). This is a temporary failure: retry, do not re-run discovery.`,
+    };
+  }
   if (!person) {
     return { ok: false, error: "Person not found." };
   }
@@ -53,13 +62,19 @@ export async function saveDraft(
     };
   }
 
-  const { data: cp } = await supabase
+  const { data: cp, error: cpError } = await supabase
     .from("campaign_people")
     .select("id")
     .eq("campaign_id", input.campaignId)
     .eq("person_id", input.personId)
     .single();
 
+  if (cpError && cpError.code !== "PGRST116") {
+    return {
+      ok: false,
+      error: `Could not check the campaign link (${cpError.message}). This is a temporary failure: retry.`,
+    };
+  }
   if (!cp) {
     return {
       ok: false,

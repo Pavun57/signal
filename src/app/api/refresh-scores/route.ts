@@ -210,18 +210,34 @@ ${wrapUntrusted(JSON.stringify(contactSummaries, null, 2))}`,
         user_id: user.id,
       });
 
-      // Batch update scores on campaign_people junction table
-      const updates = result.object.scores.map((s) =>
-        supabase
-          .from("campaign_people")
-          .update({ priority_score: s.score, score_reason: s.reason })
-          .eq("id", s.id),
+      // Batch update scores on campaign_people junction table. Each write's
+      // outcome is read: query builders never reject, so a bare Promise.all
+      // reported every row scored while failed writes and LLM-hallucinated
+      // link ids (a 0-row match returns no error) silently persisted nothing.
+      const outcomes = await Promise.all(
+        result.object.scores.map(async (s) => {
+          const { data: updated, error } = await supabase
+            .from("campaign_people")
+            .update({ priority_score: s.score, score_reason: s.reason })
+            .eq("id", s.id)
+            .select("id");
+          if (error || !updated || updated.length === 0) {
+            console.error(
+              `[refresh-scores] score write matched nothing for ${s.id}:`,
+              error?.message ?? "0 rows",
+            );
+            return { id: s.id, stored: false };
+          }
+          return { id: s.id, stored: true };
+        }),
       );
 
-      await Promise.all(updates);
+      const stored = outcomes.filter((o) => o.stored).length;
+      const failedIds = outcomes.filter((o) => !o.stored).map((o) => o.id);
 
       return Response.json({
-        scored: result.object.scores.length,
+        scored: stored,
+        ...(failedIds.length > 0 ? { failedIds } : {}),
         scores: result.object.scores,
       });
     },

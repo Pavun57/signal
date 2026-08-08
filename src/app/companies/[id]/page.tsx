@@ -107,6 +107,16 @@ export default function CompanyPage() {
       return;
     }
 
+    // A failed people or campaigns sub-query must not render the company as
+    // "0 people" with an empty org chart: that reads as a data state, not an
+    // outage.
+    const subError = peopleRes.error || campaignsRes.error;
+    if (subError) {
+      setError(`Failed to load company data: ${subError.message}`);
+      setLoading(false);
+      return;
+    }
+
     setOrg(orgRes.data as OrgRow);
     setPeople((peopleRes.data ?? []) as PersonRow[]);
 

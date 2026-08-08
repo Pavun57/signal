@@ -29,10 +29,18 @@ export async function GET(request: Request) {
   // Surface only orphans the user has touched: any person with no
   // organization_id whose campaign_people row points to one of the
   // user's campaigns.
-  const { data: ownedPersonIds } = await supabase
+  // A failed read must not render as "no unassigned people": that empty
+  // state is a data-quality claim the user acts on.
+  const { data: ownedPersonIds, error: ownedError } = await supabase
     .from("campaign_people")
     .select("person_id, campaign:campaigns!inner(user_id)")
     .eq("campaign.user_id", user.id);
+  if (ownedError) {
+    return Response.json(
+      { error: `Could not load people: ${ownedError.message}` },
+      { status: 500 },
+    );
+  }
 
   const allowedIds = new Set(
     ((ownedPersonIds ?? []) as Array<{ person_id: string }>).map(

@@ -12,6 +12,7 @@ import { LearningsSection } from "@/components/email-skills/learnings-section";
 import { VoiceProfileView } from "@/components/email-skills/voice-profile-view";
 import { VoiceSwipe } from "@/components/email-skills/voice-swipe";
 import { useCampaign } from "@/lib/campaign-context";
+import { useStreaming } from "@/lib/streaming-context";
 import { useVoiceRun } from "@/lib/voice-run-context";
 import { createClient } from "@/lib/supabase/client";
 import type { VoiceProfile } from "@/lib/types/email-voice";
@@ -45,6 +46,7 @@ function EmailVoiceScope() {
   const searchParams = useSearchParams();
   const campaignId = searchParams.get("campaign");
   const { openAgentWith } = useCampaign();
+  const { isStreaming } = useStreaming();
   const { run, savedTick, discardRun } = useVoiceRun();
 
   const [profiles, setProfiles] = useState<VoiceSummary[]>([]);
@@ -55,6 +57,26 @@ function EmailVoiceScope() {
   const [running, setRunning] = useState(false);
   /** A refinement was handed to the agent; cleared when a save lands. */
   const [refineSent, setRefineSent] = useState(false);
+  const refineWasStreamingRef = useRef(false);
+
+  // refineSent is otherwise cleared only by a successful save (the rules
+  // change remounts the view via key={updated_at}), so a failed or abandoned
+  // refine left the voice page busy forever. When the agent's stream ends
+  // without a rules change, release the busy state after a grace period for
+  // the refetch to land.
+  useEffect(() => {
+    if (!refineSent) {
+      refineWasStreamingRef.current = false;
+      return;
+    }
+    if (isStreaming) {
+      refineWasStreamingRef.current = true;
+      return;
+    }
+    if (!refineWasStreamingRef.current) return;
+    const t = setTimeout(() => setRefineSent(false), 5000);
+    return () => clearTimeout(t);
+  }, [refineSent, isStreaming]);
 
   const mountedRef = useRef(true);
 

@@ -84,11 +84,23 @@ export function stripQuotedReply(raw: string): string {
   const lines = raw.replace(/\r\n/g, "\n").split("\n");
   const kept: string[] = [];
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     // "On Thu, 30 Jul 2026 at 22:48, <jay@sahnan.co> wrote:" and the many
     // client-specific variants of it. Everything after is quoted history.
     if (/^\s*(on\b.*\bwrote:\s*$|-+\s*original message\s*-+)/i.test(line))
       break;
+    // Gmail wraps the attribution at ~78 chars, splitting it across two
+    // lines ("On Thu, 30 Jul 2026 at 22:48, Jay Sahnan\n<jay@sahnan.co>
+    // wrote:"), so a single-line test let the fragments through into stored
+    // reply bodies. Join the line with the next and re-test.
+    if (
+      i + 1 < lines.length &&
+      /^\s*on\b/i.test(line) &&
+      /\bwrote:\s*$/i.test(`${line} ${lines[i + 1]}`)
+    ) {
+      break;
+    }
     if (/^\s*>/.test(line)) continue;
     kept.push(line);
   }

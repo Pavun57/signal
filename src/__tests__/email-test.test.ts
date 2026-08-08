@@ -7,6 +7,7 @@ import {
   checkTestCooldown,
   matchTestReply,
   validateTestRecipient,
+  stripQuotedReply,
 } from "@/lib/services/email-test";
 
 describe("validateTestRecipient", () => {
@@ -162,5 +163,32 @@ On Thu, 30 Jul 2026 at 22:48, <jay@sahnan.co> wrote:
 
   it("returns empty string for a body that is entirely quoted", () => {
     expect(extractReplyText("> only quoted\n> lines here")).toBe("");
+  });
+});
+
+describe("stripQuotedReply wrapped attributions", () => {
+  it("drops a Gmail attribution wrapped across two lines", () => {
+    // Gmail wraps the attribution at ~78 chars, so the single-line test let
+    // both fragments through into stored reply bodies and the Settings
+    // test-send snippet.
+    const raw = [
+      "Sounds good, let's talk Tuesday.",
+      "",
+      "On Thu, 30 Jul 2026 at 22:48, Jay Sahnan",
+      "<jay@sahnan.co> wrote:",
+      "> This is a test send from Signal.",
+    ].join("\n");
+
+    expect(stripQuotedReply(raw)).toBe("Sounds good, let's talk Tuesday.");
+  });
+
+  it("still drops a single-line attribution", () => {
+    const raw = [
+      "Yes please.",
+      "On Thu, 30 Jul 2026 at 22:48, <jay@sahnan.co> wrote:",
+      "> old text",
+    ].join("\n");
+
+    expect(stripQuotedReply(raw)).toBe("Yes please.");
   });
 });
