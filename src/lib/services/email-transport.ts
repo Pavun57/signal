@@ -36,13 +36,26 @@ export async function resolveSenderConfig(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<SenderConfig | { error: string }> {
-  const { data: settings } = await supabase
+  const { data: settings, error: settingsError } = await supabase
     .from("user_settings")
     .select(
       "gmail_address, gmail_app_password_enc, gmail_connected_at, from_name, reply_to_email, daily_send_limit, sending_paused, send_window_start, send_window_end, send_timezone, send_window_scope",
     )
     .eq("user_id", userId)
     .maybeSingle();
+
+  // A failed read is a retryable outage, not an unconfigured mailbox. Telling
+  // a fully connected user "Email is not configured. Go to Settings" sends
+  // them to re-do setup (and reset their warmup clock) over a DB blip, and
+  // the followups cron records the same misleading reason for every send.
+  if (settingsError) {
+    console.error(
+      `[email-transport] settings read failed for ${userId}: ${settingsError.message}`,
+    );
+    return {
+      error: `Could not load email settings (${settingsError.message}). This is a temporary failure: retry the send. It does not mean email is unconfigured.`,
+    };
+  }
 
   if (!settings?.gmail_address || !settings.gmail_app_password_enc) {
     return { error: NOT_CONNECTED };

@@ -82,6 +82,7 @@ export function EmailSettings() {
   const [testTo, setTestTo] = useState("");
   const [testSending, setTestSending] = useState(false);
   const [testChecking, setTestChecking] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const [testReply, setTestReply] = useState<TestReply | null>(null);
   const [testWarning, setTestWarning] = useState<string | null>(null);
@@ -94,7 +95,13 @@ export function EmailSettings() {
   const load = async () => {
     try {
       const res = await apiFetch("/api/settings/email");
-      if (!res.ok) return;
+      // A failed load must not render the "Not connected" setup form: the
+      // mailbox may be fully connected, and a user who re-enters credentials
+      // to "reconnect" can reset their warmup clock.
+      if (!res.ok) {
+        if (mountedRef.current) setLoadError(`HTTP ${res.status}`);
+        return;
+      }
       const data = await res.json();
       if (!mountedRef.current) return;
 
@@ -170,8 +177,10 @@ export function EmailSettings() {
         setTestReply(null);
         setTestWarning(null);
       }
-    } catch {
-      // silently fail
+    } catch (err) {
+      if (mountedRef.current) {
+        setLoadError(err instanceof Error ? err.message : "network error");
+      }
     } finally {
       if (mountedRef.current) setLoading(false);
     }
@@ -450,6 +459,33 @@ export function EmailSettings() {
         <p className="text-muted-foreground text-sm">
           Loading email settings...
         </p>
+      </SettingsSection>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <SettingsSection
+        title="Email"
+        description="Connect your Gmail or Google Workspace mailbox for sending outreach."
+      >
+        <div className="space-y-3">
+          <p role="alert" className="text-destructive text-sm">
+            Could not load email settings: {loadError}. Your mailbox may still
+            be connected, so do not re-enter credentials based on this screen.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setLoadError(null);
+              setLoading(true);
+              void load();
+            }}
+          >
+            Retry
+          </Button>
+        </div>
       </SettingsSection>
     );
   }
