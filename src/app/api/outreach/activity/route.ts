@@ -209,13 +209,26 @@ export async function GET(request: Request) {
   filtered.sort((a, b) => b.at.localeCompare(a.at));
   const page = filtered.slice(0, limit);
 
+  // Only sent rows are cursor-paginated (pending mail is a bounded set). The
+  // page is ordered by `at` (a reply lifts an old email to the top), so "the
+  // oldest sent_at on the page" can sit far below sent rows that were fetched
+  // but sliced off; a cursor there skips them on every later page, forever.
+  // The cursor may only advance past rows that were actually returned: walk
+  // the fetched sent rows newest-first and stop at the first one the page
+  // does not contain. Rows below that boundary are re-fetched next page
+  // (consumers should dedupe by id).
+  const sentRows = (sentRes.data ?? []) as unknown as SentRow[];
+  let nextCursor: string | null = null;
+  if (sentRows.length === limit) {
+    const returnedIds = new Set(page.map((i) => i.id));
+    for (const row of sentRows) {
+      if (!returnedIds.has(row.id)) break;
+      nextCursor = row.sent_at;
+    }
+  }
+
   return Response.json({
     items: page,
-    // Only sent rows are cursor-paginated (pending mail is a bounded set), so
-    // the cursor is the oldest sent_at on the page.
-    nextCursor:
-      page.length === limit
-        ? (page.filter((i) => i.sent_at).at(-1)?.sent_at ?? null)
-        : null,
+    nextCursor,
   });
 }

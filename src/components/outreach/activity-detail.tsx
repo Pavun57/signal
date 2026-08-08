@@ -60,7 +60,14 @@ export function ActivityDetail({
     if (isPending || data) return;
     let cancelled = false;
     apiFetch(`/api/outreach/activity/${id}`)
-      .then((r) => r.json())
+      .then((r) => {
+        // A 404/500 body is {error}, not a DetailPayload. Storing it as one
+        // put the render on data.sent.to_email of undefined: a TypeError that
+        // tripped the route error boundary and replaced the whole outreach
+        // page instead of failing this one row.
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((payload: DetailPayload) => {
         if (!cancelled) {
           setData(payload);
