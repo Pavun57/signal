@@ -169,3 +169,38 @@ describe("resolveOrganizationDomain", () => {
     expect(await resolveOrganizationDomain(CARE_HOME)).toBeNull();
   });
 });
+
+describe("site-builder apexes", () => {
+  it("refuses a platform apex that Places returned as the website", async () => {
+    // https://cedarlodge.business.site normalizes to the builder's apex: the
+    // sub-label that identified the business is already gone. Storing
+    // "business.site" as this company's domain dedupes every business hosted
+    // on the builder into one org, and the twin-merge then repoints one
+    // company's people onto an unrelated company.
+    getPlaceReviews.mockResolvedValue(
+      placesHit("Cedar Lodge Nursing Home", "https://cedarlodge.business.site"),
+    );
+
+    const resolved = await resolveOrganizationDomain(CARE_HOME);
+
+    expect(resolved).toBeNull();
+  });
+
+  it("refuses a platform apex from the Exa fallback too", async () => {
+    // business.site is NOT on the PSL private section, so the sub-label
+    // collapses away during normalization; a builder that IS on it (like
+    // wixsite.com) keeps its identifying sub-label and is fine to store.
+    search.mockResolvedValue(
+      exaResults([
+        {
+          url: "https://cedarlodge.business.site/about",
+          title: "Cedar Lodge Nursing Home | Birmingham",
+        },
+      ]),
+    );
+
+    const resolved = await resolveOrganizationDomain(CARE_HOME);
+
+    expect(resolved).toBeNull();
+  });
+});

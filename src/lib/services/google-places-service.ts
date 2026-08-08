@@ -74,9 +74,18 @@ export class GooglePlacesService {
         `Google Places search for "${textQuery}"`,
       );
 
+      // Google bills Text Search per request, whatever comes back. Tracking
+      // only the found-with-results path made the cost dashboard understate
+      // Places spend by the entire miss rate.
       if (!res.ok) {
         const body = await res.text();
         console.error(`[GooglePlaces] API error ${res.status}: ${body}`);
+        trackUsage({
+          service: "google",
+          operation: "places-search",
+          estimated_cost_usd: PRICING.google_places_search,
+          metadata: { textQuery, httpStatus: res.status },
+        });
         return {
           found: false,
           placeId: null,
@@ -96,6 +105,12 @@ export class GooglePlacesService {
 
       if (!places || places.length === 0) {
         console.log(`[GooglePlaces] No results for "${textQuery}"`);
+        trackUsage({
+          service: "google",
+          operation: "places-search",
+          estimated_cost_usd: PRICING.google_places_search,
+          metadata: { textQuery, found: false },
+        });
         return {
           found: false,
           placeId: null,
@@ -120,9 +135,32 @@ export class GooglePlacesService {
           const placeHost = new URL(websiteUri).hostname.replace(/^www\./, "");
           const targetHost = domain.replace(/^www\./, "");
           if (placeHost !== targetHost) {
+            // A mismatch means the matched Place is a different business (an
+            // "Apex Gym" for "Apex"). Proceeding anyway stored the wrong
+            // company's rating and reviews under the target org, and drafting
+            // then cited a namesake's customers as outreach hooks. The caller
+            // asked for cross-verification by passing the domain; honor it.
             console.log(
-              `[GooglePlaces] Domain mismatch: place=${placeHost}, target=${targetHost} (proceeding anyway)`,
+              `[GooglePlaces] Domain mismatch: place=${placeHost}, target=${targetHost}. Discarding the match.`,
             );
+            trackUsage({
+              service: "google",
+              operation: "places-search",
+              estimated_cost_usd: PRICING.google_places_search,
+              metadata: { textQuery, domainMismatch: true, placeHost },
+            });
+            return {
+              found: false,
+              placeId: null,
+              displayName: null,
+              rating: null,
+              userRatingCount: 0,
+              formattedAddress: null,
+              googleMapsUri: null,
+              websiteUri: null,
+              reviews: [],
+              error: `Google Places matched a different business (${placeHost}), not ${targetHost}.`,
+            };
           }
         } catch {
           // URL parsing failed, skip check

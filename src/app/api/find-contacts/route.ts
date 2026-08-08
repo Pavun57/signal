@@ -53,12 +53,21 @@ export async function POST(request: Request) {
   const { data: link, error: linkError } = await supabase
     .from("campaign_organizations")
     .select(
-      "organization_id, organization:organizations(name, domain, industry, location, description)",
+      "organization_id, campaign_id, organization:organizations(name, domain, industry, location, description)",
     )
     .eq("id", companyId)
     .single();
 
   if (linkError || !link) {
+    return Response.json({ error: "Company not found" }, { status: 404 });
+  }
+
+  // The link has to belong to the campaign the caller named. Both ownership
+  // checks can pass individually for a caller who owns two campaigns, and a
+  // mismatched pair then writes campaign_people rows into a campaign with no
+  // campaign_organizations row for that org: contacts found inside a campaign
+  // and invisible in its UI, the exact dead-end find-more-people closed.
+  if (link.campaign_id !== campaignId) {
     return Response.json({ error: "Company not found" }, { status: 404 });
   }
 

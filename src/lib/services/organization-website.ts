@@ -9,6 +9,7 @@ import {
 } from "@/lib/services/directory-domains";
 import { resolveOrganizationDomain } from "@/lib/services/domain-resolver";
 import { normalizeDomain } from "@/lib/services/knowledge-base";
+import { getAdminClient } from "@/lib/supabase/admin";
 
 /**
  * Give a company the website it never had.
@@ -147,9 +148,15 @@ async function mergeOrganizations(
   // Count what is left rather than assume the writes landed. Every one of these
   // tables loses rows, or a contact loses their employer, if the delete runs
   // while something still points here.
+  //
+  // Counted with the ADMIN client, because the emptiness check has to be
+  // global: the caller's RLS view only shows their own campaign links, so
+  // another tenant's link to fromId would be invisible, remaining would read
+  // zero, and the delete below would cascade that tenant's link away.
+  const admin = getAdminClient();
   let remaining = 0;
   for (const table of REFERRING_TABLES) {
-    const { data } = await supabase
+    const { data } = await admin
       .from(table)
       .select("id")
       .eq("organization_id", fromId);
@@ -157,12 +164,17 @@ async function mergeOrganizations(
   }
 
   // Verify the delete rather than infer it. organizations had no DELETE policy
-  // until 20260804000000, so this matched zero rows and returned no error
-  // while the caller reported `deletedOld: true` and a completed merge -- the
-  // old row was still there, still holding the name, on every install.
+  // until 20260804000000, and the policy that migration added can never
+  // authorize THIS delete either: it requires a campaign_organizations link
+  // from the caller's campaign to the row, and the merge has just moved or
+  // dropped every such link. So the RLS-scoped delete matched zero rows and
+  // returned no error on every install, and every merge left an orphaned
+  // domain-less duplicate behind. The admin client is the right authority
+  // here: the caller's right to merge was proven by the RLS-scoped moves
+  // above, and the global remaining-count proves the row is truly unreferenced.
   let deletedOld = false;
   if (remaining === 0) {
-    const { data: deleted } = await supabase
+    const { data: deleted } = await admin
       .from("organizations")
       .delete()
       .eq("id", fromId)
