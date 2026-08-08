@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   FACT_CATEGORIES,
+  loadAllSenderFacts,
   loadSenderFacts,
   type FactCategory,
 } from "@/lib/sender-facts";
@@ -76,8 +77,15 @@ export const researchSenderProfile = tool({
     const result = await researchSender(profile, userId);
     if (!result.ok) return { error: result.error };
 
-    const existing = await loadSenderFacts(supabase, profile.id);
-    const survivors = dedupeFacts(result.facts, existing);
+    // Full-bank baseline, refused on error: an empty or truncated baseline
+    // re-inserts facts that already exist.
+    const existingRes = await loadAllSenderFacts(supabase, profile.id);
+    if (!existingRes.ok) {
+      return {
+        error: `Could not load the existing fact bank (${existingRes.error}), so nothing was saved: inserting without it would duplicate facts. Retry.`,
+      };
+    }
+    const survivors = dedupeFacts(result.facts, existingRes.facts);
     const skippedAsDuplicates = result.facts.length - survivors.length;
 
     if (survivors.length === 0) {
@@ -149,8 +157,13 @@ export const addSenderFacts = tool({
     const profile = await resolveProfile(supabase, input.profileId);
     if (!profile) return { error: NO_PROFILE_ERROR };
 
-    const existing = await loadSenderFacts(supabase, profile.id);
-    const survivors = dedupeFacts(input.facts, existing);
+    const existingRes = await loadAllSenderFacts(supabase, profile.id);
+    if (!existingRes.ok) {
+      return {
+        error: `Could not load the existing fact bank (${existingRes.error}), so nothing was saved: inserting without it would duplicate facts. Retry.`,
+      };
+    }
+    const survivors = dedupeFacts(input.facts, existingRes.facts);
     const skippedAsDuplicates = input.facts.length - survivors.length;
 
     if (survivors.length === 0) {

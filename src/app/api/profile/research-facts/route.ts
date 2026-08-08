@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { z } from "zod";
 
-import { loadSenderFacts } from "@/lib/sender-facts";
+import { loadAllSenderFacts } from "@/lib/sender-facts";
 import { dedupeFacts, researchSender } from "@/lib/services/sender-research";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 import type { UserProfile } from "@/lib/types/profile";
@@ -59,8 +59,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: result.error }, { status: 400 });
   }
 
-  const existing = await loadSenderFacts(supabase, profile.id);
-  const survivors = dedupeFacts(result.facts, existing);
+  // Dedupe against the FULL bank, and refuse on a failed read: an empty or
+  // truncated baseline re-inserts every fact that already exists, bloating
+  // the bank fed into every composed email.
+  const existingRes = await loadAllSenderFacts(supabase, profile.id);
+  if (!existingRes.ok) {
+    return NextResponse.json(
+      {
+        error: `Could not load the existing fact bank (${existingRes.error}), so nothing was saved: inserting without it would duplicate facts. Retry.`,
+      },
+      { status: 500 },
+    );
+  }
+  const survivors = dedupeFacts(result.facts, existingRes.facts);
   const skippedAsDuplicates = result.facts.length - survivors.length;
 
   if (survivors.length === 0) {

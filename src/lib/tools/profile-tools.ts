@@ -53,17 +53,22 @@ export const updateUserProfile = tool({
     }
 
     if (profileId) {
-      const { error } = await supabase
+      // .select() distinguishes "updated" from "matched nothing": a 0-row
+      // update returns no error, so a stale or mistyped profileId reported
+      // action:'updated' while the user's correction silently never landed
+      // and drafts kept the old offering_summary.
+      const { data: updatedRows, error } = await supabase
         .from("user_profile")
         .update(fields)
-        .eq("id", profileId);
-      if (error) throw new Error(`Failed to update profile: ${error.message}`);
-
-      const { data: profile } = await supabase
-        .from("user_profile")
-        .select("*")
         .eq("id", profileId)
-        .single();
+        .select("*");
+      if (error) throw new Error(`Failed to update profile: ${error.message}`);
+      const profile = updatedRows?.[0];
+      if (!profile) {
+        return {
+          error: `No profile found with id ${profileId}. It may have been deleted: call getUserProfile to see the current profiles, then retry.`,
+        };
+      }
 
       return { profile, action: "updated", updated: Object.keys(fields) };
     }

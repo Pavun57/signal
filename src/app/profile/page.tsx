@@ -22,6 +22,7 @@ import type { UserProfile } from "@/lib/types/profile";
 export default function ProfilesIndexPage() {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
@@ -30,13 +31,21 @@ export default function ProfilesIndexPage() {
 
     const fetchProfiles = async () => {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("user_profile")
         .select("*")
         .order("created_at", { ascending: false });
 
       if (mountedRef.current) {
-        setProfiles(Array.isArray(data) ? data : []);
+        // A failed load is not "No profiles yet": that empty state tells the
+        // user to create one, and following it mints a duplicate seller
+        // identity that compose then picks from ambiguously.
+        if (error) {
+          setLoadError(error.message);
+        } else {
+          setLoadError(null);
+          setProfiles(Array.isArray(data) ? data : []);
+        }
         setLoading(false);
       }
     };
@@ -98,6 +107,11 @@ export default function ProfilesIndexPage() {
             <div className="bg-muted/40 h-9 w-full animate-pulse rounded" />
             <div className="bg-muted/40 h-9 w-full animate-pulse rounded" />
           </div>
+        ) : loadError ? (
+          <p role="alert" className="text-destructive text-sm">
+            Could not load profiles: {loadError}. Your profiles are likely still
+            there: reload rather than creating a new one.
+          </p>
         ) : profiles.length === 0 ? (
           <p className="text-muted-foreground text-sm">
             No profiles yet. Create one so the agent knows who it is writing as.
