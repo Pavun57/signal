@@ -12,9 +12,20 @@ const DOMAIN_RE =
   /(?<=^|[\s|])([a-z0-9][-a-z0-9]*(?:\.[a-z0-9][-a-z0-9]*)*\.(?:co\.uk|com|org|net|io|dev|ai|uk|app|xyz|biz|me|co|tech|agency|info|us|ca|de|fr|eu|property|estate|house|homes|realty))(?=[\s|,)]|$)/gim;
 
 function autoLinkDomains(text: string): string {
-  return text.replace(DOMAIN_RE, (match) =>
-    match.includes(":") ? match : `[${match}](https://${match})`,
-  );
+  // Fenced code blocks are left byte-for-byte alone: this rewrite runs on the
+  // raw markdown BEFORE parsing, so a bare domain on a line inside ``` used
+  // to render as literal "[acme.com](https://acme.com)" in the middle of a
+  // command the user might copy.
+  const segments = text.split(/(```[\s\S]*?(?:```|$))/);
+  return segments
+    .map((segment, i) =>
+      i % 2 === 1
+        ? segment
+        : segment.replace(DOMAIN_RE, (match) =>
+            match.includes(":") ? match : `[${match}](https://${match})`,
+          ),
+    )
+    .join("");
 }
 
 export function Markdown({ children, className }: MarkdownProps) {

@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactFlow, {
+  applyNodeChanges,
   Background,
   Controls,
   MiniMap,
   type Node,
+  type NodeChange,
   type NodeTypes,
 } from "reactflow";
 import "reactflow/dist/style.css";
@@ -268,10 +270,22 @@ export function OrgChart({
   onPersonRemove,
   fullHeight = true,
 }: OrgChartProps) {
-  const { nodes, cells } = useMemo(
+  const { nodes: layoutNodes, cells } = useMemo(
     () => buildLayout(people, onPersonRemove),
     [people, onPersonRemove],
   );
+
+  // Controlled nodes NEED onNodesChange applied to state: without it,
+  // ReactFlow discards every position change (it only applies them itself
+  // when the nodes are uncontrolled), so dragged cards stayed frozen on
+  // screen while the invisible drag position moved with the cursor, and
+  // onNodeDragStop then reclassified people into cells the card was never
+  // seen entering.
+  const [nodes, setNodes] = useState<Node[]>(layoutNodes);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNodes(layoutNodes);
+  }, [layoutNodes]);
 
   if (people.length === 0) {
     return (
@@ -297,6 +311,9 @@ export function OrgChart({
     >
       <ReactFlow
         nodes={nodes}
+        onNodesChange={(changes: NodeChange[]) =>
+          setNodes((nds) => applyNodeChanges(changes, nds))
+        }
         edges={[]}
         nodeTypes={NODE_TYPES}
         onNodeClick={(_, node) => {

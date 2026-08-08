@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { AFFILIATION_SEND_THRESHOLD } from "@/lib/affiliation-threshold";
 
 /**
  * Shows how much a contact's email and employer can be trusted.
@@ -141,8 +142,9 @@ export interface AffiliationProvenance {
   affiliation_evidence?: string | null;
 }
 
-/** Mirrors AFFILIATION_SEND_THRESHOLD in services/affiliation.ts. */
-const SEND_THRESHOLD = 0.6;
+// The real constant, not a mirror: the two had nothing keeping them in step,
+// and a drifted copy silently mislabels which contacts are sendable.
+const SEND_THRESHOLD = AFFILIATION_SEND_THRESHOLD;
 
 const AFFILIATION_LABEL: Record<string, string> = {
   user_entered: "you confirmed this",

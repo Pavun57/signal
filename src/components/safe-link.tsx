@@ -25,6 +25,11 @@ export function SafeLink({
         if (isStreaming) {
           e.preventDefault();
           if (confirmNavigation()) {
+            // The caller's onClick still fires on this path: callers hang
+            // state updates off it (sidebar-campaigns selects the campaign),
+            // and skipping it desynced their state from the page navigated
+            // to whenever a confirmation was involved.
+            onClick?.(e);
             router.push(typeof href === "string" ? href : href.toString());
           }
           return;
