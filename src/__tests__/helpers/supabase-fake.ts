@@ -72,6 +72,13 @@ export interface SupabaseFakeOptions {
    */
   updateError?: () => { message: string } | null;
   /**
+   * What a SELECT against the named table should fail with, if anything. A
+   * failed read is an ordinary runtime outcome (network blip, RLS, dropped
+   * column), and the difference between "the query failed" and "no rows"
+   * is exactly what several production bugs collapsed.
+   */
+  selectError?: (table: string) => { message: string } | null;
+  /**
    * What the next INSERT should fail with, if anything. Unique indexes make a
    * rejected insert an ordinary runtime outcome (`code: "23505"`), and the
    * dedup helpers branch on that code, so a test has to be able to inject it.
@@ -84,6 +91,7 @@ export interface SupabaseFakeOptions {
 export type Filter =
   | { op: "eq"; column: string; value: unknown }
   | { op: "in"; column: string; values: readonly unknown[] }
+  | { op: "is"; column: string; value: null }
   | { op: "isNot"; column: string; value: null };
 
 interface SelectSpec {
@@ -230,6 +238,8 @@ function matchesFilter(filter: Filter, row: FakeRow): boolean {
       return row[filter.column] === filter.value;
     case "in":
       return filter.values.includes(row[filter.column]);
+    case "is":
+      return row[filter.column] === null || row[filter.column] === undefined;
     case "isNot":
       return row[filter.column] !== null && row[filter.column] !== undefined;
   }
@@ -333,8 +343,18 @@ export function createSupabaseFake(
       notify();
       const error = options.updateError?.() ?? null;
       if (error) return { data: null, error };
-      for (const row of raw()) Object.assign(row, updates ?? {});
-      return { data: null, error: null };
+      const matched = raw();
+      for (const row of matched) Object.assign(row, updates ?? {});
+      // PostgREST returns the updated rows when the caller chains `.select()`,
+      // and that is the only way to tell an update whose predicates matched
+      // nothing from one that landed. The compare-and-swap in recordAffiliation
+      // depends on exactly that distinction.
+      return {
+        data: spec
+          ? matched.map((row) => project(table, row, spec!)).filter(Boolean)
+          : null,
+        error: null,
+      };
     };
 
     /**
@@ -387,9 +407,13 @@ export function createSupabaseFake(
           ? runInsert()
           : runUpdate();
 
+    const readError = () => options.selectError?.(table) ?? null;
+
     const resolve = () => {
       if (kind !== "select") return runMutation();
       notify();
+      const error = readError();
+      if (error) return { data: null, error };
       return { data: rows(), error: null };
     };
 
@@ -433,6 +457,15 @@ export function createSupabaseFake(
         filters.push({ op: "isNot", column, value: null });
         return c;
       },
+      is: (column: string, value: unknown) => {
+        if (value !== null) {
+          throw new Error(
+            `[supabase fake] is("${column}", ${String(value)}) is not implemented. Only is(col, null) is.`,
+          );
+        }
+        filters.push({ op: "is", column, value: null });
+        return c;
+      },
       single: async () => {
         // insert().select().single() returns the created row, projected the
         // same way a read would be.
@@ -448,6 +481,8 @@ export function createSupabaseFake(
         }
         if (kind !== "select") return runMutation();
         notify();
+        const error = readError();
+        if (error) return { data: null, error };
         const found = rows();
         if (found.length !== 1) {
           return { data: null, error: NOT_ONE_ROW(table, found.length) };
@@ -457,6 +492,8 @@ export function createSupabaseFake(
       maybeSingle: async () => {
         if (kind !== "select") return runMutation();
         notify();
+        const error = readError();
+        if (error) return { data: null, error };
         const found = rows();
         if (found.length > 1) {
           return { data: null, error: NOT_ONE_ROW(table, found.length) };

@@ -115,11 +115,17 @@ Pick up to ${maxPicks} contact(s). Rules:
 - priority: 1 = send first (best fit), 2 = send if top picks fail, 3 = fallback only.`,
   });
 
+  // The schema's array is unbounded and "pick up to N" is only a sentence in
+  // the prompt, so the cap and the no-duplicates rule are enforced here. Every
+  // pick that survives becomes a drafted email; maxPicks is the caller's
+  // blast-radius cap, not a suggestion.
   const validPicks: Pick[] = [];
+  const seen = new Set<string>();
   for (const p of object.picks) {
-    if (candidateIds.has(p.personId)) {
-      validPicks.push(p);
-    }
+    if (validPicks.length >= maxPicks) break;
+    if (!candidateIds.has(p.personId) || seen.has(p.personId)) continue;
+    seen.add(p.personId);
+    validPicks.push(p);
   }
 
   trackUsage({

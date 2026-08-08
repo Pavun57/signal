@@ -158,6 +158,9 @@ export async function findPeopleOnDomain(
 
   // Step 1: Try sitemap to find team/about pages
   const sitemapUrls = await fetchSitemapUrls(domain);
+  const commonPaths = ["/team", "/about", "/about-us", "/people"].map(
+    (p) => `https://${domain}${p}`,
+  );
   let urlsToTry: string[];
 
   if (sitemapUrls.length > 0) {
@@ -170,11 +173,18 @@ export async function findPeopleOnDomain(
     console.log(
       `[contact-filter] Sitemap found ${sitemapUrls.length} URLs, ${urlsToTry.length} match team keywords`,
     );
+    // Zero matches is not proof the site has no team page. A sitemap INDEX
+    // guarantees it: its <loc> entries are sub-sitemap files, which match no
+    // keyword, so this used to return [] for every site behind one.
+    if (urlsToTry.length === 0) {
+      urlsToTry = commonPaths;
+      console.log(
+        `[contact-filter] No sitemap URL matched, trying ${urlsToTry.length} common paths`,
+      );
+    }
   } else {
     // No sitemap -- fall back to top 4 most common paths only
-    urlsToTry = ["/team", "/about", "/about-us", "/people"].map(
-      (p) => `https://${domain}${p}`,
-    );
+    urlsToTry = commonPaths;
     console.log(
       `[contact-filter] No sitemap for ${domain}, trying ${urlsToTry.length} common paths`,
     );
@@ -518,9 +528,10 @@ Also report which employer you actually saw and what dates, so a human can audit
     }
 
     // Anything the model failed to return a verdict for is unknown, not bad.
-    for (const c of indexed) {
-      if (seen.has(indexed.indexOf(c))) continue;
-      if (judged.some((j) => j.index === c.originalIndex)) continue;
+    // `seen` holds positions in `indexed`, which nothing reorders, so checking
+    // it by position replaces the old O(n^2) indexOf-plus-rescan of `judged`.
+    indexed.forEach((c, position) => {
+      if (seen.has(position)) return;
       judged.push({
         index: c.originalIndex,
         name: c.name,
@@ -528,7 +539,7 @@ Also report which employer you actually saw and what dates, so a human can audit
         verdict: "uncertain",
         evidence: "no verdict returned for this candidate",
       });
-    }
+    });
 
     // `judged[].index` is the caller's originalIndex, which happens to equal
     // the position in `indexed` only because nothing reorders that array. Look

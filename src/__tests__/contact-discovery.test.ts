@@ -63,7 +63,12 @@ const affiliations: Array<Record<string, unknown>> = [];
  * to read it rather than assume the verdict landed.
  */
 const writeResult: {
-  current: { written: boolean; reason?: string; notAtJudgedOrg?: boolean };
+  current: {
+    written: boolean;
+    reason?: string;
+    notAtJudgedOrg?: boolean;
+    attachedElsewhere?: boolean;
+  };
 } = {
   current: { written: true },
 };
@@ -116,15 +121,19 @@ const otherOrgPerson = {
   organization_id: OTHER_ORG.id,
 };
 
+/** Per-table read failures, for the dedup-set fail-closed tests. */
+let readErrors: Record<string, { message: string } | undefined> = {};
+
 const client = () =>
   createSupabaseFake({
     tables: {
       organizations: () => [org, OTHER_ORG],
       people: () => [...orgPeople, otherOrgPerson],
-      // Only read when a campaignId is passed, which these tests do not do.
+      // Only read when a campaignId is passed, which most tests do not do.
       campaign_people: () => [],
     },
     relations: { campaign_people: { person: { localKey: "person_id" } } },
+    selectError: (table) => readErrors[table] ?? null,
   });
 
 beforeEach(() => {
@@ -133,6 +142,7 @@ beforeEach(() => {
   writeResult.current = { written: true };
   exaResults.results = [];
   orgPeople = [];
+  readErrors = {};
   judged.mockReset().mockResolvedValue([]);
   org = {
     id: "org-1",
@@ -629,5 +639,111 @@ describe("when the write is refused", () => {
     expect(result.verifiedCount).toBe(0);
     expect(result.affiliationUnchanged).toBe(1);
     expect(result.contacts).toHaveLength(1);
+  });
+});
+
+describe("when the dedup roster cannot be read", () => {
+  it("fails closed instead of re-billing every known contact", async () => {
+    // `data ?? []` on a failed query yields an empty dedup set, so every
+    // already-attached contact fails the duplicate checks, is re-fetched from
+    // Exa and re-judged by the LLM, then reported as newly added.
+    readErrors = { people: { message: "connection reset by peer" } };
+
+    const result = await run();
+
+    expect(result.error).toContain("connection reset");
+    expect(result.contacts).toHaveLength(0);
+    expect(judged).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the campaign links cannot be read", async () => {
+    readErrors = { campaign_people: { message: "permission denied" } };
+
+    const result = await findContactsForOrganization(client(), {
+      organizationId: "org-1",
+      campaignId: "camp-1",
+      titles: ["engineer"],
+      numResults: 3,
+    });
+
+    expect(result.error).toContain("permission denied");
+    expect(judged).not.toHaveBeenCalled();
+  });
+});
+
+describe("someone filed elsewhere with stronger evidence", () => {
+  const oneCandidate = () => {
+    exaResults.results = [
+      { url: "https://www.linkedin.com/in/a", title: "Ann A - Engineer" },
+    ];
+  };
+
+  beforeEach(() => {
+    writeResult.current = {
+      written: false,
+      reason: "not_stronger_than_existing",
+      attachedElsewhere: true,
+    };
+  });
+
+  it("is not listed or campaign-linked off a search verdict", async () => {
+    // The judge said verified, but the row is filed under a different company
+    // whose evidence outranks this search. They are not a contact here, and
+    // campaign-linking them anyway is how strangers end up in a send list.
+    oneCandidate();
+    judged.mockResolvedValue([
+      {
+        index: 0,
+        name: "Ann A",
+        title: "Engineer",
+        verdict: "verified",
+        evidence: "headline names Browserbase",
+      },
+    ]);
+
+    const { linkPersonToCampaign } =
+      await import("@/lib/services/knowledge-base");
+    const result = await findContactsForOrganization(client(), {
+      organizationId: "org-1",
+      campaignId: "camp-1",
+      titles: ["engineer"],
+      numResults: 3,
+    });
+
+    expect(result.contacts).toHaveLength(0);
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(0);
+    expect(result.rejectedAsWrongCompany).toBe(1);
+    expect(vi.mocked(linkPersonToCampaign)).not.toHaveBeenCalled();
+  });
+
+  it("is not listed or campaign-linked off a team-page listing", async () => {
+    // Phase 1 has the same hole: the campaign link ran unconditionally,
+    // before the write result was even read.
+    const { findPeopleOnDomain } =
+      await import("@/lib/services/contact-filter");
+    vi.mocked(findPeopleOnDomain).mockResolvedValueOnce([
+      {
+        name: "Dee D",
+        title: "Engineer",
+        linkedinUrl: "https://www.linkedin.com/in/dee",
+        email: null,
+      },
+    ]);
+    const { linkPersonToCampaign } =
+      await import("@/lib/services/knowledge-base");
+
+    const result = await findContactsForOrganization(client(), {
+      organizationId: "org-1",
+      campaignId: "camp-1",
+      titles: [],
+      numResults: 3,
+    });
+
+    expect(result.contacts).toHaveLength(0);
+    expect(result.verifiedCount).toBe(0);
+    expect(result.affiliationUnchanged).toBe(0);
+    expect(result.rejectedAsWrongCompany).toBe(1);
+    expect(vi.mocked(linkPersonToCampaign)).not.toHaveBeenCalled();
   });
 });
