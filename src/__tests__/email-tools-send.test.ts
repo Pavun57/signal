@@ -243,14 +243,15 @@ describe("sendBulkEmails review gating", () => {
   it("sends only approved drafts and reports the held ones", async () => {
     const fake = fakeSupabase([
       {
-        // scope query: 1 approved, 1 pending, 1 rejected
+        // Scope query, now also the payload (K24 removed the re-fetch of
+        // rows this query already returned): full rows, 1 approved,
+        // 1 pending, 1 rejected.
         data: [
-          { id: "d_ok", review_status: "approved" },
-          { id: "d_pending", review_status: "pending" },
-          { id: "d_rejected", review_status: "rejected" },
+          { ...baseDraft, id: "d_ok", review_status: "approved" },
+          { ...baseDraft, id: "d_pending", review_status: "pending" },
+          { ...baseDraft, id: "d_rejected", review_status: "rejected" },
         ],
       },
-      { data: [{ ...baseDraft, id: "d_ok", review_status: "approved" }] },
       settingsResponse(),
       { data: null }, // suppression check: not suppressed
       { data: { outreach_status: "sent" } }, // recipient status: no reply
@@ -279,14 +280,10 @@ describe("sendBulkEmails review gating", () => {
     expect(result.awaitingReview).toBe(1);
     expect(result.rejected).toBe(1);
     expect(result.summary).toMatch(/1 held for review and 1 rejected/);
+    // The one behavioral guarantee that matters: exactly the approved draft
+    // was sent. (K24 folded the pinned re-query into the scope query, so the
+    // approval filter is applied to rows the tool already holds.)
     expect(sendGmailMock).toHaveBeenCalledTimes(1);
-
-    // The actual send query is pinned to approved ids + approved status.
-    const draftsQuery = fake.calls[1];
-    expect(draftsQuery.ops).toContainEqual({
-      name: "eq",
-      args: ["review_status", "approved"],
-    });
   });
 
   it("refuses outright when nothing in scope is approved", async () => {

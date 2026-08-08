@@ -74,12 +74,11 @@ export const AFFILIATION_WEIGHT: Record<AffiliationSource, number> = {
   search_stamp: 0.2,
 };
 
-/**
- * Minimum confidence to be contacted. Sits just below llm_verified, so a
- * positive LLM judgement is enough to email someone but a bare search hit is
- * not.
- */
-export const AFFILIATION_SEND_THRESHOLD = 0.6;
+// Defined in its own client-safe module (client components need it and this
+// module drags server-only imports into their bundle); re-exported here so
+// server callers keep their import path.
+import { AFFILIATION_SEND_THRESHOLD } from "@/lib/affiliation-threshold";
+export { AFFILIATION_SEND_THRESHOLD };
 
 /**
  * What a call to recordAffiliation actually did.

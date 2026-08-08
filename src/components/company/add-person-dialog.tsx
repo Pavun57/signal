@@ -40,6 +40,10 @@ export function AddPersonDialog({
   const [searching, setSearching] = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic request sequence. The debounce only clears the pending timer,
+  // not a fetch already in flight, so a slow earlier query could resolve
+  // after a newer one and paint stale results under the newer query text.
+  const searchSeqRef = useRef(0);
 
   // Debounced search whenever the dialog is open and query changes.
   useEffect(() => {
@@ -47,18 +51,20 @@ export function AddPersonDialog({
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     debounceRef.current = setTimeout(async () => {
+      const seq = ++searchSeqRef.current;
       setSearching(true);
       try {
         const url = `/api/people/orphans${query ? `?q=${encodeURIComponent(query)}` : ""}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const { people } = (await res.json()) as { people: OrphanRow[] };
+        if (seq !== searchSeqRef.current) return;
         setResults(people);
       } catch (err) {
         console.error("[orphans-search] failed:", err);
-        setResults([]);
+        if (seq === searchSeqRef.current) setResults([]);
       } finally {
-        setSearching(false);
+        if (seq === searchSeqRef.current) setSearching(false);
       }
     }, 200);
 

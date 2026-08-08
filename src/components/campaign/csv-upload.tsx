@@ -209,6 +209,14 @@ export function CsvUpload({ campaignId, onImported }: CsvUploadProps) {
       }
       setCompanies(valid);
     };
+    // Without this a failed read (file moved after picking, permission or
+    // encoding failure) left the dialog on "Parsing CSV..." forever: onload
+    // never fires, and nothing else ever sets error or companies.
+    reader.onerror = () => {
+      setError(
+        "Could not read the file. It may have been moved or is unreadable: pick it again.",
+      );
+    };
     reader.readAsText(file);
     setOpen(true);
   }, []);

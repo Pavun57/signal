@@ -1073,16 +1073,26 @@ export const discardDraft = tool({
       .eq("id", draftId)
       .maybeSingle();
 
-    const { error } = await supabase
+    // .select() distinguishes "discarded" from "matched nothing": the update
+    // filters on status='draft', so a draft the cron claimed seconds earlier
+    // (or a wrong/foreign id RLS filters out) matched 0 rows with no error,
+    // and the tool told the user the email would not send while it sent.
+    const { data: discarded, error } = await supabase
       .from("email_drafts")
       .update({
         status: "discarded",
         updated_at: new Date().toISOString(),
       })
       .eq("id", draftId)
-      .eq("status", "draft");
+      .eq("status", "draft")
+      .select("id");
 
     if (error) return { error: error.message };
+    if (!discarded || discarded.length === 0) {
+      return {
+        error: `Draft ${draftId} was not discarded: it is not an unsent draft (it may already be queued or sent, or the ID is wrong). Check its status with listDrafts before telling the user it will not send.`,
+      };
+    }
 
     if (draft?.enrollment_id) {
       const stepCheck = await draftIsCurrentStep(supabase, draft);
@@ -1131,11 +1141,12 @@ export const sendBulkEmails = tool({
   execute: async ({ campaignId, draftIds }) => {
     const supabase = await createClient();
 
-    // Count everything in scope first so unapproved drafts are reported,
-    // never silently dropped.
+    // One query for scope AND payload (K24: this used to fetch ids, then
+    // re-query full rows for the same ids). Full rows either way, so
+    // unapproved drafts are still reported, never silently dropped.
     let scopeQuery = supabase
       .from("email_drafts")
-      .select("id, review_status")
+      .select("*")
       .eq("campaign_id", campaignId)
       .eq("status", "draft");
     if (draftIds && draftIds.length > 0) {
@@ -1143,8 +1154,21 @@ export const sendBulkEmails = tool({
     }
     const { data: inScope, error: scopeError } = await scopeQuery;
     if (scopeError) return { error: scopeError.message };
+
+    // Passed ids from another campaign (listDrafts spans campaigns when
+    // called without a filter) vanish from the campaign-scoped query: they
+    // used to appear in no results bucket while the summary accounted for
+    // "every" draft, so the agent reported everything handled while those
+    // drafts sat unsent.
+    const foundIds = new Set((inScope ?? []).map((d) => d.id as string));
+    const notInCampaign = (draftIds ?? []).filter((id) => !foundIds.has(id));
+    const notInCampaignNote =
+      notInCampaign.length > 0
+        ? ` ${notInCampaign.length} passed draft ID(s) are not unsent drafts in this campaign and were NOT sent: ${notInCampaign.join(", ")}. Check their campaign with listDrafts.`
+        : "";
+
     if (!inScope || inScope.length === 0) {
-      return { error: "No drafts found to send." };
+      return { error: `No drafts found to send.${notInCampaignNote}` };
     }
 
     const awaitingReview = inScope.filter(
@@ -1153,27 +1177,12 @@ export const sendBulkEmails = tool({
     const rejected = inScope.filter(
       (d) => d.review_status === "rejected",
     ).length;
-    const approvedIds = inScope
-      .filter((d) => d.review_status === "approved")
-      .map((d) => d.id);
+    const drafts = inScope.filter((d) => d.review_status === "approved");
 
-    if (approvedIds.length === 0) {
+    if (drafts.length === 0) {
       return {
-        error: `None of the ${inScope.length} drafts are approved (${awaitingReview} awaiting review, ${rejected} rejected). The user must approve them in the outreach review queue first.`,
+        error: `None of the ${inScope.length} drafts are approved (${awaitingReview} awaiting review, ${rejected} rejected). The user must approve them in the outreach review queue first.${notInCampaignNote}`,
       };
-    }
-
-    const { data: drafts, error } = await supabase
-      .from("email_drafts")
-      .select("*")
-      .in("id", approvedIds)
-      .eq("review_status", "approved")
-      .eq("status", "draft");
-    if (error) return { error: error.message };
-
-    const firstDraft = (drafts ?? [])[0];
-    if (!firstDraft) {
-      return { error: "No sendable drafts found." };
     }
 
     const results: Array<{ draftId: string; status: string; error?: string }> =
@@ -1243,16 +1252,18 @@ export const sendBulkEmails = tool({
       awaitingReview,
       rejected,
       total: inScope.length,
+      ...(notInCampaign.length > 0 ? { notInCampaign } : {}),
       results,
       summary:
-        `Sent ${sent} of ${approvedIds.length} approved drafts.` +
+        `Sent ${sent} of ${drafts.length} approved drafts.` +
         (failed > 0 ? ` ${failed} failed.` : "") +
         (scheduled > 0
           ? ` ${scheduled} belong to a later step of their sequence and will send when that step comes due.`
           : "") +
         (skippedHeld > 0
           ? ` ${awaitingReview} held for review and ${rejected} rejected, not sent.`
-          : ""),
+          : "") +
+        notInCampaignNote,
     };
   },
 });

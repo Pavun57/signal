@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { formatRelative } from "@/components/ui/relative-time";
 
 import { SettingsSection } from "@/components/settings/settings-section";
 
@@ -121,19 +122,6 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay}d ago`;
 }
 
 const PAGE_SIZE = 20;
@@ -436,7 +424,7 @@ export function CostCenter() {
                         className="border-border border-b last:border-b-0"
                       >
                         <td className="text-muted-foreground whitespace-nowrap px-4 py-2">
-                          {formatTime(entry.created_at)}
+                          {formatRelative(entry.created_at)}
                         </td>
                         <td className="px-4 py-2">
                           {SERVICE_LABELS[entry.service] ?? entry.service}

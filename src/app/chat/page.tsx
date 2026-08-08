@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { formatRelative } from "@/components/ui/relative-time";
 import { Loader2, MessageCircle, Trash2 } from "lucide-react";
 
 import { ChatInput } from "@/components/chat/chat-input";
@@ -28,17 +29,6 @@ function cleanTitle(title: string): string {
     .replace(/\*([^*]*)\*/g, "$1")
     .replace(/`([^`]*)`/g, "$1")
     .trim();
-}
-
-function timeAgo(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 export default function ChatPage() {
@@ -142,7 +132,7 @@ export default function ChatPage() {
                       {cleanTitle(chat.title)}
                     </span>
                     <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-                      {timeAgo(chat.updated_at)}
+                      {formatRelative(chat.updated_at)}
                     </span>
                   </SafeLink>
                   <Button

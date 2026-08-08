@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 
 import { ArrowUp, Paperclip, Square } from "lucide-react";
 import posthog from "posthog-js";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -72,15 +73,31 @@ export function ChatInput({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !onCsvUpload) return;
-    posthog.capture("csv_uploaded", {
-      file_name: file.name,
-      file_size_bytes: file.size,
-    });
+    // The whole file is inlined into ONE chat message, so an unbounded
+    // upload (a 20k-row Clay/Apollo export is a normal size) blows the /api/
+    // chat request or the model context, and the turn dies with a generic
+    // "The agent stopped unexpectedly". The campaign import path exists for
+    // big files and batches them.
+    const MAX_CHAT_CSV_BYTES = 200_000;
+    if (file.size > MAX_CHAT_CSV_BYTES) {
+      toast.error(
+        "That CSV is too large to paste into chat. Use the campaign page's CSV import, which handles big files in batches.",
+      );
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === "string") {
+        posthog.capture("csv_uploaded", {
+          file_name: file.name,
+          file_size_bytes: file.size,
+        });
         onCsvUpload(reader.result, file.name);
       }
+    };
+    reader.onerror = () => {
+      toast.error("Could not read the file. Pick it again.");
     };
     reader.readAsText(file);
     // Reset so the same file can be re-uploaded

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import { AFFILIATION_SEND_THRESHOLD } from "@/lib/affiliation-threshold";
 import Image from "next/image";
 import {
   ChevronLeft,
@@ -51,8 +52,7 @@ interface CompaniesListProps {
   onDataChanged: () => void;
 }
 
-/** Mirrors AFFILIATION_SEND_THRESHOLD in services/affiliation.ts. */
-const AFFILIATION_THRESHOLD = 0.6;
+const AFFILIATION_THRESHOLD = AFFILIATION_SEND_THRESHOLD;
 
 function linkedInUrl(raw: string) {
   return raw.startsWith("http")
@@ -524,9 +524,14 @@ export function CompaniesList({
   }
 
   const totalPages = Math.ceil(companiesWithLeads.length / pageSize);
+  // Clamped at render: when the list shrinks (a lead removed, a refetch),
+  // the stored index can point past the last page, which rendered a phantom
+  // empty page ("11-10 of 10 companies") recoverable only by noticing the
+  // Previous arrow.
+  const clampedPage = Math.min(page, Math.max(0, totalPages - 1));
   const paginatedCompanies = companiesWithLeads.slice(
-    page * pageSize,
-    (page + 1) * pageSize,
+    clampedPage * pageSize,
+    (clampedPage + 1) * pageSize,
   );
 
   const hasOtherRegions =
@@ -803,37 +808,38 @@ export function CompaniesList({
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-1 pt-1">
               <span className="text-muted-foreground text-xs tabular-nums">
-                {page * pageSize + 1}&ndash;
+                {clampedPage * pageSize + 1}&ndash;
                 {Math.min(
-                  (page + 1) * pageSize,
+                  (clampedPage + 1) * pageSize,
                   companiesWithLeads.length,
-                )} of {companiesWithLeads.length} companies
+                )}{" "}
+                of {companiesWithLeads.length} companies
               </span>
               <div className="flex items-center gap-1">
                 <Button
                   size="icon-xs"
                   variant="ghost"
                   aria-label="Previous page"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page === 0}
+                  onClick={() => setPage(Math.max(0, clampedPage - 1))}
+                  disabled={clampedPage === 0}
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <span
                   className="text-muted-foreground min-w-[4rem] text-center text-xs tabular-nums"
                   aria-current="page"
-                  aria-label={`Page ${page + 1} of ${totalPages}`}
+                  aria-label={`Page ${clampedPage + 1} of ${totalPages}`}
                 >
-                  {page + 1} / {totalPages}
+                  {clampedPage + 1} / {totalPages}
                 </span>
                 <Button
                   size="icon-xs"
                   variant="ghost"
                   aria-label="Next page"
                   onClick={() =>
-                    setPage((p) => Math.min(totalPages - 1, p + 1))
+                    setPage(Math.min(totalPages - 1, clampedPage + 1))
                   }
-                  disabled={page >= totalPages - 1}
+                  disabled={clampedPage >= totalPages - 1}
                 >
                   <ChevronRight className="h-4 w-4" />
                 </Button>
