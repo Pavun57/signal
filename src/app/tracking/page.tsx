@@ -42,6 +42,8 @@ function TrackingPageContent() {
   const [rows, setRows] = useState<TrackingRow[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>("by-signal");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const fetchedCampaignRef = useRef<string>("");
   const mountedRef = useRef(true);
 
   const fetchCampaigns = useCallback(async () => {
@@ -56,6 +58,7 @@ function TrackingPageContent() {
   }, []);
 
   const fetchTrackingData = useCallback(async (campaignId: string) => {
+    fetchedCampaignRef.current = campaignId;
     if (!campaignId) {
       setRows([]);
       return;
@@ -64,7 +67,7 @@ function TrackingPageContent() {
     const supabase = createClient();
 
     // Fetch tracking configs with joins -- include organization_id directly
-    const { data: configs } = await supabase
+    const { data: configs, error: configsError } = await supabase
       .from("tracking_configs")
       .select(
         "id, organization_id, schedule, status, intent, auto_send, last_run_at, next_run_at, organization:organizations(name, domain), signal:signals(name, category)",
@@ -72,7 +75,19 @@ function TrackingPageContent() {
       .eq("campaign_id", campaignId)
       .order("created_at", { ascending: false });
 
-    if (!mountedRef.current || !configs) {
+    // Stale-selection guard: a slow response for a previously selected
+    // campaign must not paint its rows under the new selection.
+    if (!mountedRef.current || fetchedCampaignRef.current !== campaignId)
+      return;
+    // A failed query is not "no tracking configured": rendering the empty
+    // state over an error hid real configs behind a dashed placeholder.
+    if (configsError) {
+      setLoadError(configsError.message);
+      setRows([]);
+      return;
+    }
+    setLoadError(null);
+    if (!configs) {
       setRows([]);
       return;
     }
@@ -110,6 +125,15 @@ function TrackingPageContent() {
         )
         .order("detected_at", { ascending: false }),
     ]);
+    // Secondary loads degrade the rows (missing readiness tags / latest
+    // changes) rather than the whole table, but never silently.
+    if (orgLinksRes.error)
+      console.error("[tracking] readiness load failed:", orgLinksRes.error);
+    if (latestChangesRes.error)
+      console.error(
+        "[tracking] latest-changes load failed:",
+        latestChangesRes.error,
+      );
     const orgLinks = orgLinksRes.data;
     const latestChanges = latestChangesRes.data;
 
@@ -164,6 +188,7 @@ function TrackingPageContent() {
       },
     );
 
+    if (fetchedCampaignRef.current !== campaignId) return;
     setRows(mappedRows);
   }, []);
 
@@ -284,6 +309,13 @@ function TrackingPageContent() {
         {!selectedCampaignId ? (
           <p className="text-muted-foreground py-12 text-center text-sm">
             Select a campaign to view tracked entities.
+          </p>
+        ) : loadError ? (
+          <p
+            role="alert"
+            className="text-destructive py-12 text-center text-sm"
+          >
+            Could not load tracking data: {loadError}
           </p>
         ) : rows.length === 0 ? (
           <div className="border-border flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-12 text-center">
