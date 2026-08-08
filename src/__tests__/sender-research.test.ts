@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { dedupeFacts, factsFromModel } from "@/lib/services/sender-research";
+import {
+  dedupeFacts,
+  factsFromModel,
+  isSharedProfileHost,
+  sameResource,
+} from "@/lib/services/sender-research";
 
 describe("dedupeFacts", () => {
   it("drops a fact already in the bank, ignoring case and punctuation", () => {
@@ -68,5 +73,34 @@ describe("factsFromModel", () => {
       { category: "pov", fact: "Real opinion" },
     ]);
     expect(out).toEqual([{ category: "pov", fact: "Real opinion" }]);
+  });
+});
+
+describe("shared-platform source filtering", () => {
+  it("treats platform hosts as shared and own domains as not", () => {
+    expect(isSharedProfileHost("linkedin.com")).toBe(true);
+    expect(isSharedProfileHost("www.linkedin.com")).toBe(true);
+    expect(isSharedProfileHost("x.com")).toBe(true);
+    expect(isSharedProfileHost("acme.com")).toBe(false);
+  });
+
+  it("matches the same profile page across URL variants", () => {
+    // On a shared platform the domain filter is no identity filter: only the
+    // exact page the user gave us is theirs, and results 2-3 of an Exa search
+    // are the best OTHER linkedin.com matches, i.e. namesakes. Stranger facts
+    // extracted as "their own profile" end up woven into the user's outreach
+    // as claims about themselves.
+    expect(
+      sameResource(
+        "https://www.linkedin.com/in/jane-doe/",
+        "http://linkedin.com/in/jane-doe",
+      ),
+    ).toBe(true);
+    expect(
+      sameResource(
+        "https://www.linkedin.com/in/jane-doe-8b2a1",
+        "https://linkedin.com/in/jane-doe",
+      ),
+    ).toBe(false);
   });
 });

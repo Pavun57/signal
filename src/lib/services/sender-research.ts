@@ -113,6 +113,36 @@ function hostOf(url: string): string | null {
   }
 }
 
+/**
+ * Hosts where a domain restriction is not an identity restriction: everyone's
+ * profile lives on the same domain, so only the exact page the user gave us
+ * can be treated as theirs.
+ */
+const SHARED_PROFILE_HOSTS = new Set([
+  "linkedin.com",
+  "x.com",
+  "twitter.com",
+  "github.com",
+  "medium.com",
+]);
+
+export function isSharedProfileHost(host: string): boolean {
+  return SHARED_PROFILE_HOSTS.has(host.toLowerCase().replace(/^www\./, ""));
+}
+
+/** Same page, tolerating protocol/www/trailing-slash/query differences. */
+export function sameResource(a: string, b: string): boolean {
+  const norm = (u: string) => {
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`);
+      return `${parsed.hostname.replace(/^www\./, "")}${parsed.pathname.replace(/\/+$/, "")}`.toLowerCase();
+    } catch {
+      return u.toLowerCase();
+    }
+  };
+  return norm(a) === norm(b);
+}
+
 const EXTRACTION_SYSTEM = `Extract facts about THIS person/company for use in their own outreach emails. Only include what the sources state: never infer, embellish, or fill gaps.
 
 Categories:
@@ -174,7 +204,18 @@ export async function researchSender(
           numResults: 3,
           includeDomains: [host],
         });
-        const text = result.results
+        // On a shared platform (linkedin.com, x.com, ...) the domain filter
+        // is no identity filter at all: results 2-3 are the best OTHER
+        // matches on the platform, which for a common name are namesakes.
+        // The prompt then asserts all sources are "their own profile URLs",
+        // so stranger facts land in the sender's bank and get woven into
+        // their outreach as claims about themselves. Only the requested page
+        // itself is the sender's own on these hosts; a company's own domain
+        // keeps all pages.
+        const own = isSharedProfileHost(host)
+          ? result.results.filter((r) => sameResource(r.url, url))
+          : result.results;
+        const text = own
           .map((r) => `${r.title}\n${r.text ?? ""}`.trim())
           .filter(Boolean)
           .join("\n---\n")

@@ -21,14 +21,24 @@ export function ProfileSelector({
 }: ProfileSelectorProps) {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [saving, setSaving] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     const load = async () => {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("user_profile")
         .select("*")
         .order("created_at", { ascending: false });
+      // A failed load must not render as "no profiles": the component
+      // disappears entirely on an empty list, so a query failure (including
+      // the known RLS-as-anon mode) silently hid a campaign's linked profile
+      // with no way to see or change it.
+      if (error) {
+        setLoadFailed(true);
+        return;
+      }
+      setLoadFailed(false);
       setProfiles((data as UserProfile[]) ?? []);
     };
     load();
@@ -50,6 +60,14 @@ export function ProfileSelector({
     }
     setSaving(false);
   };
+
+  if (loadFailed) {
+    return (
+      <span role="alert" className="text-destructive text-xs">
+        Profiles failed to load
+      </span>
+    );
+  }
 
   if (profiles.length === 0) return null;
 

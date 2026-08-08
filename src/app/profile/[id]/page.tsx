@@ -50,6 +50,7 @@ export default function ProfileDetailPage() {
   const [form, setForm] = useState<ProfileFormData>(emptyForm);
   const [loading, setLoading] = useState(!isNew);
   const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -57,12 +58,20 @@ export default function ProfileDetailPage() {
 
     const load = async () => {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("user_profile")
         .select("*")
         .eq("id", params.id)
         .maybeSingle();
 
+      // A failed query is not a missing profile: rendering the terminal
+      // "Profile not found" for a transient failure tells the user their
+      // profile was deleted.
+      if (error) {
+        setLoadError(error.message);
+        setLoading(false);
+        return;
+      }
       if (!data) {
         setNotFound(true);
         setLoading(false);
@@ -149,6 +158,17 @@ export default function ProfileDetailPage() {
           <PageHeaderSkeleton />
           <ListRowsSkeleton count={4} />
         </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p role="alert" className="text-destructive text-sm">
+          Could not load this profile: {loadError}. It has not been deleted:
+          reload to try again.
+        </p>
       </div>
     );
   }
@@ -404,14 +424,21 @@ const CATEGORY_LABELS: Record<FactCategory, string> = {
   personal: "Personal",
 };
 
-/** All facts for a profile, insertion order. RLS scopes to the current user. */
+/**
+ * All facts for a profile, insertion order. RLS scopes to the current user.
+ * Throws on a failed read: returning [] rendered a populated fact bank as
+ * "No facts yet" (inviting duplicate re-entry), and a failed refetch right
+ * after research replaced the visible list with the empty state, making
+ * research look like it deleted the bank.
+ */
 async function fetchFacts(profileId: string): Promise<SenderFact[]> {
   const supabase = createClient();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("sender_facts")
     .select("id, category, fact, source")
     .eq("profile_id", profileId)
     .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
   return (data as SenderFact[]) ?? [];
 }
 
@@ -430,6 +457,7 @@ function FactBankSection({
 }) {
   const [facts, setFacts] = useState<SenderFact[]>([]);
   const [factsLoading, setFactsLoading] = useState(true);
+  const [factsError, setFactsError] = useState<string | null>(null);
 
   const [newCategory, setNewCategory] = useState<FactCategory>("background");
   const [newFact, setNewFact] = useState("");
@@ -444,8 +472,14 @@ function FactBankSection({
 
   useEffect(() => {
     const load = async () => {
-      setFacts(await fetchFacts(profileId));
-      setFactsLoading(false);
+      try {
+        setFacts(await fetchFacts(profileId));
+        setFactsError(null);
+      } catch (err) {
+        setFactsError(err instanceof Error ? err.message : "load failed");
+      } finally {
+        setFactsLoading(false);
+      }
     };
     void load();
   }, [profileId]);
@@ -530,7 +564,15 @@ function FactBankSection({
       if (!res.ok) {
         setResearchError(json.error ?? "Research failed");
       } else {
-        setFacts(await fetchFacts(profileId));
+        // A failed refetch keeps the current list on screen: wiping it right
+        // after "+N facts added" makes research look like it deleted the bank.
+        try {
+          setFacts(await fetchFacts(profileId));
+        } catch {
+          toast.error(
+            "Facts were saved, but the list could not be refreshed. Reload to see them.",
+          );
+        }
         setResearchNote(
           json.added
             ? `+${json.added} fact${json.added === 1 ? "" : "s"} added`
@@ -578,6 +620,11 @@ function FactBankSection({
 
       {factsLoading ? (
         <ListRowsSkeleton count={3} />
+      ) : factsError ? (
+        <p role="alert" className="text-destructive text-sm">
+          Could not load the fact bank: {factsError}. Your facts are likely
+          still saved: reload rather than re-adding them.
+        </p>
       ) : facts.length === 0 ? (
         <p className="text-muted-foreground text-sm">
           No facts yet. Add one below, or research your profile to fill the bank

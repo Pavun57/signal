@@ -89,3 +89,23 @@ export async function loadSenderFacts(
   }
   return (data ?? []) as SenderFact[];
 }
+
+/**
+ * The FULL fact bank, for dedupe baselines. loadSenderFacts is prompt-shaped:
+ * it truncates to MAX_FACTS_IN_PROMPT and degrades errors to [], both of
+ * which are wrong for dedupe, where a short or empty baseline re-inserts
+ * every fact that already exists. Surfaces the error so callers can refuse
+ * to insert against a baseline they could not read.
+ */
+export async function loadAllSenderFacts(
+  supabase: SupabaseClient,
+  profileId: string,
+): Promise<{ ok: true; facts: SenderFact[] } | { ok: false; error: string }> {
+  const { data, error } = await supabase
+    .from("sender_facts")
+    .select("id, category, fact, source")
+    .eq("profile_id", profileId)
+    .order("created_at", { ascending: false });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, facts: (data ?? []) as SenderFact[] };
+}
