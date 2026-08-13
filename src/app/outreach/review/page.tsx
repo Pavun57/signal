@@ -386,12 +386,10 @@ function ReviewPageInner() {
         if (pendingIds.length > 0) {
           // Checked, and checked by row count.
           //
-          // None of the writes on this page read their error. Combined with the
-          // known Clerk footgun -- a session token without the `role:
-          // authenticated` claim maps to anon, so RLS silently matches zero
-          // rows -- a whole review session could approve nothing at all while
-          // showing a green toast for every contact, and the user would only
-          // find out when nothing ever sent.
+          // None of the writes on this page read their error. If a session
+          // ever maps to the wrong RLS identity, a whole review session could
+          // approve nothing at all while showing a green toast for every
+          // contact, and the user would only find out when nothing ever sent.
           const { data: updated, error } = await supabase
             .from("email_drafts")
             .update({ review_status: action, updated_at: now })

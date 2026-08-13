@@ -48,10 +48,7 @@ function chain(table: string) {
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({ from: (t: string) => chain(t) })),
-}));
-
-vi.mock("@clerk/nextjs/server", () => ({
-  auth: vi.fn(async () => ({ userId: "user-1" })),
+  getUserId: vi.fn(async () => "user-1"),
 }));
 
 import { getOutreachPerformance } from "@/lib/tools/learning-tools";

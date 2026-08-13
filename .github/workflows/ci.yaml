@@ -40,17 +40,13 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
-  # The e2e suite is not wired up here yet, and that is exactly why it rotted:
-  # 28 of its 149 tests were failing on main, including every browser test,
-  # and nothing surfaced it because this workflow only ever ran the three
-  # steps above. The remaining blocker is credentials -- the suite needs a
-  # local Supabase (`supabase start`) plus a Clerk *test* instance's
-  # pk_test_/sk_test_ keys, and it refuses to run without them by design.
+  # The e2e suite is not wired up here yet. The remaining blocker is
+  # credentials -- the suite needs a local Supabase (`supabase start`) with
+  # its service-role key, and it refuses to run without them by design.
   #
-  # To turn it on: add CLERK_SECRET_KEY, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and
-  # CLERK_FRONTEND_API_DOMAIN as repository secrets pointing at a throwaway
-  # Clerk test instance, then uncomment. Do not point them at production: the
-  # suite creates and deletes users.
+  # To turn it on: `supabase start` in the job, then pass the local stack's
+  # env into the test run, then uncomment. Do not point it at a production
+  # project: the suite creates and deletes users.
   #
   # e2e:
   #   name: End-to-end
@@ -69,8 +65,6 @@ jobs:
   #       with:
   #         version: 2.90.0
   #     - run: supabase start
+  #     - name: Write .env.local from the local stack
+  #       run: supabase status -o env > .env.local
   #     - run: pnpm test:e2e
-  #       env:
-  #         CLERK_SECRET_KEY: ${{ secrets.CLERK_TEST_SECRET_KEY }}
-  #         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_TEST_PUBLISHABLE_KEY }}
-  #         CLERK_FRONTEND_API_DOMAIN: ${{ secrets.CLERK_TEST_FRONTEND_API_DOMAIN }}

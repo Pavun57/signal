@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { SignUp } from "@clerk/nextjs";
+import { AuthForm } from "@/components/auth-form";
 
 export default function SignupPage() {
-  return (
-    <Suspense>
-      <SignUp />
-    </Suspense>
-  );
+  return <AuthForm mode="signup" />;
 }

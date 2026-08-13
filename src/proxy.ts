@@ -1,29 +1,69 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { createServerClient } from "@supabase/ssr";
+import { type NextRequest, NextResponse } from "next/server";
 
-const isPublicRoute = createRouteMatcher([
-  "/login(.*)",
-  "/signup(.*)",
-  "/api/jobs(.*)",
+const PUBLIC_PATHS = [
+  "/login",
+  "/signup",
+  // Job endpoints authenticate with CRON_SECRET instead of a user session.
+  "/api/jobs",
   // Container orchestrators cannot present a session, and a health check that
-  // 307s to /login tells them nothing. Returns a fixed literal, reads nothing.
+  // redirects to /login tells them nothing. Returns a fixed literal, reads
+  // nothing.
   "/api/health",
-]);
+];
 
-// Next inlines NEXT_PUBLIC_* references into the server bundle at build time,
-// so in a Docker image built without build args the SDK's default lookup of
-// NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is frozen as empty no matter what the
-// container's runtime env says. Reading the unprefixed CLERK_PUBLISHABLE_KEY
-// happens at true request time, so self-hosters can set it on the container.
-const publishableKey =
-  process.env.CLERK_PUBLISHABLE_KEY ??
-  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+export async function proxy(request: NextRequest) {
+  let response = NextResponse.next({ request });
 
-export const proxy = clerkMiddleware(
-  async (auth, request) => {
-    if (!isPublicRoute(request)) await auth.protect();
-  },
-  publishableKey ? { publishableKey } : {},
-);
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY!,
+    {
+      cookies: {
+        getAll: () => request.cookies.getAll(),
+        setAll: (cookiesToSet) => {
+          cookiesToSet.forEach(({ name, value }) =>
+            request.cookies.set(name, value),
+          );
+          response = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options),
+          );
+        },
+      },
+    },
+  );
+
+  // Between the two setAll calls above — do not add logic here. This call
+  // refreshes an expired session cookie; removing it silently logs users out
+  // mid-session.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { pathname } = request.nextUrl;
+  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
+
+  if (!user && !isPublic) {
+    // API callers get a real 401: fetch would transparently follow a redirect
+    // to /login and the caller would try to parse the HTML page as JSON.
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    return NextResponse.redirect(url);
+  }
+
+  // Signed-in users have no business on the auth pages.
+  if (user && (pathname === "/login" || pathname === "/signup")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/";
+    return NextResponse.redirect(url);
+  }
+
+  return response;
+}
 
 export const config = {
   matcher: [

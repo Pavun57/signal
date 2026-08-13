@@ -5,8 +5,7 @@ import { z } from "zod";
 import { getRecipe, hasRecipe, listRecipeSlugs } from "@/lib/signals/recipes";
 import { executeSignal } from "@/lib/signals/executor";
 import { runRecipe } from "@/lib/signals/runner";
-import { auth } from "@clerk/nextjs/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getUserId } from "@/lib/supabase/server";
 import type { Signal } from "@/lib/types/signal";
 
 export const getSignalAuthoringGuide = tool({
@@ -374,7 +373,7 @@ export const createSignal = tool({
     // who had just created it -- the policies matched zero rows and the tools
     // reported "not found or is built-in". The insert policy now requires it
     // too, so a signal that cannot be owned is not created at all.
-    const { userId } = await auth();
+    const userId = await getUserId();
     if (!userId) return { error: "Not authenticated." };
 
     const { data: profile } = await supabase

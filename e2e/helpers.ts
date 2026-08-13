@@ -1,12 +1,13 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { createClerkClient } from "@clerk/backend";
+import {
+  createClient,
+  type Session,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
-const clerkSecretKey = process.env.CLERK_SECRET_KEY;
-const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 if (!supabaseUrl || !serviceRoleKey || !anonKey) {
   throw new Error(
@@ -15,35 +16,6 @@ if (!supabaseUrl || !serviceRoleKey || !anonKey) {
       "Grab them from `supabase status -o env`.",
   );
 }
-
-if (!clerkSecretKey || !clerkPublishableKey) {
-  throw new Error(
-    "E2E tests require CLERK_SECRET_KEY and NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY " +
-      "in .env.local from a Clerk *test* instance (https://dashboard.clerk.com).",
-  );
-}
-
-// Per Clerk's testing best practices: tests must run against a *test* instance
-// (pk_test_… / sk_test_…), not production keys. Catches the easy footgun of
-// pointing tests at a real Clerk app and creating real users.
-if (!clerkPublishableKey.startsWith("pk_test_")) {
-  throw new Error(
-    `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY must start with pk_test_ for e2e tests ` +
-      `(got prefix "${clerkPublishableKey.slice(0, 10)}…"). Create a separate ` +
-      `Clerk dev instance for testing. Never run e2e against production keys.`,
-  );
-}
-if (!clerkSecretKey.startsWith("sk_test_")) {
-  throw new Error(
-    `CLERK_SECRET_KEY must start with sk_test_ for e2e tests. ` +
-      `Create a separate Clerk dev instance for testing.`,
-  );
-}
-
-const clerk = createClerkClient({
-  secretKey: clerkSecretKey,
-  publishableKey: clerkPublishableKey,
-});
 
 /**
  * Service-role Supabase client for test setup and teardown. Bypasses RLS so
@@ -68,80 +40,82 @@ export interface TestUser {
   password: string;
   accessToken: string;
   refreshToken: string;
-  /** Raw Clerk session object — used for authCookiesFor. */
-  session: unknown;
+  /** Full Supabase session — used for authCookiesFor. */
+  session: Session;
 }
 
 /**
- * Create a fresh Clerk test user and a session JWT for them. The JWT is
- * minted via the Clerk Backend API; Supabase third-party auth validates it
- * the same way it validates a real browser session, so RLS-protected
- * queries see the Clerk user id as `auth.jwt() ->> 'sub'`.
+ * Create a fresh Supabase test user (service-role admin API, email
+ * pre-confirmed) and sign them in to mint a real session JWT. RLS-protected
+ * queries see the user id as `auth.jwt() ->> 'sub'`, exactly like a real
+ * browser session.
  */
 export async function createTestUser(email?: string): Promise<TestUser> {
-  // `+clerk_test` is Clerk's reserved marker for a test identity: those users
-  // skip the email-code step, so a browser sign-in can actually complete.
-  // Without it Clerk asks a new device to verify by email and every UI
-  // sign-in stalls on a code nobody can read. TEST_PREFIX stays leading so
-  // cleanupTestUsers still matches on it.
-  const targetEmail =
-    email ?? `${TEST_PREFIX}${randomUUID()}+clerk_test@example.com`;
+  const targetEmail = email ?? `${TEST_PREFIX}${randomUUID()}@example.com`;
 
-  const user = await clerk.users.createUser({
-    emailAddress: [targetEmail],
-    password: TEST_PASSWORD,
-    skipPasswordChecks: true,
-    publicMetadata: { e2e_test: true },
+  const { data: created, error: createError } =
+    await supabase.auth.admin.createUser({
+      email: targetEmail,
+      password: TEST_PASSWORD,
+      email_confirm: true,
+    });
+  if (createError || !created.user) {
+    throw new Error(`Failed to create test user: ${createError?.message}`);
+  }
+
+  // Sign in with a throwaway anon client to mint a session without touching
+  // the service-role client's auth state.
+  const anon = createClient(supabaseUrl!, anonKey!, {
+    auth: { persistSession: false },
   });
-
-  const session = await clerk.sessions.createSession({ userId: user.id });
-  const token = await clerk.sessions.getToken(session.id);
+  const { data: signIn, error: signInError } =
+    await anon.auth.signInWithPassword({
+      email: targetEmail,
+      password: TEST_PASSWORD,
+    });
+  if (signInError || !signIn.session) {
+    throw new Error(`Failed to sign in test user: ${signInError?.message}`);
+  }
 
   return {
-    id: user.id,
+    id: created.user.id,
     email: targetEmail,
     password: TEST_PASSWORD,
-    accessToken: token.jwt,
-    refreshToken: "",
-    session,
+    accessToken: signIn.session.access_token,
+    refreshToken: signIn.session.refresh_token,
+    session: signIn.session,
   };
 }
 
 /**
- * Build the Clerk session cookie a Next.js + @clerk/nextjs app expects, so
+ * Build the session cookies a Next.js + @supabase/ssr app expects, so
  * Playwright contexts can drive the app as if a real browser signed in.
- * Clerk's `__session` cookie carries the JWT directly.
+ * @supabase/ssr stores the session JSON base64url-encoded under
+ * `sb-<project-ref>-auth-token`, split into ~3180-char chunks when long.
  */
+const CHUNK_SIZE = 3180;
+
 export function authCookiesFor(user: TestUser) {
+  const ref = new URL(supabaseUrl!).hostname.split(".")[0];
+  const name = `sb-${ref}-auth-token`;
+  const value =
+    "base64-" + Buffer.from(JSON.stringify(user.session)).toString("base64url");
+
+  const chunks: string[] = [];
+  for (let i = 0; i < value.length; i += CHUNK_SIZE) {
+    chunks.push(value.slice(i, i + CHUNK_SIZE));
+  }
+
   const expires = Math.floor(Date.now() / 1000) + 3600;
-  return [
-    {
-      name: "__session",
-      value: user.accessToken,
-      url: "http://localhost:3000",
-      httpOnly: true,
-      secure: false,
-      sameSite: "Lax" as const,
-      expires,
-    },
-    {
-      // Clerk's middleware decides signed-in-ness for a *page* request from
-      // __client_uat, not from __session. With only __session set it read the
-      // default 0, treated the request as signed out, and redirected to
-      // /login: every browser test in this suite failed on that, 24 of them,
-      // and nothing noticed because CI never ran the e2e project.
-      //
-      // Any non-zero timestamp is enough to mean "there is a session, go and
-      // verify it", which the __session JWT then satisfies.
-      name: "__client_uat",
-      value: String(Math.floor(Date.now() / 1000)),
-      url: "http://localhost:3000",
-      httpOnly: false,
-      secure: false,
-      sameSite: "Lax" as const,
-      expires,
-    },
-  ];
+  return chunks.map((chunk, i) => ({
+    name: chunks.length > 1 ? `${name}.${i}` : name,
+    value: chunk,
+    url: "http://localhost:3000",
+    httpOnly: false,
+    secure: false,
+    sameSite: "Lax" as const,
+    expires,
+  }));
 }
 
 /**
@@ -149,7 +123,9 @@ export function authCookiesFor(user: TestUser) {
  * hit authenticated Next.js routes.
  */
 export function authCookieHeader(user: TestUser): string {
-  return `__session=${user.accessToken}`;
+  return authCookiesFor(user)
+    .map((c) => `${c.name}=${c.value}`)
+    .join("; ");
 }
 
 /** Fetch an app route as a given test user. */
@@ -168,14 +144,18 @@ export function authedFetch(
 }
 
 /**
- * Delete every Clerk user whose email starts with TEST_PREFIX, along with
- * their dependent rows (user_profile, campaigns, chats, api_usage). FK
+ * Delete every Supabase auth user whose email starts with TEST_PREFIX, along
+ * with their dependent rows (user_profile, campaigns, chats, api_usage). FK
  * cascades drop everything else.
  */
 export async function cleanupTestUsers(): Promise<void> {
-  const list = await clerk.users.getUserList({ limit: 200 });
-  const targets = list.data.filter((u) =>
-    (u.emailAddresses[0]?.emailAddress ?? "").startsWith(TEST_PREFIX),
+  // admin.listUsers paginates; test runs stay well under one page.
+  const { data: list } = await supabase.auth.admin.listUsers({
+    page: 1,
+    perPage: 1000,
+  });
+  const targets = (list?.users ?? []).filter((u) =>
+    (u.email ?? "").startsWith(TEST_PREFIX),
   );
   if (!targets.length) return;
   const ids = targets.map((u) => u.id);
@@ -195,7 +175,7 @@ export async function cleanupTestUsers(): Promise<void> {
   await supabase.from("email_voice_profiles").delete().in("user_id", ids);
 
   for (const u of targets) {
-    await clerk.users.deleteUser(u.id);
+    await supabase.auth.admin.deleteUser(u.id);
   }
 }
 

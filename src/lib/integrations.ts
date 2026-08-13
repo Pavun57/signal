@@ -63,32 +63,13 @@ export interface Integration {
 
 export const INTEGRATIONS: Integration[] = [  // ─── REQUIRED ────────────────────────────────────────────────────────────
   {
-    id: "clerk",
-    name: "Clerk",
-    category: "auth",
-    severity: "required",
-    feature: "Sign-in, user identity, JWTs for Supabase RLS",
-    consequence:
-      "Without all three set, you're in Keyless dev mode: sign-in works but Supabase RLS rejects Clerk-issued JWTs, so every dashboard query returns empty.",
-    envVars: [
-      "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
-      "CLERK_SECRET_KEY",
-      "CLERK_FRONTEND_API_DOMAIN",
-    ],
-    publicEnvVar: "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
-    signupUrl: "https://clerk.com",
-    keysUrl: "https://dashboard.clerk.com (API Keys → Frontend API URL)",
-    fixHint:
-      "Run `pnpm setup` (option [2]) or paste the keys + frontend API domain into .env.local",
-  },
-  {
     id: "supabase",
     name: "Supabase",
     category: "data",
     severity: "required",
-    feature: "Database, storage, RLS",
+    feature: "Database, storage, auth, RLS",
     consequence:
-      "The app can't read or write data. Every page will fail or show empty state.",
+      "The app can't read or write data, and sign-in is down. Every page will fail or show empty state.",
     envVars: [
       "NEXT_PUBLIC_SUPABASE_URL",
       "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY",

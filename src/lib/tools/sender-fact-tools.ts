@@ -1,6 +1,5 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { auth } from "@clerk/nextjs/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
@@ -10,7 +9,7 @@ import {
   type FactCategory,
 } from "@/lib/sender-facts";
 import { dedupeFacts, researchSender } from "@/lib/services/sender-research";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, getUserId } from "@/lib/supabase/server";
 import type { UserProfile } from "@/lib/types/profile";
 
 /**
@@ -67,7 +66,7 @@ export const researchSenderProfile = tool({
       .describe("Profile to research. Omit to use the most recent profile."),
   }),
   execute: async (input) => {
-    const { userId } = await auth();
+    const userId = await getUserId();
     if (!userId) return { error: "Not authenticated." };
 
     const supabase = await createClient();
@@ -150,7 +149,7 @@ export const addSenderFacts = tool({
       .max(10),
   }),
   execute: async (input) => {
-    const { userId } = await auth();
+    const userId = await getUserId();
     if (!userId) return { error: "Not authenticated." };
 
     const supabase = await createClient();

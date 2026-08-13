@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { FACT_CATEGORIES } from "@/lib/sender-facts";
 import type { FactCategory, SenderFact } from "@/lib/sender-facts";
 import { createClient } from "@/lib/supabase/client";
-import { useUser } from "@clerk/nextjs";
+import { useUserId } from "@/hooks/use-user-id";
 import { profileDisplayName } from "@/lib/types/profile";
 import type { UserProfile, ProfileFormData } from "@/lib/types/profile";
 
@@ -46,7 +46,7 @@ export default function ProfileDetailPage() {
   const router = useRouter();
   const isNew = params.id === "new";
 
-  const { user: clerkUser } = useUser();
+  const userId = useUserId();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [form, setForm] = useState<ProfileFormData>(emptyForm);
   const [loading, setLoading] = useState(!isNew);
@@ -124,14 +124,14 @@ export default function ProfileDetailPage() {
         );
         toast.success("Profile saved");
       } else {
-        if (!clerkUser?.id) {
+        if (!userId) {
           toast.error("Still signing in, try again in a moment");
           setSaving(false);
           return;
         }
         const { data, error } = await supabase
           .from("user_profile")
-          .insert({ ...payload, user_id: clerkUser.id })
+          .insert({ ...payload, user_id: userId })
           .select("*")
           .single();
         if (error) throw error;
@@ -408,7 +408,7 @@ export default function ProfileDetailPage() {
         {profile && (
           <>
             <Separator />
-            <FactBankSection profileId={profile.id} userId={clerkUser?.id} />
+            <FactBankSection profileId={profile.id} userId={userId} />
           </>
         )}
       </div>
@@ -454,7 +454,7 @@ function FactBankSection({
   userId,
 }: {
   profileId: string;
-  userId: string | undefined;
+  userId: string | null;
 }) {
   const [facts, setFacts] = useState<SenderFact[]>([]);
   const [factsLoading, setFactsLoading] = useState(true);

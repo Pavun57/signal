@@ -6,13 +6,12 @@ import {
   authedFetch,
   cleanupTestUsers,
   TEST_PREFIX,
+  TEST_PASSWORD,
 } from "./helpers";
 
-// UI-level tests for the auth flow under Clerk. The custom Supabase signup
-// form is gone; signup goes through Clerk's prebuilt <SignUp /> component,
-// which has its own validation and email-code verification step. We don't
-// retest Clerk's UI here — we only verify the behaviors our app owns:
-// middleware redirects, JWT-backed RLS isolation, session persistence.
+// UI-level tests for the auth flow on Supabase email/password. We own the
+// form (src/components/auth-form.tsx), the middleware redirects (proxy.ts),
+// and the JWT-backed RLS contract — those are what this file guards.
 
 test.afterAll(async () => {
   await cleanupTestUsers();
@@ -21,33 +20,26 @@ test.afterAll(async () => {
 test.describe("middleware redirects", () => {
   test("unauthenticated / redirects to /login", async ({ page }) => {
     await page.goto("http://localhost:3000/");
-    // Clerk appends ?redirect_url=..., so anchoring on the end of the
-    // string never matched and this failed while the app was behaving
-    // correctly.
-    await page.waitForURL(/\/login(\/[^?]*)?(\?.*)?$/, { timeout: 10_000 });
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 10_000 });
     expect(page.url()).toContain("/login");
   });
 
-  test("signed-in user visiting /login is allowed (Clerk handles redirect)", async ({
+  test("signed-in user visiting /login is redirected to /", async ({
     browser,
   }) => {
     const user = await createTestUser();
     const ctx = await browser.newContext();
     await ctx.addCookies(authCookiesFor(user));
     const page = await ctx.newPage();
-    // Clerk's <SignIn /> auto-redirects an already-signed-in user to /. We
-    // accept either landing on / or seeing the sign-in page render briefly
-    // before redirect — both indicate the session is recognized.
     await page.goto("http://localhost:3000/login");
-    await page.waitForURL(/^http:\/\/localhost:3000\/(login(\/.*)?)?$/, {
-      timeout: 10_000,
-    });
+    await page.waitForURL("http://localhost:3000/", { timeout: 10_000 });
+    expect(page.url()).toBe("http://localhost:3000/");
     await ctx.close();
   });
 
   test("public webhook routes do NOT require auth", async ({ request }) => {
     // The job routes must be publicly reachable (Vercel Cron / pg_cron can't
-    // send Clerk cookies) but refuse work without the CRON_SECRET bearer.
+    // carry session cookies) but refuse work without the CRON_SECRET bearer.
     // Without that bearer the handler returns 401, NOT a 307 redirect to
     // /login.
     const res = await request.post("http://localhost:3000/api/jobs/tick", {
@@ -76,7 +68,7 @@ test.describe("session + persistence", () => {
     await ctx.close();
   });
 
-  test("clearing __session cookie redirects back to /login", async ({
+  test("clearing the session cookie redirects back to /login", async ({
     browser,
   }) => {
     const user = await createTestUser();
@@ -89,20 +81,20 @@ test.describe("session + persistence", () => {
 
     await ctx.clearCookies();
     await page.goto("http://localhost:3000/");
-    await page.waitForURL(/\/login(\/.*)?$/, { timeout: 10_000 });
-    expect(page.url()).toMatch(/\/login(\/.*)?$/);
+    await page.waitForURL(/\/login(\?.*)?$/, { timeout: 10_000 });
+    expect(page.url()).toMatch(/\/login(\?.*)?$/);
 
     await ctx.close();
   });
 });
 
-test.describe("RLS via Clerk JWT (the core contract)", () => {
+test.describe("RLS via Supabase session JWT (the core contract)", () => {
   test("user can read their own empty campaigns list", async () => {
     const user = await createTestUser();
     const res = await authedFetch("/api/dashboard", user);
     // /api/dashboard is one of the user-authenticated routes. Expect 200 OR
     // 404/empty payload — anything except a 307/401, which would mean the
-    // Clerk JWT didn't propagate through middleware → server client → RLS.
+    // session JWT didn't propagate through middleware → server client → RLS.
     expect(res.status).not.toBe(307);
     expect(res.status).not.toBe(401);
     expect([200, 204, 404]).toContain(res.status);
@@ -128,8 +120,8 @@ test.describe("RLS via Clerk JWT (the core contract)", () => {
       .single();
     expect(error).toBeNull();
 
-    // Direct PostgREST round-trip with userB's Clerk JWT. RLS should filter
-    // out userA's row. If we get the row back, the JWT bridge is broken.
+    // Direct PostgREST round-trip with userB's session JWT. RLS should
+    // filter out userA's row.
     const res = await fetch(
       `${process.env.NEXT_PUBLIC_SUPABASE_URL}/rest/v1/campaigns?id=eq.${campaign!.id}&select=id`,
       {
@@ -176,13 +168,40 @@ test.describe("RLS via Clerk JWT (the core contract)", () => {
   });
 });
 
-test.describe.skip("Clerk sign-up form UI", () => {
-  // These tests would exercise Clerk's prebuilt <SignUp /> component
-  // (selectors, captcha bypass via setupClerkTestingToken, email-code
-  // verification flow). They test Clerk's UI, not our code, so they're
-  // skipped by default. Re-enable after deciding which auth-UI invariants
-  // we actually want to guard against Clerk SDK upgrades.
-  test("signup form accepts a new email and lands on /", async () => {
-    // TODO: implement with @clerk/testing setupClerkTestingToken
+test.describe("email/password form UI", () => {
+  // Requires "Confirm email" to be OFF on the project (the self-host
+  // default): signUp then returns a live session and the form routes to /.
+  test("signup form creates an account and lands on /", async ({ page }) => {
+    const email = `${TEST_PREFIX}ui-signup-${Date.now()}@example.com`;
+    await page.goto("http://localhost:3000/signup");
+    await page.getByLabel("Email").fill(email);
+    await page.getByLabel("Password").fill(TEST_PASSWORD);
+    await page.getByRole("button", { name: "Create account" }).click();
+    await page.waitForURL("http://localhost:3000/", { timeout: 15_000 });
+    expect(page.url()).toBe("http://localhost:3000/");
+  });
+
+  test("login form rejects a wrong password with an error message", async ({
+    page,
+  }) => {
+    const user = await createTestUser();
+    await page.goto("http://localhost:3000/login");
+    await page.getByLabel("Email").fill(user.email);
+    await page.getByLabel("Password").fill("definitely-wrong-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.locator("p.text-destructive")).toBeVisible({
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/login");
+  });
+
+  test("login form signs in an existing user", async ({ page }) => {
+    const user = await createTestUser();
+    await page.goto("http://localhost:3000/login");
+    await page.getByLabel("Email").fill(user.email);
+    await page.getByLabel("Password").fill(TEST_PASSWORD);
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForURL("http://localhost:3000/", { timeout: 15_000 });
+    expect(page.url()).toBe("http://localhost:3000/");
   });
 });

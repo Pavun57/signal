@@ -53,7 +53,7 @@ export type { Payload, SignalPayload, FollowupPayload };
 /**
  * Job-queue entry point for outreach processing. This executor sends real
  * email through the admin client, and the /api/jobs routes that reach it are
- * public (Vercel Cron / pg_cron can't send Clerk cookies), so the CRON_SECRET
+ * public (Vercel Cron / pg_cron can't send session cookies), so the CRON_SECRET
  * bearer check on those routes is the only thing standing between the
  * internet and the user's outbox. All callers must go through the job queue:
  * the signal path enqueues from the tracking.run executor, and the followups

@@ -10,7 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useUserId } from "@/hooks/use-user-id";
 
 import {
   clearRun,
@@ -103,7 +103,7 @@ interface SkillPart {
 }
 
 export function VoiceRunProvider({ children }: { children: ReactNode }) {
-  const { userId } = useAuth();
+  const userId = useUserId();
   const { openAgentWith } = useCampaign();
 
   const [run, setRun] = useState<VoiceRun | null>(null);
@@ -134,7 +134,7 @@ export function VoiceRunProvider({ children }: { children: ReactNode }) {
   );
 
   // Rehydrate whichever scope was mid-run when the tab last navigated. Keyed
-  // on userId: there is nothing to look up until Clerk says who this is.
+  // on userId: there is nothing to look up until the session says who this is.
   const hydratedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!userId || hydratedRef.current === userId) return;

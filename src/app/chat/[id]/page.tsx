@@ -6,7 +6,7 @@ import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { SquarePen } from "lucide-react";
 
-import { useAuth } from "@clerk/nextjs";
+import { useUserId } from "@/hooks/use-user-id";
 
 import { ChatErrorBanner } from "@/components/chat/chat-error-banner";
 import { ChatInput } from "@/components/chat/chat-input";
@@ -51,7 +51,7 @@ function ChatView({
   const [input, setInput] = useState("");
   const { activeCampaignId } = useCampaign();
   const { register } = useStreaming();
-  const { userId } = useAuth();
+  const userId = useUserId();
   const didAutoSend = useRef(false);
   const needsSummary = useRef(false);
 

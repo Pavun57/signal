@@ -90,7 +90,7 @@ export function notFound(subject: "Contact" | "Company"): { error: string } {
 
 /**
  * The session behind a tool call. Tools run inside the chat request, so this
- * is the same Clerk session the route authenticated.
+ * is the same session the route authenticated.
  */
 export async function toolSession(): Promise<{
   supabase: ScopedClient;

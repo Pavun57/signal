@@ -5,7 +5,7 @@ import { AlertCircle, RotateCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-/** Clerk rejects the request before the route runs, so the body is its own. */
+/** Auth rejects the request before the route runs, so the body is its own. */
 function isAuthError(error: Error): boolean {
   const text = `${error.message}`.toLowerCase();
   return (

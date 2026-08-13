@@ -2,8 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { EllipsisVertical, LogOut } from "lucide-react";
-import { useClerk } from "@clerk/nextjs";
 
+import { createClient } from "@/lib/supabase/client";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -41,10 +41,9 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar();
   const router = useRouter();
-  const { signOut } = useClerk();
 
   async function handleSignOut() {
-    await signOut();
+    await createClient().auth.signOut();
     router.push("/login");
     router.refresh();
   }

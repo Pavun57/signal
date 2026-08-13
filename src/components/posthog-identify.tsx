@@ -1,23 +1,30 @@
 "use client";
 
 import { useEffect } from "react";
-import { useUser } from "@clerk/nextjs";
 import posthog from "posthog-js";
 
-export function PostHogIdentify() {
-  const { user, isLoaded } = useUser();
+import { createClient } from "@/lib/supabase/client";
 
+export function PostHogIdentify() {
   useEffect(() => {
-    if (!isLoaded) return;
-    if (user) {
+    const supabase = createClient();
+
+    supabase.auth.getUser().then(({ data }) => {
+      const user = data.user;
+      if (!user) return;
       posthog.identify(user.id, {
-        email: user.primaryEmailAddress?.emailAddress,
-        name: user.fullName ?? undefined,
+        email: user.email,
+        name: (user.user_metadata as { full_name?: string }).full_name,
       });
-    } else {
-      posthog.reset();
-    }
-  }, [user, isLoaded]);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") posthog.reset();
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   return null;
 }

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import type { UIMessage } from "ai";
 import { useChat } from "@ai-sdk/react";
 
-import { useAuth } from "@clerk/nextjs";
+import { useUserId } from "@/hooks/use-user-id";
 
 import { ChatErrorBanner } from "@/components/chat/chat-error-banner";
 import { ChatInput } from "@/components/chat/chat-input";
@@ -175,7 +175,7 @@ function AgentPanelInner({
   useEffect(() => {
     voiceRunRef.current = voiceRun;
   }, [voiceRun]);
-  const { userId } = useAuth();
+  const userId = useUserId();
   const consumedNonceRef = useRef<number | null>(null);
 
   const transport = useMemo(() => createChatTransport(), []);

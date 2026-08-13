@@ -1,10 +1,5 @@
-import { Suspense } from "react";
-import { SignIn } from "@clerk/nextjs";
+import { AuthForm } from "@/components/auth-form";
 
 export default function LoginPage() {
-  return (
-    <Suspense>
-      <SignIn />
-    </Suspense>
-  );
+  return <AuthForm mode="login" />;
 }
