@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import {
   INTEGRATIONS,
   isIntegrationConfigured,
@@ -17,7 +18,14 @@ import { MissingKeyBanner } from "@/components/missing-key-banner";
  * Optional integrations are not banner-worthy — those surface in the
  * /settings integrations panel instead.
  */
-export function MissingKeyBannerStack() {
+export async function MissingKeyBannerStack() {
+  // Read env per request, not per build. Without this the component gets
+  // statically prerendered with the build container's env, so a Docker image
+  // built without the unprefixed keys (CLERK_SECRET_KEY, AI_API_KEY, …) shows
+  // "not configured" banners forever, even when the running container has
+  // them — contradicting the Integrations tab, which checks at request time.
+  await connection();
+
   const missingRequired = INTEGRATIONS.filter((integration) => {
     if (integration.severity !== "required") return false;
     return !isIntegrationConfigured(integration);
