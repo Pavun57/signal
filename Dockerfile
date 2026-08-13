@@ -1,8 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # Signal — Next.js 16 standalone build.
-# Built on node:20-alpine. Multi-stage to keep the final image small.
+# Built on node:22-alpine. Multi-stage to keep the final image small.
+# Node 22+ is required: the pinned node:20-alpine ships an undici without
+# util.markAsUncloneable, which crashes `next build` page-data collection
+# (TypeError: s.util.markAsUncloneable is not a function).
 
-ARG NODE_VERSION=20-alpine
+ARG NODE_VERSION=22-alpine
 
 # ----------------------------------------------------------------------------
 # deps — install production + build deps
