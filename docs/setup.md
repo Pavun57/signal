@@ -124,6 +124,24 @@ Every block in `.env.example` beyond the required ones is feature-gated. If you 
 
 Signup links live in `.env.example` next to each block.
 
+### Email verification provider
+
+Signal's built-in discovery finds candidate addresses for free, but only a
+verifier confirms a mailbox exists — and unverified addresses are blocked at
+the send gate. Two adapters ship:
+
+- **Hunter** (`EMAIL_PROVIDER=hunter` + `HUNTER_API_KEY`) — hosted, paid, can
+  also *find* emails when the free path comes up empty.
+- **Reacher** (`EMAIL_PROVIDER=reacher`) — self-hosted
+  [check-if-email-exists](https://github.com/reacherhq/check-if-email-exists),
+  free, verification only. `docker-compose.yaml` already runs it as a
+  `reacher` service and points the app at it; outside compose, run
+  `docker run -p 8080:8080 reacherhq/backend:latest` and set
+  `REACHER_API_URL=http://localhost:8080`. Needs **outbound port 25** open on
+  the host for SMTP probing — if your VPS blocks it, every verdict degrades to
+  "unknown" (Signal treats that as retryable, so nothing is wrongly blocked,
+  but nothing gets verified either).
+
 ### Job scheduler
 
 Recurring work (scheduled signal runs, reply tracking, sequence follow-ups) runs off a Postgres job queue driven by a per-minute tick at `/api/jobs/tick`. The tick and runner routes share one secret:

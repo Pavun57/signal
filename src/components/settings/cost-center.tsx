@@ -83,7 +83,7 @@ const REAL_SPEND_KEY: Record<string, keyof RealSpend> = {
 // message because the outcome for the user is identical (fall back to est).
 const REAL_SPEND_FALLBACK_HINT: Record<keyof RealSpend, string> = {
   claude:
-    "Real billed spend unavailable. Only applies when AI_BASE_URL points at Anthropic — set ANTHROPIC_ADMIN_KEY in .env.local to enable.",
+    "Real billed spend unavailable. Only applies when AI_BASE_URL points at Anthropic. Set ANTHROPIC_ADMIN_KEY in .env.local to enable.",
   apify:
     "Real billed spend unavailable. Set APIFY_API_TOKEN in .env.local to enable.",
   exa: "Real billed spend unavailable. Set EXA_SERVICE_API_KEY and EXA_API_KEY_ID in .env.local to enable.",

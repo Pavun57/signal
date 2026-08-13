@@ -177,7 +177,7 @@ export const INTEGRATIONS: Integration[] = [  // ─── REQUIRED ────
     signupUrl: "https://hunter.io",
     keysUrl: "https://hunter.io/api-keys",
     fixHint:
-      "Add `EMAIL_PROVIDER=hunter` and `HUNTER_API_KEY=...` to .env.local",
+      "Add `EMAIL_PROVIDER=hunter` and `HUNTER_API_KEY=...` to .env.local, or self-host verification for free with `EMAIL_PROVIDER=reacher` (see the reacher service in docker-compose.yaml)",
   },
   {
     id: "google_places",
@@ -249,8 +249,20 @@ export const CATEGORY_LABELS: Record<IntegrationCategory, string> = {
  * Configured = every `envVars` entry is set, OR every `altEnvVars` entry is
  * set (the fallback set for renamed vars). The env var names are all this
  * ever inspects — values are never read beyond presence.
+ *
+ * One exception: `email_provider` also counts as configured when
+ * EMAIL_PROVIDER=reacher, because the Reacher backend is self-hosted and
+ * needs no key (REACHER_API_URL has a localhost default, and compose injects
+ * the in-network URL). Presence-only checking can't express that, so the
+ * value is read for this one entry.
  */
 export function isIntegrationConfigured(integration: Integration): boolean {
+  if (
+    integration.id === "email_provider" &&
+    process.env.EMAIL_PROVIDER === "reacher"
+  ) {
+    return true;
+  }
   const allSet = (names: string[]) =>
     names.length > 0 && names.every((name) => Boolean(process.env[name]));
   return (

@@ -14,10 +14,14 @@
  * configured, and every caller must treat that as "carry on with the free
  * path" — an unconfigured instance keeps exactly its previous behaviour.
  *
+ * Shipped adapters: `hunter` (hosted, paid, finds + verifies) and `reacher`
+ * (self-hosted check-if-email-exists, free, verifies only).
+ *
  * Pure contract + registry only; the adapters own their own IO.
  */
 
 import { HunterProvider } from "@/lib/services/providers/hunter-provider";
+import { ReacherProvider } from "@/lib/services/providers/reacher-provider";
 
 /**
  * Normalised verdict, mapped from whatever vocabulary a vendor uses.
@@ -108,6 +112,17 @@ export function getEmailProvider(): EmailProvider | null {
       return null;
     }
     return new HunterProvider(key);
+  }
+
+  if (configured === "reacher") {
+    // No key needed — the backend is self-hosted and REACHER_API_URL defaults
+    // to http://localhost:8080 (docker-compose wires http://reacher:8080).
+    if (!process.env.REACHER_API_URL) {
+      console.warn(
+        "[email-provider] EMAIL_PROVIDER=reacher with REACHER_API_URL unset; assuming http://localhost:8080.",
+      );
+    }
+    return new ReacherProvider();
   }
 
   console.warn(

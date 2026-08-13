@@ -385,7 +385,7 @@ function summary() {
   log.plain(`  ${colors.bold}pnpm test${colors.reset}  # unit tests`);
   log.plain("");
   log.info(
-    "Visit http://localhost:3000 and create an account — auth is\n" +
+    "Visit http://localhost:3000 and create an account. Auth is\n" +
       "Supabase's own email/password, no provider keys needed. See\n" +
       "docs/setup.md if anything didn't work.",
   );
