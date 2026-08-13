@@ -42,7 +42,12 @@ export function ChatErrorBanner({ error, onRetry }: ChatErrorBannerProps) {
       </div>
 
       {auth ? (
-        <Button size="sm" variant="outline" render={<Link href="/login" />}>
+        <Button
+          size="sm"
+          variant="outline"
+          nativeButton={false}
+          render={<Link href="/login" />}
+        >
           Sign in
         </Button>
       ) : (

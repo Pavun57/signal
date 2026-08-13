@@ -94,6 +94,7 @@ export default function ProfilesIndexPage() {
           <Button
             variant="outline"
             size="sm"
+            nativeButton={false}
             render={<Link href="/profile/new" />}
           >
             <Plus className="mr-1.5 h-4 w-4" />

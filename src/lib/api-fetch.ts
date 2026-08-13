@@ -76,6 +76,21 @@ export async function apiFetch(
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const res = await fetch(input, { ...init, headers });
+
+  // Clerk's proxy answers an unauthenticated /api request with a 307 to
+  // /login, and fetch follows it: the caller then gets the HTML login page
+  // with status 200, so every `res.ok` guard passes and `res.json()` throws
+  // `Unexpected token '<', "<!DOCTYPE"`. No API route in this app redirects
+  // legitimately, so a redirect that lands outside /api is an auth redirect —
+  // re-report it as the 401 it really is.
+  if (res.redirected && !new URL(res.url).pathname.startsWith("/api/")) {
+    reportExpiredSession();
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   if (res.status === 401) reportExpiredSession();
 
   return res;

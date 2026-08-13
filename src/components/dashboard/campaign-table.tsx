@@ -35,7 +35,7 @@ export function CampaignTable({ campaigns }: CampaignTableProps) {
           title="No campaigns yet"
           description="Start a campaign and Signal will find companies, enrich contacts, and draft outreach for you."
           action={
-            <Button size="sm" render={<Link href="/chat" />}>
+            <Button size="sm" nativeButton={false} render={<Link href="/chat" />}>
               <Sparkles />
               Start a campaign
             </Button>
