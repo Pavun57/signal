@@ -117,16 +117,26 @@ export async function POST(request: Request) {
         ? existing.gmail_connected_at
         : new Date().toISOString();
 
-    const { error } = await supabase.from("user_settings").upsert(
-      {
-        user_id: user.id,
-        gmail_address: address,
-        gmail_app_password_enc: encryptSecret(appPassword),
-        gmail_connected_at: connectedAt,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id" },
-    );
+    // Explicit update/insert instead of upsert: ON CONFLICT DO UPDATE reads
+    // each SET column through the EXCLUDED pseudo-row, which requires SELECT
+    // privilege on it — and the tenant-hardening migration deliberately
+    // revoked SELECT on gmail_app_password_enc so the ciphertext is never
+    // browser-readable. A plain UPDATE/INSERT sets the column without reading
+    // it, so the hardening stays intact. `existing` was already fetched above
+    // for the warmup clock, so this branch is free.
+    const payload = {
+      user_id: user.id,
+      gmail_address: address,
+      gmail_app_password_enc: encryptSecret(appPassword),
+      gmail_connected_at: connectedAt,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = existing
+      ? await supabase
+          .from("user_settings")
+          .update(payload)
+          .eq("user_id", user.id)
+      : await supabase.from("user_settings").insert(payload);
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
