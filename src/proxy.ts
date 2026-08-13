@@ -9,9 +9,21 @@ const isPublicRoute = createRouteMatcher([
   "/api/health",
 ]);
 
-export const proxy = clerkMiddleware(async (auth, request) => {
-  if (!isPublicRoute(request)) await auth.protect();
-});
+// Next inlines NEXT_PUBLIC_* references into the server bundle at build time,
+// so in a Docker image built without build args the SDK's default lookup of
+// NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is frozen as empty no matter what the
+// container's runtime env says. Reading the unprefixed CLERK_PUBLISHABLE_KEY
+// happens at true request time, so self-hosters can set it on the container.
+const publishableKey =
+  process.env.CLERK_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+export const proxy = clerkMiddleware(
+  async (auth, request) => {
+    if (!isPublicRoute(request)) await auth.protect();
+  },
+  publishableKey ? { publishableKey } : {},
+);
 
 export const config = {
   matcher: [

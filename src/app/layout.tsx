@@ -17,6 +17,13 @@ export const metadata: Metadata = {
   description: "Signal Dashboard",
 };
 
+// Read at request time (this is a server component) rather than relying on the
+// SDK's build-time-inlined NEXT_PUBLIC_ lookup, which freezes empty in Docker
+// images built without build args. See proxy.ts for the same pattern.
+const clerkPublishableKey =
+  process.env.CLERK_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -27,7 +34,10 @@ export default function RootLayout({
       <body
         className={`${GeistSans.variable} ${GeistMono.variable} font-sans antialiased`}
       >
-        <ClerkProvider appearance={{ theme: shadcn }}>
+        <ClerkProvider
+          appearance={{ theme: shadcn }}
+          publishableKey={clerkPublishableKey}
+        >
           <PostHogIdentify />
           <ThemeProvider
             attribute="class"
