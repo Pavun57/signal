@@ -1,13 +1,12 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import { llmTimeout } from "@/lib/utils/timeout";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -156,17 +155,17 @@ ${wrapUntrusted(params.bodyText.slice(0, 8000))}`;
     async () => {
       const { object, usage } = await generateObject({
         abortSignal: llmTimeout(),
-        model: anthropic(MODELS.LIGHT),
+        model: getLLM(),
         schema: apiSafeSchema(ReplyIntentSchema),
         prompt,
       });
       trackUsage({
-        service: "claude",
+        service: "llm",
         operation: "reply-intent",
         tokens_input: usage.inputTokens ?? 0,
         tokens_output: usage.outputTokens ?? 0,
-        estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
-        metadata: { model: MODELS.LIGHT },
+        estimated_cost_usd: estimateLlmCostFromUsage(usage),
+        metadata: { model: AI_MODEL },
       });
       return object;
     },

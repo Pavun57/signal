@@ -303,7 +303,7 @@ enabled = false
 # CLERK_FRONTEND_API_DOMAIN in .env.local (e.g. "your-app.clerk.accounts.dev")
 # and change the line below.
 [auth.third_party.clerk]
-enabled = false
+enabled = true
 domain = "env(CLERK_FRONTEND_API_DOMAIN)"
 
 [edge_runtime]

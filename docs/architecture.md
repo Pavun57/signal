@@ -14,8 +14,7 @@ User ──▶ Next.js (App Router)
            └── Server actions
                 │
                 ├──▶ Supabase (Postgres + Auth + RLS)
-                ├──▶ Anthropic Claude (via Vercel AI SDK)
-                ├──▶ Browserbase / Stagehand (web automation)
+                ├──▶ Any OpenAI-compatible LLM (via Vercel AI SDK; AI_BASE_URL / AI_API_KEY / AI_MODEL)                ├──▶ Browserbase / Stagehand (web automation)
                 ├──▶ Gmail SMTP/IMAP (outbound email + reply tracking)
                 ├──▶ jobs table (Postgres queue, Vercel Cron tick)
                 └──▶ Exa / Google / Apify / GitHub (enrichment)
@@ -100,7 +99,7 @@ If you deploy Signal for multiple independent teams, **do not share a Supabase p
 ### Chat → tool call → draft
 
 1. User sends a message in a campaign's chat.
-2. Route handler at `src/app/api/chat/route.ts` streams to Claude via `@ai-sdk/anthropic`.
+2. Route handler at `src/app/api/chat/route.ts` streams to the configured model via `@ai-sdk/openai-compatible` (see `src/lib/ai/models.ts`).
 3. Claude calls tools from `src/lib/tools/*` — company lookup, contact enrichment, sequence drafting.
 4. Tool results stream back to the UI as structured cards.
 

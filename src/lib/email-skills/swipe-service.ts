@@ -1,10 +1,9 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { getLLM } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import {
   BatchSchema,
@@ -45,7 +44,7 @@ import { llmTimeout } from "@/lib/utils/timeout";
  */
 
 // Every string is bounded. The client controls the transcript and it is
-// stringified straight into an Opus prompt, so unbounded fields would let one
+// stringified straight into an LLM prompt, so unbounded fields would let one
 // authenticated request push megabytes of attacker-chosen text through a
 // 1M-token context window on the operator's key.
 const AxesSchema = z.object({
@@ -208,7 +207,7 @@ export async function generateVoiceBatch(
       .filter((l): l is string => Boolean(l)),
   );
 
-  // The wrapped-payload flake hits these prompts like every other Opus 5
+  // The wrapped-payload flake hits these prompts like every other frontier-model
   // structured call, so single-shot + salvage was not enough: a malformed
   // wrapper surfaced straight to the deck as a failed batch. generateWithRetry
   // salvages what it can and retries the rest.
@@ -216,26 +215,17 @@ export async function generateVoiceBatch(
     async () => {
       const { object } = await generateObject({
         abortSignal: llmTimeout(),
-        model: anthropic(MODELS.EMAIL),
+        model: getLLM(),
         schema: apiSafeSchema(BatchSchema),
         system: buildBatchSystem(campaign, senderContext, recipient),
         prompt: buildBatchPrompt(input.transcript, input.count),
-        providerOptions: {
-          anthropic: {
-            // Only the transcript changes between batches, so the rules and
-            // campaign context read from cache after the first call.
-            cacheControl: { type: "ephemeral" },
-            effort: "medium",
-          },
-        },
         // generateWithRetry owns retrying; leaving the SDK default of 2 would
         // stack upstream requests under a 429 storm.
         maxRetries: 0,
-        // Opus 5 thinks by default and maxOutputTokens caps thinking plus
-        // visible output together, so a budget sized for the text alone
-        // truncates and fails generateObject outright.
-        // Sized for 8 drafts plus the invented persona object, with thinking
-        // headroom on top (Opus 5 thinks by default and this cap covers both).
+        // Reasoning-style models count thinking against maxOutputTokens, so a
+        // budget sized for the text alone truncates and fails generateObject
+        // outright. Sized for 8 drafts plus the invented persona object, with
+        // thinking headroom on top.
         maxOutputTokens: 10_000,
       });
       return object;
@@ -293,7 +283,7 @@ async function writeSkill(
     async () => {
       const { object } = await generateObject({
         abortSignal: llmTimeout(),
-        model: anthropic(MODELS.EMAIL),
+        model: getLLM(),
         schema: apiSafeSchema(SkillSchema),
         system: buildSkillSystem(
           campaign,
@@ -301,7 +291,6 @@ async function writeSkill(
           input.transcript.judged.some((d) => d.personaReal === true),
         ),
         prompt: buildSkillPrompt(input.transcript),
-        providerOptions: { anthropic: { effort: "medium" } },
         maxRetries: 0,
         maxOutputTokens: 5_000,
       });

@@ -32,7 +32,7 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
-  estimateClaudeCostFromUsage: () => 0,
+  estimateLlmCostFromUsage: () => 0,
 }));
 
 // Stagehand stub: the last-resort browser tier. Tests assert on these mocks

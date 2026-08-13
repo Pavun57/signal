@@ -42,6 +42,12 @@ export interface Integration {
    */
   envVars: string[];
   /**
+   * Alternative set of env vars that ALSO configure this integration when
+   * every one of them is set (OR semantics against `envVars`). Used for
+   * renamed vars kept as a fallback, e.g. AI_API_KEY ← ANTHROPIC_API_KEY.
+   */
+  altEnvVars?: string[];
+  /**
    * Optional NEXT_PUBLIC_ env var for client-side detection (used by the
    * banner without a server round-trip). When omitted, the banner relies on
    * the /api/integrations/status fetch.
@@ -55,8 +61,7 @@ export interface Integration {
   fixHint?: string;
 }
 
-export const INTEGRATIONS: Integration[] = [
-  // ─── REQUIRED ────────────────────────────────────────────────────────────
+export const INTEGRATIONS: Integration[] = [  // ─── REQUIRED ────────────────────────────────────────────────────────────
   {
     id: "clerk",
     name: "Clerk",
@@ -95,17 +100,21 @@ export const INTEGRATIONS: Integration[] = [
     fixHint: "Run `pnpm setup` or paste keys into .env.local",
   },
   {
-    id: "anthropic",
-    name: "Anthropic",
+    id: "ai",
+    name: "AI model",
     category: "ai",
     severity: "required",
     feature: "Chat, enrichment, email drafts",
     consequence:
       "Every chat request will fail with a 500. The agent and email composer are non-functional.",
-    envVars: ["ANTHROPIC_API_KEY"],
+    envVars: ["AI_API_KEY"],
+    // Legacy name from before the provider became configurable; still honored.
+    altEnvVars: ["ANTHROPIC_API_KEY"],
     signupUrl: "https://console.anthropic.com",
-    keysUrl: "https://console.anthropic.com/settings/keys",
-    fixHint: "Add `ANTHROPIC_API_KEY=sk-ant-api...` to .env.local",
+    keysUrl:
+      "Any OpenAI-compatible provider: console.anthropic.com, platform.openai.com, openrouter.ai, …",
+    fixHint:
+      "Add `AI_API_KEY=...` to .env.local (optionally AI_BASE_URL + AI_MODEL to switch providers)",
   },
 
   // ─── OPTIONAL ────────────────────────────────────────────────────────────
@@ -116,7 +125,7 @@ export const INTEGRATIONS: Integration[] = [
     severity: "optional",
     feature: "Cost tracking dashboard",
     consequence:
-      "Cost reports fall back to local estimates instead of billed totals.",
+      "Cost reports fall back to local estimates instead of billed totals. Only applies when AI_BASE_URL points at Anthropic.",
     envVars: ["ANTHROPIC_ADMIN_KEY"],
     signupUrl: "https://console.anthropic.com",
     keysUrl: "https://console.anthropic.com/settings/admin-keys",
@@ -254,3 +263,24 @@ export const CATEGORY_LABELS: Record<IntegrationCategory, string> = {
   scheduling: "Background jobs",
   enrichment: "Enrichment",
 };
+
+/**
+ * Configured = every `envVars` entry is set, OR every `altEnvVars` entry is
+ * set (the fallback set for renamed vars). The env var names are all this
+ * ever inspects — values are never read beyond presence.
+ */
+export function isIntegrationConfigured(integration: Integration): boolean {
+  const allSet = (names: string[]) =>
+    names.length > 0 && names.every((name) => Boolean(process.env[name]));
+  return (
+    allSet(integration.envVars) ||
+    (integration.altEnvVars ? allSet(integration.altEnvVars) : false)
+  );
+}
+
+/** Missing primary env vars, for display. Empty when configured (via either set). */
+export function missingEnvVarsFor(integration: Integration): string[] {
+  return isIntegrationConfigured(integration)
+    ? []
+    : integration.envVars.filter((name) => !process.env[name]);
+}

@@ -1,11 +1,10 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -83,7 +82,7 @@ export async function classifyPeople(
 
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.STRUCTURED),
+      model: getLLM(),
       schema: apiSafeSchema(ResponseSchema),
       prompt: `You are categorising employees of ${stringify(companyName)} into departments and seniority levels for an org chart.
 
@@ -109,13 +108,13 @@ ${wrapUntrusted(lines.join("\n\n"))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "department-classifier",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("sonnet", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-sonnet-4-6",
+        model: AI_MODEL,
         companyName,
         chunkSize: chunk.length,
       },

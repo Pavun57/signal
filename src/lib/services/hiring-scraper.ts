@@ -1,9 +1,13 @@
 import * as cheerio from "cheerio";
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import {
+  AI_MODEL,
+  getAiApiKey,
+  getLLM,
+  getStagehandModelConfig,
+} from "@/lib/ai/models";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
 import {
@@ -12,7 +16,7 @@ import {
   wrapUntrusted,
 } from "@/lib/prompt-safety";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import { mergeEnrichmentData } from "@/lib/services/knowledge-base";
@@ -75,7 +79,7 @@ type Job = HiringScrapeResult["jobs"][number];
  *    board (Greenhouse, Lever, Ashby, Workable), hit the board's public
  *    JSON API for structured listings. Zero LLM tokens.
  * 3. Fetched-HTML extraction: WebExtractionService on the careers URL plus
- *    one Haiku pass to pull job titles out of the text.
+ *    one LLM pass to pull job titles out of the text.
  * 4. Full Stagehand browser session (Browserbase) only as the last resort,
  *    when no careers URL was found or the fetched content is too thin.
  *
@@ -111,7 +115,7 @@ export async function scrapeHiringData(
     }
   }
 
-  // Tier 3: fetch the careers page and run one Haiku extraction pass.
+  // Tier 3: fetch the careers page and run one LLM extraction pass.
   if (careersUrl) {
     const extraction = await new WebExtractionService()
       .extract(careersUrl, { includeMetadata: false })
@@ -471,7 +475,7 @@ function job(
 }
 
 // ---------------------------------------------------------------------------
-// Tier 3: one Haiku pass over fetched careers-page text
+// Tier 3: one LLM pass over fetched careers-page text
 // ---------------------------------------------------------------------------
 
 /**
@@ -487,7 +491,7 @@ async function extractJobsFromText(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           jobs: z.array(
@@ -515,13 +519,13 @@ ${wrapUntrusted(content.slice(0, 12_000))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "hiring-scraper-extract",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-haiku-4-5",
+        model: AI_MODEL,
         careersUrl,
         jobCount: object.jobs.length,
       },
@@ -529,7 +533,7 @@ ${wrapUntrusted(content.slice(0, 12_000))}`,
 
     return object.jobs.map((j) => job(j.title, j.department, j.location));
   } catch (err) {
-    console.error("[hiring-scraper] Haiku extraction failed:", err);
+    console.error("[hiring-scraper] LLM extraction failed:", err);
     return null;
   }
 }
@@ -551,13 +555,12 @@ async function scrapeHiringDataWithBrowser(
 ): Promise<HiringScrapeResult> {
   const apiKey = process.env.BROWSERBASE_API_KEY;
   const projectId = process.env.BROWSERBASE_PROJECT_ID;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  if (!apiKey || !projectId || !anthropicKey) {
+  if (!apiKey || !projectId || !getAiApiKey()) {
     const missing = [
       !apiKey && "BROWSERBASE_API_KEY",
       !projectId && "BROWSERBASE_PROJECT_ID",
-      !anthropicKey && "ANTHROPIC_API_KEY",
+      !getAiApiKey() && "AI_API_KEY (or ANTHROPIC_API_KEY)",
     ]
       .filter(Boolean)
       .join(", ");
@@ -570,7 +573,7 @@ async function scrapeHiringDataWithBrowser(
     env: "BROWSERBASE",
     apiKey,
     projectId,
-    model: { modelName: `anthropic/${MODELS.BROWSER}`, apiKey: anthropicKey },
+    model: getStagehandModelConfig(),
     disablePino: true,
   });
 

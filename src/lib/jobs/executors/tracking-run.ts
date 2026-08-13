@@ -197,7 +197,7 @@ export async function runTrackingConfig(trackingConfigId: string) {
         const currHiring = snapshot as HiringSnapshot;
         const diff = diffHiringSnapshots(prevHiring, currHiring);
 
-        // ── Classify new roles via Haiku ─────────────────────────────────
+        // ── Classify new roles via LLM ─────────────────────────────────
         if (diff.added_jobs.length > 0) {
           const icp = typedConfig.campaign.icp || {};
           const offering = typedConfig.campaign.offering || {};

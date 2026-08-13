@@ -170,9 +170,14 @@ async function promptRequired() {
   const supaService = await ask("Supabase service_role key (secret)", {
     secret: true,
   });
-  const anthropic = await ask("Anthropic API key (sk-ant-api...)", {
-    secret: true,
-  });
+  const aiKey = await ask(
+    "AI API key (any OpenAI-compatible provider; Anthropic keys start sk-ant-api...)",
+    { secret: true },
+  );
+  const aiBaseUrl = await ask(
+    "AI base URL (blank = https://api.anthropic.com/v1; e.g. https://openrouter.ai/api/v1)",
+  );
+  const aiModel = await ask("AI model (blank = claude-sonnet-4-6)");
 
   content = setEnvKey(content, "NEXT_PUBLIC_SUPABASE_URL", supaUrl);
   content = setEnvKey(content, "SUPABASE_URL", supaUrl);
@@ -183,7 +188,9 @@ async function promptRequired() {
   );
   content = setEnvKey(content, "SUPABASE_ANON_KEY", supaPub);
   content = setEnvKey(content, "SUPABASE_SERVICE_ROLE_KEY", supaService);
-  content = setEnvKey(content, "ANTHROPIC_API_KEY", anthropic);
+  content = setEnvKey(content, "AI_API_KEY", aiKey);
+  content = setEnvKey(content, "AI_BASE_URL", aiBaseUrl);
+  content = setEnvKey(content, "AI_MODEL", aiModel);
 
   writeEnvLocal(content);
   log.ok("Required keys written.");

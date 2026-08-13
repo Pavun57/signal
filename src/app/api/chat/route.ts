@@ -1,4 +1,3 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -8,12 +7,12 @@ import {
   type UIMessage,
 } from "ai";
 
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { VoiceRunBodySchema } from "@/lib/email-skills/swipe-service";
 import { getProfileForPrompt } from "@/lib/profile";
 import { getActiveSignals } from "@/lib/signals";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import { getPostHogClient } from "@/lib/posthog-server";
@@ -80,7 +79,7 @@ export async function POST(request: Request) {
 
   // The active email-voice run, when the deck has one. Fully validated and
   // bounded before any tool sees it: the transcript is client-controlled text
-  // that ends up inside an Opus prompt on the operator's key. Invalid or
+  // that ends up inside an LLM prompt on the operator's key. Invalid or
   // over-long payloads drop to null rather than failing the chat, because a
   // broken run must not take the whole agent down with it.
   let voiceRun = null;
@@ -94,25 +93,6 @@ export async function POST(request: Request) {
     }
   }
   const modelMessages = trimMessages(await convertToModelMessages(uiMessages));
-
-  // Mark the last message with ephemeral cache_control so everything before
-  // it (system prompt, tools, all prior turns) is cached. On the next turn,
-  // those tokens read back at ~10% of input cost. The AI SDK top-level
-  // providerOptions below caches the system+tools preamble; this extends the
-  // cache boundary over the growing message history.
-  if (modelMessages.length > 0) {
-    const lastIdx = modelMessages.length - 1;
-    modelMessages[lastIdx] = {
-      ...modelMessages[lastIdx],
-      providerOptions: {
-        ...modelMessages[lastIdx].providerOptions,
-        anthropic: {
-          ...(modelMessages[lastIdx].providerOptions?.anthropic ?? {}),
-          cacheControl: { type: "ephemeral" },
-        },
-      },
-    };
-  }
 
   const deadlineAt = Date.now() + TURN_TIME_BUDGET_MS;
 
@@ -143,7 +123,7 @@ export async function POST(request: Request) {
       : undefined,
     execute: ({ writer }) => {
       const result = streamText({
-        model: anthropic(MODELS.CHAT),
+        model: getLLM(),
         system: systemPrompt,
         messages: modelMessages,
         tools: allTools,
@@ -157,13 +137,6 @@ export async function POST(request: Request) {
         // Without this, Stop / closing the tab leaves the server running the
         // whole remaining pipeline (and paying for it) invisibly.
         abortSignal: request.signal,
-        // Cache the system prompt + tool definitions (~30k stable tokens) across
-        // turns in a conversation. Follow-up turns read them at ~10% of input cost.
-        providerOptions: {
-          anthropic: {
-            cacheControl: { type: "ephemeral" },
-          },
-        },
         experimental_context: {
           writer,
           userId: user.id,
@@ -190,14 +163,13 @@ export async function POST(request: Request) {
             });
           }
           trackUsage({
-            service: "claude",
+            service: "llm",
             operation: "chat",
             tokens_input: usage.inputTokens ?? 0,
             tokens_output: usage.outputTokens ?? 0,
-            estimated_cost_usd: estimateClaudeCostFromUsage("sonnet", usage),
+            estimated_cost_usd: estimateLlmCostFromUsage(usage),
             metadata: {
-              model: "claude-sonnet-4-6",
-              cache_creation_tokens: usage.inputTokenDetails?.cacheWriteTokens,
+              model: AI_MODEL,
               cache_read_tokens: usage.inputTokenDetails?.cacheReadTokens,
             },
             campaign_id: campaignId,
@@ -211,7 +183,7 @@ export async function POST(request: Request) {
               campaign_id: campaignId ?? null,
               tokens_input: usage.inputTokens ?? 0,
               tokens_output: usage.outputTokens ?? 0,
-              estimated_cost_usd: estimateClaudeCostFromUsage("sonnet", usage),
+              estimated_cost_usd: estimateLlmCostFromUsage(usage),
             },
           });
         },

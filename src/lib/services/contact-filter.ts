@@ -1,13 +1,12 @@
 import { readBodyCapped, safeFetch } from "@/lib/safe-fetch";
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -217,7 +216,7 @@ export async function findPeopleOnDomain(
 
   if (scrapedContent.length === 0) return [];
 
-  // Use Haiku to extract people from the scraped content
+  // Use an LLM to extract people from the scraped content
   const combinedContent = scrapedContent
     .map((s) => `--- ${s.url} ---\n${s.content.slice(0, 4000)}`)
     .join("\n\n");
@@ -225,7 +224,7 @@ export async function findPeopleOnDomain(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           people: z.array(
@@ -268,13 +267,13 @@ ${wrapUntrusted(combinedContent.slice(0, 12000))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "domain-people-extract",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-haiku-4-5",
+        model: AI_MODEL,
         domain,
         pagesScraped: scrapedContent.length,
         peopleFound: object.people.length,
@@ -408,7 +407,7 @@ export async function filterContactsByCompany(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           judged: z.array(
@@ -487,13 +486,13 @@ Also report which employer you actually saw and what dates, so a human can audit
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "contact-filter",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-haiku-4-5",
+        model: AI_MODEL,
         companyName: company.name,
         candidateCount: indexed.length,
         verifiedCount: object.judged.filter((v) => v.verdict === "verified")

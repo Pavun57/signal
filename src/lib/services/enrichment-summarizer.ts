@@ -1,12 +1,11 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -15,8 +14,6 @@ import {
   wrapUntrusted,
 } from "@/lib/prompt-safety";
 
-const MODEL_ID = MODELS.LIGHT;
-const MODEL_LABEL = "haiku";
 
 interface SearchResultLike {
   title: string;
@@ -51,7 +48,7 @@ export async function summarizeWebsite(input: {
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODEL_ID),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           summary: z
@@ -72,12 +69,12 @@ ${wrapUntrusted(bodyText)}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "summarize-website",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage(MODEL_LABEL, usage),
-      metadata: { model: MODEL_LABEL, companyName: input.companyName },
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
+      metadata: { model: AI_MODEL, companyName: input.companyName },
     });
 
     return object.summary.trim() || null;
@@ -184,7 +181,7 @@ export async function summarizePerson(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODEL_ID),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           summary: z
@@ -232,12 +229,12 @@ ${wrapUntrusted(body)}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "summarize-person",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage(MODEL_LABEL, usage),
-      metadata: { model: MODEL_LABEL, personName: input.name },
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
+      metadata: { model: AI_MODEL, personName: input.name },
     });
 
     return {
@@ -273,7 +270,7 @@ export async function summarizeSearchResults<T extends SearchResultLike>(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODEL_ID),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           summaries: z.array(
@@ -298,13 +295,13 @@ ${wrapUntrusted(payload)}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "summarize-search-results",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage(MODEL_LABEL, usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: MODEL_LABEL,
+        model: AI_MODEL,
         companyName,
         category,
         count: results.length,

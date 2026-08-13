@@ -1,8 +1,7 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject, tool } from "ai";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -19,7 +18,7 @@ import { ExaService, type SearchCategory } from "@/lib/services/exa-service";
 import { resolveOrganizationDomain } from "@/lib/services/domain-resolver";
 import { WebExtractionService } from "@/lib/services/web-extraction-service";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -575,7 +574,7 @@ export const discoverCompanies = tool({
     const { object: extracted, usage } = await generateObject({
       // K17: without a timeout a hung extraction pins the whole tool call.
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           companies: z.array(
@@ -619,12 +618,12 @@ ${wrapUntrusted(combinedContent.slice(0, 15000))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "discoverCompanies-extract",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
-      metadata: { model: "claude-haiku-4-5" },
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
+      metadata: { model: AI_MODEL },
     });
 
     // Step 4: Deduplicate and store via knowledge base

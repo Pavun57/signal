@@ -1,11 +1,10 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -34,7 +33,7 @@ interface ExtractInput {
 }
 
 /**
- * One Haiku pass over the raw enrichment pulls that emits typed, sourced
+ * One LLM pass over the raw enrichment pulls that emits typed, sourced
  * claims. The model references sources by index; the code resolves the
  * index back to the URL so a claim can never cite a URL the pull did not
  * contain. Fails open to [] so enrichment still stores raw data when the
@@ -69,7 +68,7 @@ export async function extractClaims(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           claims: z.array(
@@ -116,13 +115,13 @@ ${wrapUntrusted(sourceBlocks.join("\n\n"))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "claim-extractor",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-haiku-4-5",
+        model: AI_MODEL,
         companyName: input.companyName,
         sourceCount: sources.length,
         claimCount: object.claims.length,

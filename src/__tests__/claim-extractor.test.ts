@@ -7,7 +7,7 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
-  estimateClaudeCostFromUsage: () => 0,
+  estimateLlmCostFromUsage: () => 0,
 }));
 
 import { extractClaims } from "@/lib/services/claim-extractor";

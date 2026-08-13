@@ -98,13 +98,23 @@ Signal uses [Clerk](https://clerk.com) for sign-in/sign-up. Free tier covers 10k
 
 **Keyless mode** (skip Clerk setup for now): leave the three env vars blank. Clerk auto-creates an ephemeral dev application on first dev-server load. Sign-in works, but RLS-protected reads return empty rows because Supabase can't validate the Clerk JWT yet — you'll see an amber banner in the app explaining how to fix it. Useful for "just kicking the tires."
 
-## 5. Anthropic key
+## 5. AI model key
 
-Get a key at [console.anthropic.com](https://console.anthropic.com) and paste into `.env.local`:
+Signal talks to any OpenAI-compatible endpoint. The default is Anthropic: get a key at [console.anthropic.com](https://console.anthropic.com) and paste into `.env.local`:
 
 ```
-ANTHROPIC_API_KEY=sk-ant-api03-...
+AI_API_KEY=sk-ant-api03-...
 ```
+
+To use a different provider (OpenAI, OpenRouter, a local gateway, …), set the base URL and model too:
+
+```
+AI_API_KEY=sk-or-...
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_MODEL=anthropic/claude-sonnet-4-6
+```
+
+Known-good `AI_BASE_URL` values: Anthropic `https://api.anthropic.com/v1`, OpenAI `https://api.openai.com/v1`, OpenRouter `https://openrouter.ai/api/v1`. One model (`AI_MODEL`) is used for every task — chat, email composition, extraction, verdicts — so pick a frontier model. Note the OpenAI-compatible path has no prompt caching or effort controls. Existing installs can keep `ANTHROPIC_API_KEY`, which is still honored as a fallback.
 
 At this point, you have enough to run `pnpm dev` and see the app boot.
 
@@ -114,7 +124,7 @@ Every block in `.env.example` beyond the required ones is feature-gated. If you 
 
 | Service            | Unlocks                                                                          |
 | ------------------ | -------------------------------------------------------------------------------- |
-| Browserbase        | Web scraping, YC scraper, hiring signals (uses your Anthropic key for Stagehand) |
+| Browserbase        | Web scraping, YC scraper, hiring signals (Stagehand reuses your AI key)    |
 | Gmail app password | Sending outreach emails from your own mailbox + reply tracking over IMAP         |
 | Job scheduler      | Scheduled signal runs, reply tracking, sequence follow-ups                       |
 | Exa                | Neural web search inside chat                                                    |

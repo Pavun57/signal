@@ -50,6 +50,11 @@ export interface StagehandStep {
     instruction: string;
     schema: JSONSchema7;
   };
+  /**
+   * Full "provider/model" string passed straight to Stagehand (it is not the
+   * AI SDK). Defaults to the instance's AI_MODEL with a prefix derived from
+   * AI_BASE_URL (AI_STAGEHAND_MODEL overrides globally).
+   */
   model?: string;
 }
 
@@ -82,6 +87,7 @@ export interface ExtractJsonStep {
   from: string;
   schema: JSONSchema7;
   prompt: string;
+  /** Model ID on the instance's configured provider (defaults to AI_MODEL). */
   model?: string;
 }
 

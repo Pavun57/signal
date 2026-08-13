@@ -1,9 +1,8 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { z } from "zod";
 
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { salvageObject } from "@/lib/ai/salvage-object";
 import {
   UNTRUSTED_NOTICE,
@@ -12,15 +11,13 @@ import {
 } from "@/lib/prompt-safety";
 import { FACT_CATEGORIES, type FactCategory } from "@/lib/sender-facts";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import { ExaService } from "@/lib/services/exa-service";
 import type { UserProfile } from "@/lib/types/profile";
 import { llmTimeout } from "@/lib/utils/timeout";
 
-const MODEL_ID = MODELS.LIGHT;
-const MODEL_LABEL = "haiku";
 
 /** Per-source and total character budgets for the extraction prompt. */
 const MAX_CHARS_PER_SOURCE = 6_000;
@@ -255,7 +252,7 @@ ${wrapUntrusted(body)}`;
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODEL_ID),
+      model: getLLM(),
       schema: apiSafeSchema(ResearchedFactsSchema),
       system: EXTRACTION_SYSTEM,
       prompt,
@@ -265,13 +262,13 @@ ${wrapUntrusted(body)}`;
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "research-sender",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage(MODEL_LABEL, usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       user_id: userId ?? undefined,
-      metadata: { model: MODEL_LABEL, profileId: profile.id },
+      metadata: { model: AI_MODEL, profileId: profile.id },
     });
 
     facts = factsFromModel(object.facts);

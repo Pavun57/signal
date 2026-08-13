@@ -16,14 +16,20 @@ vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ai")>()),
   generateObject: (...args: unknown[]) => generateObjectMock(...args),
 }));
-vi.mock("@ai-sdk/anthropic", () => ({ anthropic: () => "model" }));
+vi.mock("@/lib/ai/models", () => ({
+  getLLM: () => "model",
+  AI_MODEL: "test-model",
+  AI_BASE_URL: "https://api.anthropic.com/v1",
+  AI_INPUT_PRICE_PER_MTOK: 3.0,
+  AI_OUTPUT_PRICE_PER_MTOK: 15.0,
+}));
 // llmTimeout() returns AbortSignal.timeout(...), whose pending timer outlives a
 // test that throws before the SDK consumes the signal — vitest then attributes
 // the abort to the test and fails it. The timeout is not what is under test.
 vi.mock("@/lib/utils/timeout", () => ({ llmTimeout: () => undefined }));
 vi.mock("@/lib/services/cost-tracker", () => ({
   trackUsage: vi.fn(),
-  estimateClaudeCostFromUsage: () => 0,
+  estimateLlmCostFromUsage: () => 0,
 }));
 const extractMock = vi.fn();
 vi.mock("@/lib/services/web-extraction-service", () => ({

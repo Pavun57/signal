@@ -31,7 +31,7 @@
 
 Signal watches the web for buying signals (hiring changes, funding news, product launches, review shifts), enriches the companies and contacts behind them, drafts personalized outreach, and runs multi-step email sequences — all from a single chat-first workspace.
 
-It's built for teams that want a CRM-adjacent tool they can read, fork, self-host, and extend. Instead of paying per seat for a black-box SaaS, run Signal on your own Supabase + Anthropic keys and own the pipeline end to end.
+It's built for teams that want a CRM-adjacent tool they can read, fork, self-host, and extend. Instead of paying per seat for a black-box SaaS, run Signal on your own Supabase + LLM keys and own the pipeline end to end.
 
 > 🧪 Signal is designed for single-tenant self-hosting — one Supabase project per team. See [architecture.md](./docs/architecture.md#multi-tenancy) before deploying for multiple independent teams.
 
@@ -65,7 +65,7 @@ It's built for teams that want a CRM-adjacent tool they can read, fork, self-hos
 
 - **Framework** — Next.js 16 (App Router) + React 19 + TypeScript
 - **Database** — Supabase (Postgres + Auth + RLS)
-- **AI** — Anthropic Claude via `@ai-sdk/anthropic` and the Vercel AI SDK
+- **AI** — any OpenAI-compatible model via the Vercel AI SDK (`AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL`; Anthropic by default)
 - **Automation** — Browserbase + Stagehand for browser tasks
 - **Email** — your own Gmail (app password) for sending, IMAP for reply tracking
 - **Jobs** — Postgres job queue (in-repo) driven by Vercel Cron or pg_cron
@@ -76,7 +76,7 @@ It's built for teams that want a CRM-adjacent tool they can read, fork, self-hos
 
 ## 🚀 Quick start
 
-You'll need **Node 20+**, **Docker**, the **Supabase CLI**, a **Supabase project** (hosted or local), and an **Anthropic API key**.
+You'll need **Node 20+**, **Docker**, the **Supabase CLI**, a **Supabase project** (hosted or local), and an **API key for any OpenAI-compatible model provider** (Anthropic, OpenAI, OpenRouter, …).
 
 ```bash
 git clone https://github.com/jay-sahnan/signal.git
@@ -95,7 +95,7 @@ Prefer to configure by hand? Follow [`docs/setup.md`](./docs/setup.md).
 
 ```bash
 cp .env.example .env
-# fill in SUPABASE_URL + ANTHROPIC_API_KEY at minimum
+# fill in SUPABASE_URL + AI_API_KEY at minimum
 docker compose up -d
 ```
 

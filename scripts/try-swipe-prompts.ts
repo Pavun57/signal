@@ -11,12 +11,11 @@
  *   pnpm tsx scripts/try-swipe-prompts.ts            # uses your latest campaign
  *   pnpm tsx scripts/try-swipe-prompts.ts <uuid>     # a specific one
  */
-import { anthropic } from "@ai-sdk/anthropic";
 import { config } from "dotenv";
 import { generateObject } from "ai";
 import type { z } from "zod";
 
-import { MODELS } from "../src/lib/ai/models";
+import { AI_MODEL, getLLM } from "../src/lib/ai/models";
 import { salvageObject } from "../src/lib/ai/salvage-object";
 import {
   BatchSchema,
@@ -47,17 +46,16 @@ async function generate<T>(
 ): Promise<T> {
   try {
     const { object } = await generateObject({
-      model: anthropic(MODELS.EMAIL),
+      model: getLLM(),
       schema,
       system,
       prompt,
-      providerOptions: { anthropic: { effort: "medium" } },
       maxRetries: 0,
       maxOutputTokens,
     });
     return object;
   } catch (err) {
-    // Anthropic intermittently wraps a correct payload in a `value` key.
+    // Providers intermittently wrap a correct payload in a `value` key.
     const salvaged = salvageObject(err, schema);
     if (salvaged) return salvaged;
     throw err;
@@ -144,7 +142,7 @@ const SENDER_CONTEXT: SwipeSenderContext = {
 async function run() {
   const campaign = await loadCampaign(process.argv[2]);
   console.log(`Campaign: ${campaign?.name ?? "(none)"}`);
-  console.log(`Model:    ${MODELS.EMAIL}`);
+  console.log(`Model:    ${AI_MODEL}`);
 
   const transcript: SwipeTranscript = { judged: [], instructions: [] };
 

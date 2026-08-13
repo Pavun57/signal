@@ -1,30 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+import {
+  AI_INPUT_PRICE_PER_MTOK,
+  AI_OUTPUT_PRICE_PER_MTOK,
+} from "@/lib/ai/models";
 import { getAdminClient } from "@/lib/supabase/admin";
 
 // ── Pricing constants (USD) ──────────────────────────────────────────────
+// LLM token rates come from AI_INPUT_PRICE_PER_MTOK / AI_OUTPUT_PRICE_PER_MTOK
+// (see src/lib/ai/models.ts) since the model is operator-configured.
 // Last verified 2026-03-29. Sources:
-//   Claude  -- https://docs.anthropic.com/en/docs/about-claude/pricing
 //   Exa     -- https://exa.ai/pricing (March 2026: contents bundled into search)
 //   Apify   -- https://apify.com/pricing (pay-per-result actors)
 //   BB      -- https://browserbase.com/pricing
 export const PRICING = {
-  // Claude Sonnet 4 (per million tokens)
-  claude_sonnet_input: 3.0,
-  claude_sonnet_output: 15.0,
-  claude_sonnet_cache_read: 0.3,
-  claude_sonnet_cache_write: 3.75,
-  // Claude Opus 5 (per million tokens) -- the email composer's model.
-  // Cache read is 0.1x input, 5-minute cache write is 1.25x input.
-  claude_opus_input: 5.0,
-  claude_opus_output: 25.0,
-  claude_opus_cache_read: 0.5,
-  claude_opus_cache_write: 6.25,
-  // Claude Haiku 4.5 (per million tokens)
-  claude_haiku_input: 1.0,
-  claude_haiku_output: 5.0,
-  claude_haiku_cache_read: 0.1,
-  claude_haiku_cache_write: 1.25,
   // Exa -- $7 per 1,000 searches (text + highlights for 10 results included)
   exa_search: 0.007,
   // Apify -- pay-per-result pricing (~20 posts per profile scrape)
@@ -58,8 +47,7 @@ interface ActionContext {
    * Who the spend belongs to.
    *
    * Only 3 of ~30 trackUsage call sites ever passed a user_id, so Exa, Apify,
-   * Browserbase, Hunter, Google Places and every Claude service call wrote
-   * NULL. The rows land (the writer is the admin client) but /api/settings/
+   * Browserbase, Hunter, Google Places and every LLM call wrote NULL. The rows land (the writer is the admin client) but /api/settings/
    * costs reads them under `requesting_user_id() = user_id`, and NULL never
    * equals a user, so a $12 run displayed $0.00. Carrying it on the action
    * context attributes everything inside a withAction block without touching
@@ -92,6 +80,9 @@ export function withAction<T>(
 }
 
 export type ServiceName =
+  | "llm"
+  // Historical rows were written with service "claude"; kept so the cost
+  // center can still sum them.
   | "claude"
   | "exa"
   | "apify"
@@ -111,89 +102,22 @@ interface UsageEntry {
   user_id?: string;
 }
 
-export type ClaudeModel = "opus" | "sonnet" | "haiku";
-
-export interface ClaudeCostParams {
-  model: ClaudeModel;
-  /** Total input tokens (AI SDK's `usage.inputTokens`, already includes cache reads + writes). */
-  inputTokens: number;
-  outputTokens: number;
-  /** Tokens read from the prompt cache, billed at 10% of uncached input. */
-  cacheReadTokens?: number;
-  /** Tokens written to the prompt cache, billed at 125% of uncached input. */
-  cacheCreationTokens?: number;
-}
-
-/**
- * Estimate Claude API cost from token counts with cache-aware pricing.
- * `inputTokens` is the total (cache reads + cache writes + uncached); we subtract
- * the cache buckets to get the uncached remainder, then bill each at its own rate.
- */
-export function estimateClaudeCost(params: ClaudeCostParams): number {
-  const { model } = params;
-  const RATES = {
-    opus: {
-      input: PRICING.claude_opus_input,
-      cacheRead: PRICING.claude_opus_cache_read,
-      cacheWrite: PRICING.claude_opus_cache_write,
-      output: PRICING.claude_opus_output,
-    },
-    sonnet: {
-      input: PRICING.claude_sonnet_input,
-      cacheRead: PRICING.claude_sonnet_cache_read,
-      cacheWrite: PRICING.claude_sonnet_cache_write,
-      output: PRICING.claude_sonnet_output,
-    },
-    haiku: {
-      input: PRICING.claude_haiku_input,
-      cacheRead: PRICING.claude_haiku_cache_read,
-      cacheWrite: PRICING.claude_haiku_cache_write,
-      output: PRICING.claude_haiku_output,
-    },
-  }[model];
-  const uncachedRate = RATES.input;
-  const cacheReadRate = RATES.cacheRead;
-  const cacheWriteRate = RATES.cacheWrite;
-  const outputRate = RATES.output;
-
-  const cacheRead = params.cacheReadTokens ?? 0;
-  const cacheWrite = params.cacheCreationTokens ?? 0;
-  const uncached = Math.max(0, params.inputTokens - cacheRead - cacheWrite);
-
-  return (
-    (uncached / 1_000_000) * uncachedRate +
-    (cacheRead / 1_000_000) * cacheReadRate +
-    (cacheWrite / 1_000_000) * cacheWriteRate +
-    (params.outputTokens / 1_000_000) * outputRate
-  );
-}
-
 interface AiSdkUsageLike {
   inputTokens?: number;
   outputTokens?: number;
-  inputTokenDetails?: {
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-  };
-  cachedInputTokens?: number;
 }
 
 /**
- * Convenience wrapper: pulls cache breakdown from AI SDK's `usage` object so
- * call sites don't have to reach into `providerMetadata.anthropic` manually.
+ * Estimate LLM cost from an AI SDK `usage` object using the configured
+ * per-million-token rates (AI_INPUT_PRICE_PER_MTOK / AI_OUTPUT_PRICE_PER_MTOK).
+ * Single flat rate per direction — the OpenAI-compatible path has no cache
+ * pricing buckets.
  */
-export function estimateClaudeCostFromUsage(
-  model: ClaudeModel,
-  usage: AiSdkUsageLike,
-): number {
-  return estimateClaudeCost({
-    model,
-    inputTokens: usage.inputTokens ?? 0,
-    outputTokens: usage.outputTokens ?? 0,
-    cacheReadTokens:
-      usage.inputTokenDetails?.cacheReadTokens ?? usage.cachedInputTokens,
-    cacheCreationTokens: usage.inputTokenDetails?.cacheWriteTokens,
-  });
+export function estimateLlmCostFromUsage(usage: AiSdkUsageLike): number {
+  return (
+    ((usage.inputTokens ?? 0) / 1_000_000) * AI_INPUT_PRICE_PER_MTOK +
+    ((usage.outputTokens ?? 0) / 1_000_000) * AI_OUTPUT_PRICE_PER_MTOK
+  );
 }
 
 /**

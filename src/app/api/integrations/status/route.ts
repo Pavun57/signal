@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { INTEGRATIONS } from "@/lib/integrations";
+import {
+  INTEGRATIONS,
+  isIntegrationConfigured,
+  missingEnvVarsFor,
+} from "@/lib/integrations";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -28,16 +32,11 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const statuses: StatusEntry[] = INTEGRATIONS.map((integration) => {
-    const missingEnvVars = integration.envVars.filter(
-      (name) => !process.env[name],
-    );
-    return {
-      id: integration.id,
-      configured: missingEnvVars.length === 0,
-      missingEnvVars,
-    };
-  });
+  const statuses: StatusEntry[] = INTEGRATIONS.map((integration) => ({
+    id: integration.id,
+    configured: isIntegrationConfigured(integration),
+    missingEnvVars: missingEnvVarsFor(integration),
+  }));
 
   return NextResponse.json({ statuses });
 }

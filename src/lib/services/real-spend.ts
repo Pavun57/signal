@@ -4,6 +4,8 @@
  *
  * Anthropic uses the Admin API (cost_report). Requires ANTHROPIC_ADMIN_KEY
  * (distinct from ANTHROPIC_API_KEY -- must start with sk-ant-admin...).
+ * Only meaningful when the app's AI_BASE_URL points at Anthropic; other
+ * providers have no billed-spend hook here and stay on local estimates.
  *
  * Apify uses the monthly usage endpoint. Cycles are monthly, so periods that
  * cross cycle boundaries require multiple requests.

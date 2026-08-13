@@ -1,11 +1,10 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -55,7 +54,7 @@ export async function filterRelevantResults(
   try {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.LIGHT),
+      model: getLLM(),
       schema: apiSafeSchema(
         z.object({
           relevant: z
@@ -80,13 +79,13 @@ ${wrapUntrusted(summaries.join("\n\n"))}`,
     });
 
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "relevance-filter",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
       metadata: {
-        model: "claude-haiku-4-5",
+        model: AI_MODEL,
         companyName,
         resultCount: toJudge.length,
       },

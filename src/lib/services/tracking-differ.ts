@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
-import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -157,7 +156,7 @@ export function diffHiringSnapshots(
 // ── Classify ───────────────────────────────────────────────────────────
 
 /**
- * Use Claude Haiku to classify newly added job titles relative to the
+ * Use an LLM to classify newly added job titles relative to the
  * campaign's ICP. Returns categories like "engineering", "sales",
  * "operations", "leadership", etc.
  */
@@ -169,7 +168,7 @@ export async function classifyNewRoles(
 
   const { object, usage } = await generateObject({
     abortSignal: llmTimeout(),
-    model: anthropic(MODELS.LIGHT),
+    model: getLLM(),
     schema: apiSafeSchema(
       z.object({
         classifications: z.array(
@@ -201,11 +200,11 @@ Assign each title exactly one category from: engineering, sales, marketing, oper
   });
 
   trackUsage({
-    service: "claude",
+    service: "llm",
     operation: "classify-roles",
     tokens_input: usage.inputTokens ?? 0,
     tokens_output: usage.outputTokens ?? 0,
-    estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+    estimated_cost_usd: estimateLlmCostFromUsage(usage),
     metadata: { jobCount: jobs.length },
   });
 

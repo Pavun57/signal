@@ -1,11 +1,10 @@
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
-import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -55,7 +54,7 @@ export async function evaluateIntent(
 
   const { object, usage } = await generateObject({
     abortSignal: llmTimeout(),
-    model: anthropic(MODELS.LIGHT),
+    model: getLLM(),
     schema: apiSafeSchema(verdictSchema),
     prompt: `You decide whether the observed change on a company warrants flagging them as "ready to contact" for outreach. You have the buyer's tracking intent (their own words) and a summary of what changed since the last snapshot.
 
@@ -80,11 +79,11 @@ Return a JSON object with:
   });
 
   trackUsage({
-    service: "claude",
+    service: "llm",
     operation: "evaluate-intent",
     tokens_input: usage.inputTokens ?? 0,
     tokens_output: usage.outputTokens ?? 0,
-    estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+    estimated_cost_usd: estimateLlmCostFromUsage(usage),
     metadata: {
       signalCategory: input.signalCategory,
       fire: object.fire,

@@ -1,11 +1,10 @@
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
-import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -91,7 +90,7 @@ export async function selectContactsForSignal(
 
   const { object, usage } = await generateObject({
     abortSignal: llmTimeout(),
-    model: anthropic(MODELS.LIGHT),
+    model: getLLM(),
     schema: apiSafeSchema(verdictSchema),
     prompt: `You are picking the best contact(s) to email at a company after a buying-signal fired. You have the reason the signal fired (in the buyer's own words, via an upstream LLM) and a list of known contacts at the company.
 
@@ -129,11 +128,11 @@ Pick up to ${maxPicks} contact(s). Rules:
   }
 
   trackUsage({
-    service: "claude",
+    service: "llm",
     operation: "select-contacts",
     tokens_input: usage.inputTokens ?? 0,
     tokens_output: usage.outputTokens ?? 0,
-    estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+    estimated_cost_usd: estimateLlmCostFromUsage(usage),
     metadata: {
       candidateCount: input.candidates.length,
       picksRequested: maxPicks,

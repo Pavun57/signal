@@ -1,13 +1,12 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 
 import { getAdminClient } from "@/lib/supabase/admin";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import { llmTimeout } from "@/lib/utils/timeout";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import {
@@ -359,17 +358,17 @@ async function learnForUser(
     async () => {
       const { object, usage } = await generateObject({
         abortSignal: llmTimeout(),
-        model: anthropic(MODELS.STRUCTURED),
+        model: getLLM(),
         schema: apiSafeSchema(LearningAnalysisSchema),
         prompt,
       });
       trackUsage({
-        service: "claude",
+        service: "llm",
         operation: "outreach-learn",
         tokens_input: usage.inputTokens ?? 0,
         tokens_output: usage.outputTokens ?? 0,
-        estimated_cost_usd: estimateClaudeCostFromUsage("sonnet", usage),
-        metadata: { model: MODELS.STRUCTURED, userId },
+        estimated_cost_usd: estimateLlmCostFromUsage(usage),
+        metadata: { model: AI_MODEL, userId },
       });
       return object;
     },

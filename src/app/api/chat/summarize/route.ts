@@ -1,9 +1,8 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateText } from "ai";
 
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import { getSupabaseAndUser } from "@/lib/supabase/server";
@@ -61,19 +60,19 @@ export async function POST(request: Request) {
   }
 
   const { text: title, usage } = await generateText({
-    model: anthropic(MODELS.LIGHT),
+    model: getLLM(),
     system:
       "Summarize this conversation in 6-10 words as a short title. No quotes, no punctuation at the end. Be specific about the topic, not generic.",
     prompt: lines.join("\n"),
   });
 
   trackUsage({
-    service: "claude",
+    service: "llm",
     operation: "chat-summarize",
     tokens_input: usage.inputTokens ?? 0,
     tokens_output: usage.outputTokens ?? 0,
-    estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
-    metadata: { model: "claude-haiku-4.5", chatId },
+    estimated_cost_usd: estimateLlmCostFromUsage(usage),
+    metadata: { model: AI_MODEL, chatId },
     user_id: user.id,
   });
 

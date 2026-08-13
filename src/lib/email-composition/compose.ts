@@ -1,6 +1,5 @@
 import { generateObject } from "ai";
 import { llmTimeout } from "@/lib/utils/timeout";
-import { anthropic } from "@ai-sdk/anthropic";
 import {
   ComposedEmailSchema,
   buildComposeUserPrompt,
@@ -8,10 +7,10 @@ import {
   type ComposedEmail,
 } from "./skill";
 import { apiSafeSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import { AI_MODEL, getLLM } from "@/lib/ai/models";
 import { generateWithRetry } from "@/lib/ai/salvage-object";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import type { VoiceProfile } from "@/lib/types/email-voice";
@@ -30,17 +29,15 @@ export type ComposeResult =
   | { ok: false; error: string };
 
 /**
- * Single-email composition via generateObject. One focused Claude call per
+ * Single-email composition via generateObject. One focused LLM call per
  * contact × step. The system prompt is stable for a given (user, profile,
- * campaign, voice, fact bank) so parallel fan-out hits prompt cache on all
- * but the first call — the sender facts are part of the stable prompt, not
- * the per-contact one.
+ * campaign, voice, fact bank) — the sender facts are part of the stable
+ * prompt, not the per-contact one.
  *
- * Model: Opus — chosen for its ability to balance the base cold-email rules
- * against the user's voice profile, whose rules layer over and can conflict
- * with them. Haiku 4.5 tends to drop rules when too many are stacked; Opus
- * holds them. Cost/latency are cushioned by the ephemeral prompt cache and
- * bounded concurrency in the fan-out.
+ * Model quality matters here: the configured model must balance the base
+ * cold-email rules against the user's voice profile, whose rules layer over
+ * and can conflict with them. Weaker models tend to drop rules when too many
+ * are stacked — pick a frontier model via AI_MODEL for this workload.
  */
 export async function composeEmail(
   input: ComposeInput,
@@ -49,22 +46,16 @@ export async function composeEmail(
   // per-contact user prompt; they belong only in the cached system prompt.
   const { voice, factBank, learnings, ...userPromptInput } = input;
 
-  // claude-opus-5 honours the structured-output schema only ~65-80% of the time
+  // Frontier models honour the structured-output schema only most of the time
   // on this prompt, sometimes wrapping the payload and sometimes emitting
   // malformed JSON inside it. Salvage recovers the wrapped-but-valid responses
-  // for free; the retries cover the rest. Measured live — without both, a fifth
-  // or more of every fan-out silently loses its draft.
+  // for free; the retries cover the rest. Measured live — without both, a
+  // fifth or more of every fan-out silently loses its draft.
   const attempt = await generateWithRetry(async () => {
     const { object, usage } = await generateObject({
       abortSignal: llmTimeout(),
-      model: anthropic(MODELS.EMAIL),
+      model: getLLM(),
       schema: apiSafeSchema(ComposedEmailSchema),
-      // The cache breakpoint rides ON the system message, not in call-level
-      // providerOptions: the call-level form maps to top-level auto-cache,
-      // which places the breakpoint on the LAST cacheable block — the
-      // per-contact user prompt that varies on every fan-out call. Keyed to
-      // varying content, the stable Opus system prompt never actually
-      // served from cache; every call paid the full write price.
       messages: [
         {
           role: "system",
@@ -73,40 +64,26 @@ export async function composeEmail(
             factBank ?? null,
             learnings ?? null,
           ),
-          providerOptions: {
-            anthropic: { cacheControl: { type: "ephemeral" } },
-          },
         },
         { role: "user", content: buildComposeUserPrompt(userPromptInput) },
       ],
-      providerOptions: {
-        anthropic: {
-          // Opus 5 thinks by default (Opus 4.6 did not), and maxOutputTokens
-          // caps thinking + visible output together — so the old 1200 budget
-          // would have been eaten by reasoning and truncated the email,
-          // failing generateObject and silently skipping the draft. Medium
-          // effort is the right depth here: enough to hold the base rules and
-          // the user's voice profile together without spending xhigh-level
-          // reasoning on a 125-word email.
-          effort: "medium",
-        },
-      },
       // Visible output is ~600 tokens (subject + bodyHtml + bodyText +
-      // aiReasoning). The rest is headroom for thinking.
+      // aiReasoning). The rest is headroom for reasoning-style models whose
+      // thinking counts against maxOutputTokens.
       // generateWithRetry owns retrying. Leaving the SDK default of 2 in place
       // would stack to 12 upstream requests per email under a 429 storm.
       maxRetries: 0,
       maxOutputTokens: 4000,
     });
-    // K18: every composed email is an Opus call and none of it was ever
+    // K18: every composed email is an LLM call and none of it was ever
     // cost-tracked. Attribution inherits the nearest withAction context.
     trackUsage({
-      service: "claude",
+      service: "llm",
       operation: "compose-email",
       tokens_input: usage.inputTokens ?? 0,
       tokens_output: usage.outputTokens ?? 0,
-      estimated_cost_usd: estimateClaudeCostFromUsage("opus", usage),
-      metadata: { model: MODELS.EMAIL },
+      estimated_cost_usd: estimateLlmCostFromUsage(usage),
+      metadata: { model: AI_MODEL },
     });
     return object;
   }, ComposedEmailSchema);

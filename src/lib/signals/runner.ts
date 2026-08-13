@@ -1,13 +1,17 @@
-import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject } from "ai";
 import { apiSafeJsonSchema } from "@/lib/ai/api-safe-schema";
-import { MODELS } from "@/lib/ai/models";
+import {
+  AI_BASE_URL,
+  getAiApiKey,
+  getLLM,
+  getStagehandModelConfig,
+} from "@/lib/ai/models";
 import { createClient } from "@/lib/supabase/server";
 import { withTimeout } from "@/lib/utils/timeout";
 import { structuralDiff } from "./diff";
 import { llmTimeout } from "@/lib/utils/timeout";
 import {
-  estimateClaudeCostFromUsage,
+  estimateLlmCostFromUsage,
   trackUsage,
 } from "@/lib/services/cost-tracker";
 import { jsonSchemaToZod } from "./json-schema-to-zod";
@@ -101,26 +105,28 @@ async function executeStep(
       const url = resolveArgs({ url: step.url }, scope).url as string;
       const apiKey = process.env.BROWSERBASE_API_KEY;
       const projectId = process.env.BROWSERBASE_PROJECT_ID;
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
-      if (!apiKey || !projectId || !anthropicKey) {
+      const aiKey = getAiApiKey();
+      if (!apiKey || !projectId || !aiKey) {
         const missing = [
           !apiKey && "BROWSERBASE_API_KEY",
           !projectId && "BROWSERBASE_PROJECT_ID",
-          !anthropicKey && "ANTHROPIC_API_KEY",
+          !aiKey && "AI_API_KEY (or ANTHROPIC_API_KEY)",
         ]
           .filter(Boolean)
           .join(", ");
         throw new Error(`Stagehand step missing required env vars: ${missing}`);
       }
       const { Stagehand } = await import("@browserbasehq/stagehand");
+      // step.model, when set, must be a full "provider/model" string — it is
+      // passed straight to Stagehand, not to the AI SDK.
+      const modelConfig = step.model
+        ? { modelName: step.model, apiKey: aiKey, baseURL: AI_BASE_URL }
+        : getStagehandModelConfig();
       const stagehand = new Stagehand({
         env: "BROWSERBASE",
         apiKey,
         projectId,
-        model: {
-          modelName: step.model ?? `anthropic/${MODELS.BROWSER}`,
-          apiKey: anthropicKey,
-        },
+        model: modelConfig,
         disablePino: true,
       });
       try {
@@ -209,18 +215,17 @@ async function executeStep(
       // and whose spend was invisible in the cost center.
       const { object, usage } = await generateObject({
         abortSignal: llmTimeout(),
-        model: anthropic(step.model ?? MODELS.LIGHT),
+        // step.model, when set, is a model ID on the same configured provider.
+        model: getLLM(step.model),
         schema: apiSafeJsonSchema(step.schema),
         prompt: `${step.prompt}\n\n---\n\n${source.slice(0, 30_000)}`,
       });
       trackUsage({
-        service: "claude",
+        service: "llm",
         operation: "signal-extract-json",
         tokens_input: usage.inputTokens ?? 0,
         tokens_output: usage.outputTokens ?? 0,
-        // step.model overrides are rare; the light tier is the default and
-        // close enough for attribution.
-        estimated_cost_usd: estimateClaudeCostFromUsage("haiku", usage),
+        estimated_cost_usd: estimateLlmCostFromUsage(usage),
         metadata: { signalId: env.signalId, step: step.id },
       });
       return object;
