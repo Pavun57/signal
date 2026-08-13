@@ -4,10 +4,15 @@
 # either a hosted project (https://supabase.com) or a local stack via
 # `supabase start`.
 #
-# Minimal setup:
+# Minimal local setup (compose interpolates .env automatically):
 #   cp .env.example .env
-#   # fill in SUPABASE_* and ANTHROPIC_API_KEY at minimum
+#   # fill in the Supabase + Clerk + AI_API_KEY blocks at minimum
 #   docker compose up -d
+#
+# Dokploy: choose Build Type "Docker Compose", set the compose path to this
+# file, and paste the same keys into the Environment section — ${VAR}
+# references below feed BOTH the build args (NEXT_PUBLIC_* are inlined into
+# the client bundle at build time) and the container's runtime env.
 #
 # The app will be reachable at http://localhost:3000.
 
@@ -17,19 +22,69 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Build-time env (inlined into the client bundle).
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY}
+        # Build-time env (inlined into the client bundle — cannot be
+        # runtime-only, so they must be present when the image is built).
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY:-}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
         NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: ${NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
     image: signal:latest
     restart: unless-stopped
     ports:
       - "${PORT:-3000}:3000"
-    env_file:
-      - .env
     environment:
       NODE_ENV: production
+      # Supabase
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      # Clerk. CLERK_PUBLISHABLE_KEY is the runtime-read copy: Next bakes
+      # NEXT_PUBLIC_* into the image at build time, so proxy.ts and the root
+      # layout read this unprefixed var per request instead.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+      CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+      CLERK_FRONTEND_API_DOMAIN: ${CLERK_FRONTEND_API_DOMAIN:-}
+      NEXT_PUBLIC_CLERK_SIGN_IN_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_URL:-/login}
+      NEXT_PUBLIC_CLERK_SIGN_UP_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_URL:-/signup}
+      NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL:-/}
+      NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL: ${NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL:-/}
+      # AI provider (any OpenAI-compatible endpoint)
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.anthropic.com/v1}
+      AI_MODEL: ${AI_MODEL:-claude-sonnet-4-6}
+      AI_INPUT_PRICE_PER_MTOK: ${AI_INPUT_PRICE_PER_MTOK:-3.0}
+      AI_OUTPUT_PRICE_PER_MTOK: ${AI_OUTPUT_PRICE_PER_MTOK:-15.0}
+      AI_STAGEHAND_MODEL: ${AI_STAGEHAND_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_ADMIN_KEY: ${ANTHROPIC_ADMIN_KEY:-}
+      # Browserbase + Stagehand
+      BROWSERBASE_API_KEY: ${BROWSERBASE_API_KEY:-}
+      BROWSERBASE_PROJECT_ID: ${BROWSERBASE_PROJECT_ID:-}
+      # Email sending
+      EMAIL_CREDENTIALS_KEY: ${EMAIL_CREDENTIALS_KEY:-}
+      # Job scheduler
+      CRON_SECRET: ${CRON_SECRET:-}
+      # Data providers
+      EXA_API_KEY: ${EXA_API_KEY:-}
+      EXA_SERVICE_API_KEY: ${EXA_SERVICE_API_KEY:-}
+      EXA_API_KEY_ID: ${EXA_API_KEY_ID:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      APIFY_API_TOKEN: ${APIFY_API_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # PostHog (optional analytics)
+      NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: ${NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN:-}
+      NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
+      # Public URL (webhook callbacks)
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-}
     healthcheck:
+      # /api/health is unauthenticated by design — a fixed literal.
       test:
         [
           "CMD",
