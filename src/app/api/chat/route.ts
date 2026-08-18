@@ -148,12 +148,21 @@ export async function POST(request: Request) {
           // deck through `writer` as transient data parts, never as text.
           voiceRun,
         },
-        onFinish({ usage, finishReason }) {
+        onFinish(event) {
+          const { usage, finishReason, steps } = event;
           // "tool-calls" as the FINAL finish reason means the model still
           // wanted to work but stopWhen ended the loop — tell the client so
           // it can continue the pipeline in a fresh request. Transient: the
           // part reaches onData but is never persisted into the message.
-          if (finishReason === "tool-calls") {
+          //
+          // Guard on actual tool calls: some OpenAI-compatible gateways
+          // (Nebius serving GLM-5.1, observed 2026-08) report
+          // finish_reason "tool_calls" while streaming ZERO tool-call
+          // deltas. Without the check, the client auto-continues into the
+          // same dead turn until MAX_AUTO_CONTINUES — the chat looks stuck
+          // and fills with "Continue exactly where you left off." messages.
+          const lastStep = steps[steps.length - 1];
+          if (finishReason === "tool-calls" && lastStep?.toolCalls.length) {
             writer.write({
               type: "data-turn-paused",
               data: {
